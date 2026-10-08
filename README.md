@@ -2,6 +2,8 @@
 
 Browser-held self-custody sessions for CKB applications.
 
+**Live demo:** [ckb-session-kit.vercel.app](https://ckb-session-kit.vercel.app/) — create a session, fund it, send with no wallet popup (CKB testnet).
+
 **Status: early development.** Built in the open during my CKBuilder programme.
 
 | When | Milestone |
