@@ -8,9 +8,6 @@ import {
   indexedDbStore,
   isActive,
   openSession,
-  ScopeError,
-  SessionBalanceError,
-  sessionLockErrorFrom,
   spendInSession,
   type Session,
   type SessionCells,
@@ -18,27 +15,11 @@ import {
 } from "ckb-session-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import deploymentJson from "../../deployment/testnet.json";
+import { ckb, describeFailure, explorerAddr, explorerTx, Footer, Log, Nav, short, type LogEntry } from "./shared";
 import { Prompt, Terminal } from "./Terminal";
 
 const deployment = deploymentJson as SessionLockDeployment;
 const store = indexedDbStore();
-const explorerTx = (h: string) => `https://testnet.explorer.nervos.org/transaction/${h}`;
-const explorerAddr = (a: string) => `https://testnet.explorer.nervos.org/address/${a}`;
-const ckb = (shannons: bigint) => ccc.fixedPointToString(shannons) + " CKB";
-const short = (h: string, n = 8) => (h.length > 2 * n + 2 ? `${h.slice(0, n + 2)}…${h.slice(-n)}` : h);
-
-type LogEntry = { at: Date; level: "ok" | "err" | "info"; text: string; hash?: string };
-
-/** Turns anything thrown during a send into one honest log line. */
-function describeFailure(e: unknown): { level: "err"; text: string } {
-  const msg = e instanceof Error ? e.message : String(e);
-  if (e instanceof ScopeError) return { level: "err", text: `${msg} · refused in the browser, nothing signed` };
-  if (e instanceof SessionBalanceError) return { level: "err", text: msg };
-  const onChain = sessionLockErrorFrom(msg);
-  if (onChain) return { level: "err", text: `rejected by the network: session lock error ${onChain.code} (${onChain.meaning})` };
-  if (/Immature/i.test(msg)) return { level: "err", text: "cooldown: the session cell is younger than the rate limit allows; try again in a few blocks" };
-  return { level: "err", text: `failed: ${msg.slice(0, 200)}` };
-}
 
 export default function SessionDemo() {
   const { open, disconnect, client } = useCcc();
@@ -113,6 +94,7 @@ export default function SessionDemo() {
 
   return (
     <main className="wrap">
+      <Nav here="wallet" />
       <Terminal client={client} title="ckb-session-kit — demo">
         <h1>
           <span className="dim">[</span> ckb-session-kit <span className="dim">v0.2 ]</span>{" "}
@@ -281,34 +263,9 @@ export default function SessionDemo() {
           </>
         )}
 
-        <section className="block">
-          <h2>log</h2>
-          <ul className="log">
-            {log.map((e, i) => (
-              <li key={i}>
-                <time>[{e.at.toLocaleTimeString("en-GB")}]</time>{" "}
-                <span className={`lvl ${e.level === "ok" ? "ok" : e.level === "err" ? "bad" : "warn"}`}>
-                  {e.level === "ok" ? "OK" : e.level === "err" ? "DENY" : "INFO"}
-                </span>{" "}
-                {e.text}
-                {e.hash && (
-                  <>
-                    {" "}
-                    · tx <a href={explorerTx(e.hash)}>{short(e.hash)}</a>
-                  </>
-                )}
-              </li>
-            ))}
-            <li>
-              <span className="cursor" />
-            </li>
-          </ul>
-        </section>
+        <Log entries={log} />
       </Terminal>
-      <footer>
-        <span>MIT · built during CKBuilder</span>
-        <a href="https://github.com/luongthanhtung03/ckb-session-kit">github.com/luongthanhtung03/ckb-session-kit</a>
-      </footer>
+      <Footer />
     </main>
   );
 }

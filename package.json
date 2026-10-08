@@ -24,7 +24,8 @@
     "deploy:testnet": "tsx scripts/deploy-session-lock.ts",
     "smoke:lock": "tsx scripts/testnet-lock-smoke.ts",
     "smoke:flow": "tsx scripts/testnet-session-flow.ts",
-    "smoke:pay-per-read": "tsx scripts/testnet-pay-per-read.ts"
+    "smoke:pay-per-read": "tsx scripts/testnet-pay-per-read.ts",
+    "setup:creator": "tsx scripts/setup-creator.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

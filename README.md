@@ -103,9 +103,14 @@ paying anyone else and paying 6 CKB (limit 5) refused before signing →
 and [session swept](https://testnet.explorer.nervos.org/transaction/0x8dc5260ebfb232939cff48570610d61d620d2c727675ec2498be956458309cf5).
 The on-chain side of those refusals is covered by the CKB-VM tests below.
 
+**Try it in the browser:** [ckb-session-kit.vercel.app/read](https://ckb-session-kit.vercel.app/read)
+(the `/read` page of the demo): open a reading session with one wallet signature,
+then unlock articles for 1 CKB each with no popup.
+
 A session cell with a recipient occupies 153 CKB, so a 200 CKB session has 47 CKB
-to spend; the rest comes back on close. Readers paying at the same moment compete
-for the creator's one cell; a creator expecting traffic keeps several.
+to spend; the rest comes back on close. Each payment consumes one of the creator's
+cells, so readers paying at the same moment compete for them; the library picks
+one at random, and `npm run setup:creator` gives the demo's creator three.
 
 ## The on-chain session lock
 

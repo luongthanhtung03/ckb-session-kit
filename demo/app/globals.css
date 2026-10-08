@@ -128,3 +128,17 @@ footer { margin-top: 16px; color: var(--dim); font-size: 12px; display: flex; ju
   .titlebar .title { display: none; }
   .stat-value { font-size: 26px; }
 }
+
+/* page switcher above the terminal */
+.tabs { display: flex; gap: 18px; margin: 0 0 10px; font-size: 13px; }
+.tabs a { color: var(--dim); border-bottom: 0; }
+.tabs a:hover { color: var(--green); }
+.tabs .on { color: var(--green); }
+.tabs .on::before { content: "> "; }
+
+/* pay-per-read articles */
+.article { border-left: 2px solid var(--line-strong); padding: 2px 0 2px 12px; margin: 0 0 18px; }
+.article.open { border-left-color: var(--green); }
+.article h3 { font-size: 14px; margin: 0 0 6px; color: var(--fg); }
+.article p { margin: 0 0 8px; }
+.article .locked { color: var(--dim); filter: blur(3px); user-select: none; }

@@ -102,7 +102,11 @@ async function open(idb: IDBFactory): Promise<IDBDatabase> {
   return request(r);
 }
 
-export function indexedDbStore(idb: IDBFactory = globalThis.indexedDB): SessionStore {
+/**
+ * One session per `key`. Pages on the same origin that each run their own
+ * session (a wallet page and a reader page, say) pass different keys.
+ */
+export function indexedDbStore(idb: IDBFactory = globalThis.indexedDB, key: string = KEY): SessionStore {
   const run = async <T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>) => {
     const db = await open(idb);
     try {
@@ -113,14 +117,14 @@ export function indexedDbStore(idb: IDBFactory = globalThis.indexedDB): SessionS
   };
   return {
     load: async () => {
-      const raw = await run<string | undefined>("readonly", (s) => s.get(KEY));
+      const raw = await run<string | undefined>("readonly", (s) => s.get(key));
       return raw === undefined ? undefined : deserializeSession(raw);
     },
     save: async (session) => {
-      await run("readwrite", (s) => s.put(serializeSession(session), KEY));
+      await run("readwrite", (s) => s.put(serializeSession(session), key));
     },
     clear: async () => {
-      await run("readwrite", (s) => s.delete(KEY));
+      await run("readwrite", (s) => s.delete(key));
     },
   };
 }
