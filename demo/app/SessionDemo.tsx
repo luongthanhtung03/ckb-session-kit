@@ -1,3 +1,5 @@
+"use client";
+
 import { ccc } from "@ckb-ccc/core";
 import {
   createSession,
@@ -17,7 +19,7 @@ const ckb = (shannons: bigint) => ccc.fixedPointToString(shannons) + " CKB";
 
 type LogEntry = { at: Date; ok: boolean; text: string; hash?: string };
 
-export function App() {
+export default function SessionDemo() {
   const client = useMemo(() => new ccc.ClientPublicTestnet(), []);
   const [session, setSession] = useState<Session>();
   const [address, setAddress] = useState<string>();

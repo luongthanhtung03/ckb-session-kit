@@ -39,7 +39,7 @@ problem is not specific to that application.
 ```bash
 npm install
 npm test                 # 19 tests, no network needed
-npm run demo             # the web demo at http://localhost:5173
+npm run demo             # the Next.js web demo at http://localhost:3000
 ```
 
 The demo creates a session in the browser, shows its testnet address (fund it from

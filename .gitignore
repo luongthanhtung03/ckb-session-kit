@@ -31,3 +31,7 @@ devnet/
 Thumbs.db
 .vscode/
 .idea/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+.vercel/

@@ -19,7 +19,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke:testnet": "tsx scripts/testnet-smoke.ts",
-    "demo": "npm run dev -w demo"
+    "demo": "npm run build && npm run dev -w demo",
+    "build:demo": "npm run build && npm run build -w demo"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
