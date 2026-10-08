@@ -12,3 +12,13 @@ export {
   sessionLockScript,
 } from "./lock.js";
 export type { SessionLockDeployment, SessionLockParams } from "./lock.js";
+export {
+  closeSession,
+  findSessionCells,
+  keyLockOf,
+  openSession,
+  SessionBalanceError,
+  sessionLockOf,
+  spendInSession,
+} from "./onchain.js";
+export type { OnChainBinding, SessionCells } from "./onchain.js";

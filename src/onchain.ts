@@ -1,0 +1,233 @@
+import { ccc } from "@ckb-ccc/core";
+import {
+  relativeBlocksSince,
+  sessionLockCellDep,
+  sessionLockScript,
+  type SessionLockDeployment,
+  type SessionLockParams,
+} from "./lock.js";
+import { checkRequest, type Session } from "./session.js";
+import { ScopeError, sessionSigner } from "./transfer.js";
+
+/**
+ * Sessions enforced by the on-chain session lock.
+ *
+ * - `openSession`  — the owner (any CCC signer: a wallet) funds a session cell under
+ *   the session lock and a key cell under the session key's own lock. One signature.
+ * - `spendInSession` — the session key alone spends from the session cell; the key
+ *   cell pays the fee. No wallet involved; the network enforces the scope.
+ * - `closeSession` — the key cell goes back to the owner (session key signs), then
+ *   the owner sweeps the session cells (one wallet signature).
+ */
+
+/** What the browser must remember, besides the key, to find and spend the session. */
+export type OnChainBinding = NonNullable<Session["onchain"]>;
+
+export interface SessionCells {
+  lock: ccc.Script;
+  keyLock: ccc.Script;
+  sessionCells: ccc.Cell[];
+  keyCells: ccc.Cell[];
+  /** Spendable balance of the session cells, in shannons. */
+  balance: bigint;
+  /** Fee budget left in the key cells, in shannons. */
+  feeBalance: bigint;
+}
+
+export class SessionBalanceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionBalanceError";
+  }
+}
+
+const KEY_CELL_MIN = 61n * 100_000_000n;
+
+export async function keyLockOf(session: Session, client: ccc.Client): Promise<ccc.Script> {
+  return (await sessionSigner(session, client).getRecommendedAddressObj()).script;
+}
+
+function params(session: Session, keyLock: ccc.Script, binding: OnChainBinding): SessionLockParams {
+  return {
+    ownerLockHash: ccc.Script.from(binding.ownerLock).hash(),
+    sessionLockHash: keyLock.hash(),
+    maxPerTx: session.policy.scope.maxPerTx,
+    minInterval: binding.minInterval,
+    ...(binding.recipientLockHash && { recipientLockHash: binding.recipientLockHash }),
+  };
+}
+
+export async function sessionLockOf(
+  session: Session,
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+): Promise<ccc.Script> {
+  return sessionLockScript(deployment, params(session, await keyLockOf(session, client), binding));
+}
+
+async function collect(client: ccc.Client, lock: ccc.Script): Promise<ccc.Cell[]> {
+  const cells: ccc.Cell[] = [];
+  for await (const cell of client.findCellsByLock(lock, null, true)) {
+    if (!cell.cellOutput.type && cell.outputData === "0x") cells.push(cell);
+  }
+  return cells;
+}
+
+export async function findSessionCells(
+  session: Session,
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+): Promise<SessionCells> {
+  const keyLock = await keyLockOf(session, client);
+  const lock = sessionLockScript(deployment, params(session, keyLock, binding));
+  const [sessionCells, keyCells] = await Promise.all([collect(client, lock), collect(client, keyLock)]);
+  const sum = (cells: ccc.Cell[]) => cells.reduce((s, c) => s + c.cellOutput.capacity, 0n);
+  return { lock, keyLock, sessionCells, keyCells, balance: sum(sessionCells), feeBalance: sum(keyCells) };
+}
+
+/** Owner funds the session: one transaction, one signature from `owner`. */
+export async function openSession(
+  owner: ccc.Signer,
+  session: Session,
+  deployment: SessionLockDeployment,
+  opts: { budget: bigint; feeBudget?: bigint; minInterval?: bigint; recipient?: string },
+): Promise<{ txHash: ccc.Hex; binding: OnChainBinding }> {
+  const client = owner.client;
+  const ownerLock = (await owner.getRecommendedAddressObj()).script;
+  const recipientLockHash = opts.recipient
+    ? (await ccc.Address.fromString(opts.recipient, client)).script.hash()
+    : undefined;
+  const binding: OnChainBinding = {
+    ownerLock: { codeHash: ownerLock.codeHash, hashType: ownerLock.hashType, args: ownerLock.args },
+    minInterval: opts.minInterval ?? 0n,
+    ...(recipientLockHash && { recipientLockHash }),
+  };
+  const keyLock = await keyLockOf(session, client);
+  const lock = sessionLockScript(deployment, params(session, keyLock, binding));
+
+  const tx = ccc.Transaction.from({
+    outputs: [
+      { lock, capacity: opts.budget },
+      { lock: keyLock, capacity: opts.feeBudget ?? 100n * 100_000_000n },
+    ],
+  });
+  // CCC raises an output to its occupied capacity; a budget below that is a mistake.
+  if (tx.outputs[0].capacity !== opts.budget) {
+    throw new SessionBalanceError(`budget must be at least ${ccc.fixedPointToString(tx.outputs[0].capacity)} CKB`);
+  }
+  await tx.completeInputsByCapacity(owner);
+  await tx.completeFeeBy(owner);
+  return { txHash: await owner.sendTransaction(tx), binding };
+}
+
+/**
+ * The session key pays `amount` to `to`. The scope is checked here first, then
+ * the network checks it again in the session lock. No wallet is involved.
+ */
+export async function spendInSession(
+  session: Session,
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+  request: { to: string; amount: bigint },
+  now: Date = new Date(),
+): Promise<ccc.Hex> {
+  const check = checkRequest(session, request, now);
+  if (!check.ok) throw new ScopeError(check.reason);
+
+  const state = await findSessionCells(session, client, deployment, binding);
+  const { script: toLock } = await ccc.Address.fromString(request.to, client);
+  if (binding.recipientLockHash && toLock.hash() !== binding.recipientLockHash) {
+    throw new ScopeError("recipient not in scope");
+  }
+  if (!state.keyCells.length) throw new SessionBalanceError("no key cell left to pay fees");
+
+  // Take session cells until they cover the payment.
+  const inputs: ccc.Cell[] = [];
+  let taken = 0n;
+  for (const cell of state.sessionCells) {
+    if (taken >= request.amount) break;
+    inputs.push(cell);
+    taken += cell.cellOutput.capacity;
+  }
+  if (taken < request.amount) {
+    throw new SessionBalanceError(`session balance ${ccc.fixedPointToString(state.balance)} CKB is too low`);
+  }
+
+  const since = binding.minInterval > 0n ? relativeBlocksSince(binding.minInterval) : 0n;
+  const tx = ccc.Transaction.from({
+    inputs: [
+      ...inputs.map((c) => ccc.CellInput.from({ previousOutput: c.outPoint, since })),
+      ccc.CellInput.from({ previousOutput: state.keyCells[0].outPoint }),
+    ],
+    outputs: [{ lock: toLock, capacity: request.amount }],
+    cellDeps: [sessionLockCellDep(deployment)],
+  });
+  if (tx.outputs[0].capacity !== request.amount) {
+    throw new SessionBalanceError(`a payment must be at least ${ccc.fixedPointToString(tx.outputs[0].capacity)} CKB`);
+  }
+  const change = taken - request.amount;
+  if (change > 0n) {
+    tx.addOutput({ lock: state.lock, capacity: change });
+    if (tx.outputs[1].capacity !== change) {
+      throw new SessionBalanceError(
+        `the session would keep ${ccc.fixedPointToString(change)} CKB, below the ` +
+          `${ccc.fixedPointToString(tx.outputs[1].capacity)} CKB a session cell needs; ` +
+          `spend all of it or less`,
+      );
+    }
+  }
+  // The key cell comes back as the last output and pays the fee.
+  tx.addOutput({ lock: state.keyLock, capacity: 0n });
+  await tx.completeFeeChangeToOutput(sessionSigner(session, client), tx.outputs.length - 1);
+  if (tx.outputs[tx.outputs.length - 1].capacity < KEY_CELL_MIN) {
+    throw new SessionBalanceError("the key cell cannot cover another fee; top it up");
+  }
+  return sessionSigner(session, client).sendTransaction(tx);
+}
+
+/**
+ * Ends the session: the key cell returns to the owner (session key signs, no
+ * wallet), then the owner sweeps the session cells (one wallet signature).
+ */
+export async function closeSession(
+  owner: ccc.Signer,
+  session: Session,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+): Promise<{ keyTx?: ccc.Hex; sweepTx?: ccc.Hex }> {
+  const client = owner.client;
+  const ownerLock = ccc.Script.from(binding.ownerLock);
+  const state = await findSessionCells(session, client, deployment, binding);
+  const result: { keyTx?: ccc.Hex; sweepTx?: ccc.Hex } = {};
+
+  if (state.keyCells.length) {
+    const tx = ccc.Transaction.from({
+      inputs: state.keyCells.map((c) => ({ previousOutput: c.outPoint })),
+      outputs: [{ lock: ownerLock, capacity: 0n }],
+    });
+    await tx.completeFeeChangeToOutput(sessionSigner(session, client), 0);
+    result.keyTx = await sessionSigner(session, client).sendTransaction(tx);
+  }
+
+  if (state.sessionCells.length) {
+    // Owner mode needs an owner-locked input; completeInputsAtLeastOne adds one.
+    const tx = ccc.Transaction.from({
+      inputs: state.sessionCells.map((c) => ({ previousOutput: c.outPoint })),
+      outputs: [],
+      cellDeps: [sessionLockCellDep(deployment)],
+    });
+    let ownerInput = false;
+    for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {
+      tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
+      ownerInput = true;
+      break;
+    }
+    if (!ownerInput) throw new SessionBalanceError("the owner needs one plain cell to prove ownership");
+    await tx.completeFeeBy(owner); // everything returns to the owner as change
+    result.sweepTx = await owner.sendTransaction(tx);
+  }
+  return result;
+}

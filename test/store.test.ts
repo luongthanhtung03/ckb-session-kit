@@ -25,6 +25,18 @@ describe("session storage", () => {
     expect("recipients" in back.policy.scope).toBe(false);
   });
 
+  it("round-trips the on-chain binding", () => {
+    const bound = {
+      ...session,
+      onchain: {
+        ownerLock: { codeHash: ("0x" + "11".repeat(32)) as `0x${string}`, hashType: "type" as const, args: "0xabcd" as `0x${string}` },
+        minInterval: 3n,
+        recipientLockHash: ("0x" + "22".repeat(32)) as `0x${string}`,
+      },
+    };
+    expect(deserializeSession(serializeSession(bound))).toEqual(bound);
+  });
+
   it("refuses an unknown storage version", () => {
     expect(() => deserializeSession('{"v":2}')).toThrow(/version/);
   });

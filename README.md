@@ -2,7 +2,7 @@
 
 Browser-held self-custody sessions for CKB applications.
 
-**Live demo:** [ckb-session-kit.vercel.app](https://ckb-session-kit.vercel.app/) — create a session, fund it, send with no wallet popup (CKB testnet).
+**Live demo:** [ckb-session-kit.vercel.app](https://ckb-session-kit.vercel.app/) — connect a wallet, sign once to open a session, pay with no popups while the network enforces the limits, sign once to close (CKB testnet).
 
 **Status: early development.** Built in the open during my CKBuilder programme.
 
@@ -11,7 +11,7 @@ Browser-held self-custody sessions for CKB applications.
 | w/c 5 Oct 2026 | ✅ Scaffold, tests, CI |
 | w/c 12 Oct | ✅ Session key held in the browser signs a testnet transfer; live demo |
 | w/c 19 Oct | ✅ Session lock script (Rust) — outflow limit, recipient, rate limit enforced on-chain; deployed to testnet |
-| w/c 26 Oct | Delegate, act repeatedly with no wallet dialog, revoke |
+| w/c 26 Oct | ✅ Delegate, act repeatedly with no wallet dialog, revoke — library + demo (v0.2) |
 | w/c 2 Nov | Survives reload; device-loss recovery |
 | w/c 23 Nov | v1.0 on npm |
 
@@ -45,13 +45,28 @@ npm test                 # unit + CKB-VM tests, no network needed
 npm run demo             # the Next.js web demo at http://localhost:3000
 ```
 
-The demo creates a session in the browser, shows its testnet address (fund it from
-the [faucet](https://faucet.nervos.org/)), and sends within scope with no wallet
-dialog. Ask for more than the limit and the session refuses.
+The demo (v0.2) connects a wallet through CCC (JoyID, MetaMask, OKX, UniSat, …).
+The wallet signs **once** to open a session: it funds a session cell under the
+on-chain session lock plus a small key cell that pays the session's fees. Payments
+are then signed by a key held only in the browser, with **no wallet popup**, and the
+network enforces the limits. The wallet signs **once more** to close the session and
+take everything back.
 
-**Current stage:** the session lock is deployed on testnet and enforced by the
-network (below). The web demo still uses the v0.1 browser-only flow; wiring it to
-the on-chain lock is next.
+```ts
+import { createSession, openSession, spendInSession, closeSession } from "ckb-session-kit";
+
+const session = createSession({ expiresAt, scope: { maxPerTx: 100n * 10n ** 8n } });
+const { binding } = await openSession(wallet, session, deployment, { budget: 400n * 10n ** 8n });
+await spendInSession(session, client, deployment, binding, { to, amount }); // no wallet
+await closeSession(wallet, session, deployment, binding);                   // one signature
+```
+
+`npm run smoke:flow` runs exactly that against testnet with a key standing in for
+the wallet. Run on 8 Oct 2026: [open](https://testnet.explorer.nervos.org/transaction/0x5835048d4226f0b74be01cd79664d7e4dce67ea8aa77bb9d3468e896d27bf2b8)
+(owner signs) → [pay 100 CKB](https://testnet.explorer.nervos.org/transaction/0x9448e354252d71913d18fda2ba6d2460e1d78c2c0e4123eb8068482d7ec05c77)
+and [pay 80 CKB](https://testnet.explorer.nervos.org/transaction/0x9391051dcc7f490ade402dbc2057de4382e005e9c9d21ad8d7f835328ddcd182)
+(session key only) → 150 CKB refused → [key cell returned](https://testnet.explorer.nervos.org/transaction/0xe8eb8954674665aa1a4b990ecfd8ffea1ad728e8689a5f5aafdb9fc17c00b8d9)
+and [session swept](https://testnet.explorer.nervos.org/transaction/0x0d2a05460bdbfd5693c2d91a55e9c96b2eaaa6fbb7e0b1e3237a1fe9c2d6f1e4) (owner signs).
 
 ## The on-chain session lock
 

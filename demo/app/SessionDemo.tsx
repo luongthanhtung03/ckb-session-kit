@@ -1,18 +1,26 @@
 "use client";
 
-import { ccc } from "@ckb-ccc/core";
+import { ccc, useCcc, useSigner } from "@ckb-ccc/connector-react";
 import {
+  closeSession,
   createSession,
+  findSessionCells,
   indexedDbStore,
   isActive,
+  openSession,
   ScopeError,
-  sendInScope,
-  sessionAddress,
+  SessionBalanceError,
+  sessionLockErrorFrom,
+  spendInSession,
   type Session,
+  type SessionCells,
+  type SessionLockDeployment,
 } from "ckb-session-kit";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import deploymentJson from "../../deployment/testnet.json";
 import { Prompt, Terminal } from "./Terminal";
 
+const deployment = deploymentJson as SessionLockDeployment;
 const store = indexedDbStore();
 const explorerTx = (h: string) => `https://testnet.explorer.nervos.org/transaction/${h}`;
 const explorerAddr = (a: string) => `https://testnet.explorer.nervos.org/address/${a}`;
@@ -21,17 +29,31 @@ const short = (h: string, n = 8) => (h.length > 2 * n + 2 ? `${h.slice(0, n + 2)
 
 type LogEntry = { at: Date; level: "ok" | "err" | "info"; text: string; hash?: string };
 
+/** Turns anything thrown during a send into one honest log line. */
+function describeFailure(e: unknown): { level: "err"; text: string } {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (e instanceof ScopeError) return { level: "err", text: `${msg} · refused in the browser, nothing signed` };
+  if (e instanceof SessionBalanceError) return { level: "err", text: msg };
+  const onChain = sessionLockErrorFrom(msg);
+  if (onChain) return { level: "err", text: `rejected by the network: session lock error ${onChain.code} (${onChain.meaning})` };
+  if (/Immature/i.test(msg)) return { level: "err", text: "cooldown: the session cell is younger than the rate limit allows; try again in a few blocks" };
+  return { level: "err", text: `failed: ${msg.slice(0, 200)}` };
+}
+
 export default function SessionDemo() {
-  const client = useMemo(() => new ccc.ClientPublicTestnet(), []);
+  const { open, disconnect, client } = useCcc();
+  const signer = useSigner();
+  const [ownerAddress, setOwnerAddress] = useState<string>();
+  const [ownerLockHash, setOwnerLockHash] = useState<string>();
   const [session, setSession] = useState<Session>();
-  const [address, setAddress] = useState<string>();
-  const [balance, setBalance] = useState<bigint>();
+  const [cells, setCells] = useState<SessionCells>();
+  const [pending, setPending] = useState<string>();
   const [log, setLog] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
+  const restored = useRef(false);
 
   const push = (e: Omit<LogEntry, "at">) => setLog((l) => [{ at: new Date(), ...e }, ...l]);
-  const restored = useRef(false);
 
   useEffect(() => {
     store
@@ -48,46 +70,125 @@ export default function SessionDemo() {
     return () => clearInterval(t);
   }, []);
 
-  const refreshBalance = useCallback(async () => {
-    if (!session) return;
-    const signer = new ccc.SignerCkbPrivateKey(client, session.privateKey);
-    setBalance(await signer.getBalance());
+  useEffect(() => {
+    if (!signer) {
+      setOwnerAddress(undefined);
+      setOwnerLockHash(undefined);
+      return;
+    }
+    signer.getRecommendedAddressObj().then((a) => {
+      setOwnerAddress(a.toString());
+      setOwnerLockHash(a.script.hash());
+    });
+  }, [signer]);
+
+  const refresh = useCallback(async () => {
+    if (!session?.onchain) return setCells(undefined);
+    setCells(await findSessionCells(session, client, deployment, session.onchain));
   }, [client, session]);
 
+  // Poll: balances change as transactions confirm.
   useEffect(() => {
-    if (!session) return setAddress(undefined);
-    sessionAddress(session, client).then(setAddress);
-    refreshBalance();
-  }, [client, session, refreshBalance]);
+    refresh();
+    const t = setInterval(refresh, 10_000);
+    return () => clearInterval(t);
+  }, [refresh]);
+
+  // Clear the "waiting" line once the last transaction is committed.
+  useEffect(() => {
+    if (!pending) return;
+    const t = setInterval(async () => {
+      if ((await client.getTransaction(pending))?.status === "committed") {
+        setPending(undefined);
+        push({ level: "info", text: `confirmed ${short(pending)}` });
+        refresh();
+      }
+    }, 5000);
+    return () => clearInterval(t);
+  }, [client, pending, refresh]);
+
+  const isOwner = Boolean(
+    session?.onchain && ownerLockHash && ccc.Script.from(session.onchain.ownerLock).hash() === ownerLockHash,
+  );
 
   return (
     <main className="wrap">
       <Terminal client={client} title="ckb-session-kit — demo">
         <h1>
-          <span className="dim">[</span> ckb-session-kit <span className="dim">v0.1 ]</span>{" "}
+          <span className="dim">[</span> ckb-session-kit <span className="dim">v0.2 ]</span>{" "}
           <span className="dim">:: self-custody sessions :: testnet</span>
         </h1>
         <p className="lede">
-          A session key generated and held in this browser. It may only sign within the scope you
-          set, so an app can act repeatedly without a wallet popup each time.
+          Your wallet signs <strong>once</strong> to open a session. After that, a key held in this
+          browser pays on its own, with no popups, and the network enforces the limits you set. Your
+          wallet signs once more to close it.
         </p>
         <p className="note">
-          # v0.1 — scope enforced client-side. Next milestone: an on-chain session lock that makes
-          it binding. · <a href="https://github.com/luongthanhtung03/ckb-session-kit">source</a>
+          # limits enforced on-chain by the{" "}
+          <a href={explorerTx(String(deployment.cellDep.outPoint.txHash))}>session lock</a> (Rust,
+          testnet). Expiry is enforced in the browser: CKB scripts cannot prove that time has{" "}
+          <em>not</em> passed. ·{" "}
+          <a href="https://github.com/luongthanhtung03/ckb-session-kit">source</a>
         </p>
+
+        <section className="block">
+          <h2>owner</h2>
+          <Prompt path="~">wallet {signer ? "status" : "connect"}</Prompt>
+          {signer ? (
+            <dl>
+              <dt>wallet</dt>
+              <dd>
+                {ownerAddress ? <a href={explorerAddr(ownerAddress)}>{short(ownerAddress, 12)}</a> : "…"}{" "}
+                <button className="link" onClick={disconnect}>
+                  disconnect
+                </button>
+              </dd>
+            </dl>
+          ) : (
+            <>
+              <p className="hint"># JoyID (passkey, nothing to install), MetaMask, UniSat, OKX… on testnet.</p>
+              <button onClick={open}>connect wallet ⏎</button>
+            </>
+          )}
+        </section>
 
         {loading ? (
           <div className="block">
             <span className="cursor" />
           </div>
         ) : !session ? (
-          <CreateForm
-            onCreate={async (s) => {
-              await store.save(s);
-              setSession(s);
-              push({ level: "ok", text: "session created · key written to IndexedDB, never sent anywhere" });
+          <OpenForm
+            signer={signer}
+            onOpen={async (draft, opts) => {
+              if (!signer) return;
+              try {
+                push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
+                const { txHash, binding } = await openSession(signer, draft, deployment, opts);
+                const s = { ...draft, onchain: binding };
+                await store.save(s);
+                setSession(s);
+                setPending(txHash);
+                push({ level: "ok", text: "session opened · key saved in this browser only", hash: txHash });
+              } catch (e) {
+                push(describeFailure(e));
+              }
             }}
           />
+        ) : !session.onchain ? (
+          <section className="block">
+            <h2>legacy session</h2>
+            <p className="hint"># this session is from v0.1 (browser-only, no on-chain lock). End it to open an on-chain one.</p>
+            <button
+              className="danger"
+              onClick={async () => {
+                await store.clear();
+                setSession(undefined);
+                push({ level: "info", text: "v0.1 session discarded" });
+              }}
+            >
+              discard
+            </button>
+          </section>
         ) : (
           <>
             <section className="block">
@@ -99,61 +200,82 @@ export default function SessionDemo() {
                   {isActive(session, now) ? (
                     <span className="ok">● active · expires in {remaining(session, now)}</span>
                   ) : (
-                    <span className="bad">○ expired</span>
+                    <span className="bad">○ expired · the owner should close it</span>
                   )}
                 </dd>
-                <dt>pubkey</dt>
-                <dd>{short(session.publicKey)}</dd>
-                <dt>address</dt>
-                <dd>{address ? <a href={explorerAddr(address)}>{address}</a> : "…"}</dd>
                 <dt>balance</dt>
                 <dd>
-                  <span className="ok">{balance === undefined ? "…" : ckb(balance)}</span>{" "}
-                  <button className="link" onClick={refreshBalance}>
+                  <span className="ok">{cells ? ckb(cells.balance) : "…"}</span>
+                  <span className="dim"> in {cells?.sessionCells.length ?? "…"} session cell(s)</span>{" "}
+                  <button className="link" onClick={refresh}>
                     refresh
                   </button>
                 </dd>
+                <dt>fees</dt>
+                <dd>{cells ? ckb(cells.feeBalance) : "…"} <span className="dim">in the key cell</span></dd>
                 <dt>max/tx</dt>
-                <dd className="warn">{ckb(session.policy.scope.maxPerTx)}</dd>
+                <dd className="warn">{ckb(session.policy.scope.maxPerTx)} <span className="dim">· on-chain</span></dd>
+                <dt>interval</dt>
+                <dd>
+                  {session.onchain.minInterval > 0n ? `${session.onchain.minInterval} blocks between spends` : "none"}{" "}
+                  <span className="dim">· on-chain</span>
+                </dd>
                 <dt>allow</dt>
-                <dd>{session.policy.scope.recipients?.join(", ") ?? "* (any recipient)"}</dd>
+                <dd>
+                  {session.policy.scope.recipients?.join(", ") ?? "* (any recipient)"}
+                  {session.onchain.recipientLockHash && <span className="dim"> · on-chain</span>}
+                </dd>
+                <dt>lock</dt>
+                <dd className="dim">{cells ? short(cells.lock.hash(), 10) : "…"}</dd>
               </dl>
-              <p className="hint">
-                # fund the address from the{" "}
-                <a href="https://faucet.nervos.org/" target="_blank" rel="noreferrer">
-                  testnet faucet
-                </a>
-                , then refresh. Claims take a minute or two.
-              </p>
+              {pending && (
+                <p className="hint">
+                  waiting for <a href={explorerTx(pending)}>{short(pending)}</a> to confirm… <span className="cursor" />
+                </p>
+              )}
             </section>
 
             <SendForm
               session={session}
               onSend={async (to, amount) => {
                 try {
-                  const hash = await sendInScope(session, client, { to, amount });
-                  push({ level: "ok", text: `sent ${ckb(amount)} · signed by session key, no wallet popup`, hash });
+                  const hash = await spendInSession(session, client, deployment, session.onchain!, { to, amount });
+                  setPending(hash);
+                  push({ level: "ok", text: `paid ${ckb(amount)} · signed by the session key, no wallet popup`, hash });
                 } catch (e) {
-                  const msg = e instanceof Error ? e.message : String(e);
-                  push({ level: "err", text: e instanceof ScopeError ? msg : `send failed: ${msg}` });
+                  push(describeFailure(e));
                 }
-                refreshBalance();
+                refresh();
               }}
             />
 
             <section className="block">
-              <Prompt path="~/session">session end</Prompt>
+              <h2>close</h2>
+              <Prompt path="~/session">session close --return-to owner</Prompt>
+              <p className="hint">
+                # returns the key cell and every session cell to the owner. One wallet signature
+                {isOwner ? "." : " — connect the owner's wallet first."}
+              </p>
               <button
                 className="danger"
+                disabled={!isOwner}
                 onClick={async () => {
-                  if (!window.confirm("End the session? Any CKB left at the session address stays there.")) return;
-                  await store.clear();
-                  setSession(undefined);
-                  setBalance(undefined);
-                  push({ level: "info", text: "session ended · key deleted from this browser" });
+                  if (!signer) return;
+                  try {
+                    push({ level: "info", text: "returning the key cell, then waiting for your wallet…" });
+                    const { keyTx, sweepTx } = await closeSession(signer, session, deployment, session.onchain!);
+                    if (keyTx) push({ level: "ok", text: "key cell returned to the owner", hash: keyTx });
+                    if (sweepTx) push({ level: "ok", text: "session swept back to the owner", hash: sweepTx });
+                    await store.clear();
+                    setSession(undefined);
+                    setCells(undefined);
+                    setPending(undefined);
+                  } catch (e) {
+                    push(describeFailure(e));
+                  }
                 }}
               >
-                end session
+                close session
               </button>
             </section>
           </>
@@ -198,11 +320,22 @@ function remaining(s: Session, now: Date): string {
   return `${m}m${sec.toString().padStart(2, "0")}s`;
 }
 
-function CreateForm({ onCreate }: { onCreate: (s: Session) => Promise<void> }) {
+type OpenOpts = { budget: bigint; minInterval: bigint; recipient?: string };
+
+function OpenForm({
+  signer,
+  onOpen,
+}: {
+  signer: ccc.Signer | undefined;
+  onOpen: (draft: Session, opts: OpenOpts) => Promise<void>;
+}) {
   const [minutes, setMinutes] = useState("60");
   const [max, setMax] = useState("100");
+  const [budget, setBudget] = useState("400");
+  const [interval, setInterval_] = useState("0");
   const [recipient, setRecipient] = useState("");
   const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
 
   return (
     <form
@@ -210,45 +343,66 @@ function CreateForm({ onCreate }: { onCreate: (s: Session) => Promise<void> }) {
       onSubmit={async (ev) => {
         ev.preventDefault();
         setError(undefined);
+        setBusy(true);
         try {
-          const s = createSession({
+          const to = recipient.trim();
+          const draft = createSession({
             expiresAt: new Date(Date.now() + Number(minutes) * 60_000),
-            scope: {
-              maxPerTx: ccc.fixedPointFrom(max),
-              ...(recipient.trim() && { recipients: [recipient.trim()] }),
-            },
+            scope: { maxPerTx: ccc.fixedPointFrom(max), ...(to && { recipients: [to] }) },
           });
-          await onCreate(s);
+          await onOpen(draft, {
+            budget: ccc.fixedPointFrom(budget),
+            minInterval: BigInt(interval || "0"),
+            ...(to && { recipient: to }),
+          });
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setBusy(false);
         }
       }}
     >
-      <h2>create session</h2>
+      <h2>open session</h2>
       <Prompt path="~">
-        session create --expires {minutes || "?"}m --max {max || "?"}CKB
+        session open --budget {budget || "?"}CKB --max {max || "?"}CKB --expires {minutes || "?"}m
+        {interval && interval !== "0" && ` --interval ${interval}`}
         {recipient.trim() && ` --allow ${short(recipient.trim())}`}
       </Prompt>
       <label>
-        --expires (minutes)
+        --budget (CKB the session may spend in total; min 121)
         <div className="field">
-          <input type="number" min="1" value={minutes} onChange={(e) => setMinutes(e.target.value)} />
+          <input type="number" min="121" step="any" value={budget} onChange={(e) => setBudget(e.target.value)} />
         </div>
       </label>
       <label>
-        --max (CKB per transaction)
+        --max (CKB per transaction, enforced on-chain)
         <div className="field">
           <input type="number" min="61" step="any" value={max} onChange={(e) => setMax(e.target.value)} />
         </div>
       </label>
       <label>
-        --allow (only this recipient, optional)
+        --expires (minutes, enforced in the browser)
+        <div className="field">
+          <input type="number" min="1" value={minutes} onChange={(e) => setMinutes(e.target.value)} />
+        </div>
+      </label>
+      <label>
+        --interval (blocks between spends, enforced on-chain; 0 = none)
+        <div className="field">
+          <input type="number" min="0" value={interval} onChange={(e) => setInterval_(e.target.value)} />
+        </div>
+      </label>
+      <label>
+        --allow (only this recipient, enforced on-chain; optional)
         <div className="field">
           <input placeholder="ckt1…" value={recipient} onChange={(e) => setRecipient(e.target.value)} spellCheck={false} />
         </div>
       </label>
+      <p className="hint"># the wallet also funds a 100 CKB key cell that pays the session&apos;s fees; it comes back on close.</p>
       {error && <p className="bad">error: {error}</p>}
-      <button type="submit">run ⏎</button>
+      <button type="submit" disabled={!signer || busy}>
+        {!signer ? "connect a wallet first" : busy ? "waiting for wallet…" : "open session (1 signature) ⏎"}
+      </button>
     </form>
   );
 }
@@ -271,11 +425,11 @@ function SendForm({ session, onSend }: { session: Session; onSend: (to: string, 
         }
       }}
     >
-      <h2>send</h2>
+      <h2>pay</h2>
       <Prompt path="~/session">
-        session send --to {to.trim() ? short(to.trim()) : "?"} --amount {amount || "?"}CKB
+        session pay --to {to.trim() ? short(to.trim()) : "?"} --amount {amount || "?"}CKB
       </Prompt>
-      <p className="hint"># no wallet popup. try more than the limit to watch the session refuse. min output: 61 CKB.</p>
+      <p className="hint"># no wallet popup. try more than max/tx to watch it get refused. min payment: 61 CKB.</p>
       <label>
         --to
         <div className="field">

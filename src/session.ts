@@ -18,10 +18,16 @@ export interface SessionPolicy {
 }
 
 export interface Session {
-  /** Never leaves the browser. Persistence comes in a later milestone. */
+  /** Never leaves the browser. */
   privateKey: ccc.Hex;
   publicKey: ccc.Hex;
   policy: SessionPolicy;
+  /** Set once the owner has funded the session under the on-chain session lock. */
+  onchain?: {
+    ownerLock: { codeHash: ccc.Hex; hashType: ccc.HashType; args: ccc.Hex };
+    minInterval: bigint;
+    recipientLockHash?: ccc.Hex;
+  };
 }
 
 export interface CreateOptions {

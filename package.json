@@ -22,7 +22,8 @@
     "demo": "npm run build && npm run dev -w demo",
     "build:demo": "npm run build && npm run build -w demo",
     "deploy:testnet": "tsx scripts/deploy-session-lock.ts",
-    "smoke:lock": "tsx scripts/testnet-lock-smoke.ts"
+    "smoke:lock": "tsx scripts/testnet-lock-smoke.ts",
+    "smoke:flow": "tsx scripts/testnet-session-flow.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

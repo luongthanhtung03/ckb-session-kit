@@ -19,6 +19,11 @@ interface StoredSession {
   expiresAt: string;
   maxPerTx: string;
   recipients?: string[];
+  onchain?: {
+    ownerLock: { codeHash: string; hashType: string; args: string };
+    minInterval: string;
+    recipientLockHash?: string;
+  };
 }
 
 export function serializeSession(s: Session): string {
@@ -29,6 +34,13 @@ export function serializeSession(s: Session): string {
     expiresAt: s.policy.expiresAt.toISOString(),
     maxPerTx: s.policy.scope.maxPerTx.toString(),
     ...(s.policy.scope.recipients && { recipients: s.policy.scope.recipients }),
+    ...(s.onchain && {
+      onchain: {
+        ownerLock: s.onchain.ownerLock,
+        minInterval: s.onchain.minInterval.toString(),
+        ...(s.onchain.recipientLockHash && { recipientLockHash: s.onchain.recipientLockHash }),
+      },
+    }),
   };
   return JSON.stringify(stored);
 }
@@ -46,6 +58,17 @@ export function deserializeSession(json: string): Session {
         ...(d.recipients && { recipients: d.recipients }),
       },
     },
+    ...(d.onchain && {
+      onchain: {
+        ownerLock: {
+          codeHash: d.onchain.ownerLock.codeHash as ccc.Hex,
+          hashType: d.onchain.ownerLock.hashType as ccc.HashType,
+          args: d.onchain.ownerLock.args as ccc.Hex,
+        },
+        minInterval: BigInt(d.onchain.minInterval),
+        ...(d.onchain.recipientLockHash && { recipientLockHash: d.onchain.recipientLockHash as ccc.Hex }),
+      },
+    }),
   };
 }
 
