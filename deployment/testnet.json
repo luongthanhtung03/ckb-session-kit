@@ -1,0 +1,14 @@
+{
+  "network": "testnet",
+  "codeHash": "0x1ae8b8f71ed1846e2823ecccd8c3f80527be2895689f5dae54a53bd42526bc20",
+  "hashType": "data2",
+  "cellDep": {
+    "outPoint": {
+      "txHash": "0xab2e69b8b97c15bddeb80954edd6d33befcd2fe9e4243377a46f14a3e1c343d2",
+      "index": "0x0"
+    },
+    "depType": "code"
+  },
+  "binaryBytes": 4344,
+  "deployedAt": "2026-10-08T10:14:00.347Z"
+}
