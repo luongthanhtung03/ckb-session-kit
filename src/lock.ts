@@ -26,6 +26,19 @@ export interface SessionLockDeployment {
   cellDep: { outPoint: { txHash: ccc.HexLike; index: ccc.NumLike }; depType: ccc.DepTypeLike };
 }
 
+/**
+ * The session lock deployed on CKB public testnet. Kept identical to
+ * deployment/testnet.json by a test.
+ */
+export const TESTNET_DEPLOYMENT: SessionLockDeployment = {
+  codeHash: "0x1ae8b8f71ed1846e2823ecccd8c3f80527be2895689f5dae54a53bd42526bc20",
+  hashType: "data2",
+  cellDep: {
+    outPoint: { txHash: "0xab2e69b8b97c15bddeb80954edd6d33befcd2fe9e4243377a46f14a3e1c343d2", index: "0x0" },
+    depType: "code",
+  },
+};
+
 /** Error codes returned by the session lock, for reading node rejections. */
 export const SESSION_LOCK_ERRORS: Record<number, string> = {
   10: "bad args",

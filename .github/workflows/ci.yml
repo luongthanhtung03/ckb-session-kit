@@ -25,6 +25,8 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run build:demo
+      # Pack, install the tarball into an empty project, use it from there.
+      - run: npm run pack:check
 
   # The on-chain session lock: build the Rust contract for RISC-V, then run the
   # whole suite against it in the real CKB-VM (ckb-testtool + ckb-debugger).

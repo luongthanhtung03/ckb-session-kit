@@ -54,7 +54,7 @@ network enforces the limits. The wallet signs **once more** to close the session
 take everything back.
 
 ```ts
-import { createSession, openSession, spendInSession, closeSession } from "ckb-session-kit";
+import { createSession, openSession, spendInSession, closeSession, TESTNET_DEPLOYMENT as deployment } from "ckb-session-kit";
 
 const session = createSession({ expiresAt, scope: { maxPerTx: 100n * 10n ** 8n } });
 const { binding } = await openSession(wallet, session, deployment, { budget: 400n * 10n ** 8n });

@@ -2,9 +2,19 @@
   "name": "ckb-session-kit",
   "version": "0.0.1",
   "description": "Browser-held self-custody sessions for CKB applications",
+  "keywords": [
+    "ckb",
+    "nervos",
+    "session-keys",
+    "lock-script",
+    "self-custody",
+    "ccc"
+  ],
   "license": "MIT",
   "author": "Luong Thanh Tung (https://github.com/luongthanhtung03)",
   "repository": "github:luongthanhtung03/ckb-session-kit",
+  "homepage": "https://github.com/luongthanhtung03/ckb-session-kit#readme",
+  "bugs": "https://github.com/luongthanhtung03/ckb-session-kit/issues",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -25,7 +35,9 @@
     "smoke:lock": "tsx scripts/testnet-lock-smoke.ts",
     "smoke:flow": "tsx scripts/testnet-session-flow.ts",
     "smoke:pay-per-read": "tsx scripts/testnet-pay-per-read.ts",
-    "setup:creator": "tsx scripts/setup-creator.ts"
+    "setup:creator": "tsx scripts/setup-creator.ts",
+    "prepack": "npm run build",
+    "pack:check": "node scripts/pack-check.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

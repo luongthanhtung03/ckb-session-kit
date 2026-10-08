@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { relativeBlocksSince, sessionLockArgs, sessionLockErrorFrom } from "../src/lock.js";
+import { readFileSync } from "node:fs";
+import { relativeBlocksSince, sessionLockArgs, sessionLockErrorFrom, TESTNET_DEPLOYMENT } from "../src/lock.js";
 
 const A = "0x" + "aa".repeat(32);
 const B = "0x" + "bb".repeat(32);
@@ -43,5 +44,12 @@ describe("sessionLockErrorFrom", () => {
   });
   it("returns undefined when there is no code", () => {
     expect(sessionLockErrorFrom("PoolIsFull")).toBeUndefined();
+  });
+});
+
+describe("TESTNET_DEPLOYMENT", () => {
+  it("matches deployment/testnet.json, the record written by the deploy script", () => {
+    const { codeHash, hashType, cellDep } = JSON.parse(readFileSync("deployment/testnet.json", "utf8"));
+    expect(TESTNET_DEPLOYMENT).toEqual({ codeHash, hashType, cellDep });
   });
 });

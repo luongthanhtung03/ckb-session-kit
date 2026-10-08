@@ -10,6 +10,7 @@ export {
   sessionLockCellDep,
   sessionLockErrorFrom,
   sessionLockScript,
+  TESTNET_DEPLOYMENT,
 } from "./lock.js";
 export type { SessionLockDeployment, SessionLockParams } from "./lock.js";
 export {
