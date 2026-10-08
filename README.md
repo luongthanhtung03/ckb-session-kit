@@ -2,9 +2,16 @@
 
 Browser-held self-custody sessions for CKB applications.
 
-**Status: not started.** This repository exists so the work has somewhere to land.
-There is no implementation here yet — the first real commit is due in Week 9 of my
-CKBuilder programme (w/c 9 November 2026).
+**Status: early development.** Built in the open during my CKBuilder programme.
+
+| When | Milestone |
+|---|---|
+| w/c 5 Oct 2026 | Scaffold, tests, CI |
+| w/c 12 Oct | Session key held in the browser signs a testnet transfer; live demo |
+| w/c 19 Oct | Session lock script — scope and expiry enforced on-chain |
+| w/c 26 Oct | Delegate, act repeatedly with no wallet dialog, revoke |
+| w/c 2 Nov | Survives reload; device-loss recovery |
+| w/c 23 Nov | v1.0 on npm |
 
 ## The problem
 
@@ -24,14 +31,14 @@ A session layer where:
 - The session **survives a page reload**, and expires on terms the user set.
 - Losing the device does not mean losing the funds.
 
-Extracted from a pay-per-use API metering application, because the problem is not
-specific to that application.
+Its first example application is pay-per-use API metering over Fiber, but the
+problem is not specific to that application.
 
 ## Why it is a separate repository
 
-The session problem has nothing to do with API metering. Anything that wants to act
-repeatedly on a user's behalf in a browser has it, so it should not be buried inside
-one application's source tree.
+The session problem has nothing to do with any one application. Anything that wants
+to act repeatedly on a user's behalf in a browser has it, so it should not be buried
+inside one application's source tree.
 
 ## Licence
 
