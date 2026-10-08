@@ -34,8 +34,9 @@ A session layer where:
 - The owner can **revoke it on-chain** at any moment.
 - Losing the device does not mean losing the funds.
 
-Its first example application is pay-per-use API metering over Fiber, but the
-problem is not specific to that application.
+Its first example application is pay-per-read: a reader unlocks articles for
+1 CKB each with no wallet prompt, and the session can only ever pay the creator.
+The problem is not specific to that application.
 
 ## Try it
 
@@ -68,6 +69,44 @@ and [pay 80 CKB](https://testnet.explorer.nervos.org/transaction/0x9391051dcc7f4
 (session key only) → 150 CKB refused → [key cell returned](https://testnet.explorer.nervos.org/transaction/0xe8eb8954674665aa1a4b990ecfd8ffea1ad728e8689a5f5aafdb9fc17c00b8d9)
 and [session swept](https://testnet.explorer.nervos.org/transaction/0x0d2a05460bdbfd5693c2d91a55e9c96b2eaaa6fbb7e0b1e3237a1fe9c2d6f1e4) (owner signs).
 
+## Example: pay-per-read
+
+A reader's wallet signs once to open a session scoped to one creator. Each article
+unlock is then a 1 CKB payment signed by the session key alone. Two things make
+this work on CKB:
+
+- **Payments smaller than a cell.** A new cell needs at least 61 CKB, so a 1 CKB
+  payment cannot create one. Instead the creator keeps an
+  [anyone-can-pay](https://github.com/nervosnetwork/rfcs/blob/master/rfcs/0026-anyone-can-pay/0026-anyone-can-pay.md)
+  cell, and each payment tops it up: `spendInSession(…, { to, amount, topUp: true })`.
+  The anyone-can-pay lock accepts the top-up without the creator's signature.
+- **A stolen key can only pay the creator.** The session's recipient is the
+  creator's anyone-can-pay address, so the session lock refuses any other output,
+  and `max_per_tx` caps each unlock.
+
+```ts
+const session = createSession({ expiresAt, scope: { maxPerTx: 5n * CKB, recipients: [creatorAcp] } });
+const { binding } = await openSession(wallet, session, deployment, { budget: 200n * CKB, recipient: creatorAcp });
+await spendInSession(session, client, deployment, binding, { to: creatorAcp, amount: 1n * CKB, topUp: true });
+```
+
+`npm run smoke:pay-per-read` runs it on testnet. Run on 8 Oct 2026:
+[creator's cell created](https://testnet.explorer.nervos.org/transaction/0x27077cf1f2bc1d03b99321d915f4de2ff559a837e815ed092da5a7f7701c407c) (61 CKB) →
+[session opened](https://testnet.explorer.nervos.org/transaction/0x2d5425fb87675445371f17710105b0835cb57ad9591af3398a12954fc6006dfe)
+(reader signs once, recipient = creator) →
+reads [#1](https://testnet.explorer.nervos.org/transaction/0x2dc6b584b5e136507745385a5b829fd314838acd1e3e630a7a91d120641281bf),
+[#2](https://testnet.explorer.nervos.org/transaction/0x5c2300fca21b7153587d2328b37a6ffa41f7f124a1aa30c8ce7f07fc0409b8d8),
+[#3](https://testnet.explorer.nervos.org/transaction/0xe6641a8c1fd0502325af81459c317288783bab52e854c8483ddefa2be5064507)
+at 1 CKB each, session key only (creator's cell 61 → 64 CKB) →
+paying anyone else and paying 6 CKB (limit 5) refused before signing →
+[key cell returned](https://testnet.explorer.nervos.org/transaction/0xa815c46c7e98e43999664831839540f623a222ab0efe8d4d3a52c76cb25a6a4e)
+and [session swept](https://testnet.explorer.nervos.org/transaction/0x8dc5260ebfb232939cff48570610d61d620d2c727675ec2498be956458309cf5).
+The on-chain side of those refusals is covered by the CKB-VM tests below.
+
+A session cell with a recipient occupies 153 CKB, so a 200 CKB session has 47 CKB
+to spend; the rest comes back on close. Readers paying at the same moment compete
+for the creator's one cell; a creator expecting traffic keeps several.
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in
@@ -87,7 +126,7 @@ Rust. A cell under it can be spent two ways:
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
 cryptography: **4.3 KB, no allocator, no C, 12,893 cycles per run** — about 0.8% of
-a session spend. 20 tests run it in the real CKB-VM, most asserting a specific
+a session spend. 22 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has

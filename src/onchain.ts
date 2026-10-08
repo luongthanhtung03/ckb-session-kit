@@ -15,7 +15,9 @@ import { ScopeError, sessionSigner } from "./transfer.js";
  * - `openSession`  — the owner (any CCC signer: a wallet) funds a session cell under
  *   the session lock and a key cell under the session key's own lock. One signature.
  * - `spendInSession` — the session key alone spends from the session cell; the key
- *   cell pays the fee. No wallet involved; the network enforces the scope.
+ *   cell pays the fee. No wallet involved; the network enforces the scope. With
+ *   `topUp`, it adds to the recipient's anyone-can-pay cell instead of creating a
+ *   new one, so a payment can be any size (a new cell needs at least 61 CKB).
  * - `closeSession` — the key cell goes back to the owner (session key signs), then
  *   the owner sweeps the session cells (one wallet signature).
  */
@@ -125,13 +127,18 @@ export async function openSession(
 /**
  * The session key pays `amount` to `to`. The scope is checked here first, then
  * the network checks it again in the session lock. No wallet is involved.
+ *
+ * `topUp: true` pays into an existing cell of `to` instead of creating one. `to`
+ * must be an anyone-can-pay address with at least one live plain cell; that cell
+ * is consumed and recreated holding `amount` more, which the anyone-can-pay lock
+ * allows without the recipient's signature.
  */
 export async function spendInSession(
   session: Session,
   client: ccc.Client,
   deployment: SessionLockDeployment,
   binding: OnChainBinding,
-  request: { to: string; amount: bigint },
+  request: { to: string; amount: bigint; topUp?: boolean },
   now: Date = new Date(),
 ): Promise<ccc.Hex> {
   const check = checkRequest(session, request, now);
@@ -158,14 +165,24 @@ export async function spendInSession(
 
   const since = binding.minInterval > 0n ? relativeBlocksSince(binding.minInterval) : 0n;
   const tx = ccc.Transaction.from({
-    inputs: [
-      ...inputs.map((c) => ccc.CellInput.from({ previousOutput: c.outPoint, since })),
-      ccc.CellInput.from({ previousOutput: state.keyCells[0].outPoint }),
-    ],
+    inputs: inputs.map((c) => ccc.CellInput.from({ previousOutput: c.outPoint, since })),
     outputs: [{ lock: toLock, capacity: request.amount }],
     cellDeps: [sessionLockCellDep(deployment)],
   });
-  if (tx.outputs[0].capacity !== request.amount) {
+  if (request.topUp) {
+    const acp = await client.getKnownScript(ccc.KnownScript.AnyoneCanPay);
+    if (toLock.codeHash !== acp.codeHash || toLock.hashType !== acp.hashType) {
+      throw new ScopeError("top-up needs an anyone-can-pay recipient");
+    }
+    // Readers paying at once compete for a cell; a random pick spreads them out
+    // when the recipient keeps several.
+    const targets = await collect(client, toLock);
+    const target = targets[Math.floor(Math.random() * targets.length)];
+    if (!target) throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up");
+    tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
+    tx.outputs[0].capacity = target.cellOutput.capacity + request.amount;
+    await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay);
+  } else if (tx.outputs[0].capacity !== request.amount) {
     throw new SessionBalanceError(`a payment must be at least ${ccc.fixedPointToString(tx.outputs[0].capacity)} CKB`);
   }
   const change = taken - request.amount;
@@ -179,7 +196,8 @@ export async function spendInSession(
       );
     }
   }
-  // The key cell comes back as the last output and pays the fee.
+  // The key cell authorises the spend, comes back as the last output and pays the fee.
+  tx.inputs.push(ccc.CellInput.from({ previousOutput: state.keyCells[0].outPoint }));
   tx.addOutput({ lock: state.keyLock, capacity: 0n });
   await tx.completeFeeChangeToOutput(sessionSigner(session, client), tx.outputs.length - 1);
   if (tx.outputs[tx.outputs.length - 1].capacity < KEY_CELL_MIN) {

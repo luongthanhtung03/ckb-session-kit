@@ -211,6 +211,26 @@ describe.skipIf(skip)("session lock", () => {
         KEY_CELL,
       ]);
     });
+
+    // Micropayments: the recipient's existing (anyone-can-pay) cell is consumed and
+    // recreated larger. Only what leaves the session counts, not the recipient's
+    // cell size, so a 1 CKB payment works and a large recipient cell is no obstacle.
+    it("accepts a 1 CKB top-up of the recipient's existing cell", async () => {
+      await ok(
+        scoped,
+        [{ lock: "session", capacity: 500n * CKB }, { lock: "recipient", capacity: 200n * CKB }, KEY_CELL],
+        [{ lock: "recipient", capacity: 201n * CKB }, { lock: "session", capacity: 499n * CKB }, KEY_CELL],
+      );
+    });
+
+    it("rejects a top-up larger than max_per_tx", async () => {
+      await fails(
+        E.OUTFLOW_EXCEEDED,
+        scoped,
+        [{ lock: "session", capacity: 500n * CKB }, { lock: "recipient", capacity: 61n * CKB }, KEY_CELL],
+        [{ lock: "recipient", capacity: 162n * CKB }, { lock: "session", capacity: 399n * CKB }, KEY_CELL],
+      );
+    });
   });
 
   describe("rate limit (session mode)", () => {
