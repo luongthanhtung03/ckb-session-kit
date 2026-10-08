@@ -1,0 +1,22 @@
+[package]
+name = "session-lock"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "CKB lock script: a session key may spend within an on-chain scope; the owner may do anything"
+
+[dependencies]
+# Raw syscalls only: no allocator, no ckb-types, no C. Signatures are verified
+# by the standard locks this script delegates to, so it needs no cryptography.
+ckb-std = { version = "1.1.0", default-features = false }
+
+[profile.release]
+overflow-checks = true
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+panic = "abort"

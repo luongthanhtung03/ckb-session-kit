@@ -25,3 +25,30 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run build:demo
+
+  # The on-chain session lock: build the Rust contract for RISC-V, then run the
+  # whole suite against it in the real CKB-VM (ckb-testtool + ckb-debugger).
+  session-lock:
+    runs-on: ubuntu-latest
+    env:
+      REQUIRE_LOCK_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add riscv64imac-unknown-none-elf
+      - name: Build the session lock
+        working-directory: contracts/session-lock
+        run: cargo build --release
+      - name: Install ckb-debugger
+        run: |
+          version=v1.1.1
+          url="https://github.com/nervosnetwork/ckb-standalone-debugger/releases/download/${version}/ckb-debugger_${version}_x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL "$url" -o /tmp/ckb-debugger.tar.gz
+          mkdir -p "$HOME/.ckb-tools"
+          tar -xzf /tmp/ckb-debugger.tar.gz -C "$HOME/.ckb-tools"
+          echo "$HOME/.ckb-tools" >> "$GITHUB_PATH"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vitest run test/session-lock.test.ts

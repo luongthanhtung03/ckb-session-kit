@@ -1,0 +1,8 @@
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+# CKB-VM has no atomic instructions (the RISC-V "A" extension). Turn them off so
+# the compiler emits library calls instead, which ckb-std's dummy-atomic provides.
+# B-extension bit ops are supported by CKB-VM version 2 and make the code smaller.
+[target.riscv64imac-unknown-none-elf]
+rustflags = ["-C", "target-feature=+zba,+zbb,+zbc,+zbs,-a"]
