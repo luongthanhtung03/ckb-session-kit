@@ -1,0 +1,30 @@
+{
+  "name": "ckb-session-kit",
+  "version": "0.0.1",
+  "description": "Browser-held self-custody sessions for CKB applications",
+  "license": "MIT",
+  "author": "Luong Thanh Tung (https://github.com/luongthanhtung03)",
+  "repository": "github:luongthanhtung03/ckb-session-kit",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "~5.8.2",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "@ckb-ccc/core": "^1.23.0"
+  }
+}
