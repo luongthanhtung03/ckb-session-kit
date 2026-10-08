@@ -17,14 +17,20 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke:testnet": "tsx scripts/testnet-smoke.ts",
+    "demo": "npm run dev -w demo"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
     "typescript": "~5.8.2",
     "vitest": "^3.2.7"
   },
   "dependencies": {
     "@ckb-ccc/core": "^1.23.0"
-  }
+  },
+  "workspaces": [
+    "demo"
+  ]
 }
