@@ -85,7 +85,7 @@ export function checkRequest(
   const { scope } = session.policy;
   if (request.amount <= 0n) return { ok: false, reason: "amount must be positive" };
   if (request.amount > scope.maxPerTx) {
-    return { ok: false, reason: `amount exceeds maxPerTx (${scope.maxPerTx})` };
+    return { ok: false, reason: `amount exceeds maxPerTx (${ccc.fixedPointToString(scope.maxPerTx)} CKB)` };
   }
   if (scope.recipients && !scope.recipients.includes(request.to)) {
     return { ok: false, reason: "recipient not in scope" };

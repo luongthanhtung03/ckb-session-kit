@@ -49,6 +49,14 @@ describe("checkRequest", () => {
     expect(checkRequest(s, req, at).ok).toBe(false);
   });
 
+  it("states the limit in CKB, not shannons", () => {
+    const big = createSession({ ...policy, scope: { maxPerTx: 100_00000000n } }, { now });
+    expect(checkRequest(big, { to: "ckt1x", amount: 150_00000000n }, now)).toEqual({
+      ok: false,
+      reason: "amount exceeds maxPerTx (100 CKB)",
+    });
+  });
+
   it("treats the expiry instant as expired", () => {
     expect(isActive(s, later)).toBe(false);
   });
