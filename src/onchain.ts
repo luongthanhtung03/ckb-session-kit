@@ -134,13 +134,16 @@ export async function openSession(
  * must be an anyone-can-pay address with at least one live plain cell; that cell
  * is consumed and recreated holding `amount` more, which the anyone-can-pay lock
  * allows without the recipient's signature.
+ *
+ * `memo` is recorded in the witness of the session key's own input, which that
+ * key's signature covers: the payment commits to it (see `verifyAccess`).
  */
 export async function spendInSession(
   session: Session,
   client: ccc.Client,
   deployment: SessionLockDeployment,
   binding: OnChainBinding,
-  request: { to: string; amount: bigint; topUp?: boolean },
+  request: { to: string; amount: bigint; topUp?: boolean; memo?: ccc.HexLike },
   now: Date = new Date(),
 ): Promise<ccc.Hex> {
   const check = checkRequest(session, request, now);
@@ -200,6 +203,7 @@ export async function spendInSession(
   }
   // The key cell authorises the spend, comes back as the last output and pays the fee.
   tx.inputs.push(ccc.CellInput.from({ previousOutput: state.keyCells[0].outPoint }));
+  if (request.memo !== undefined) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: request.memo });
   tx.addOutput({ lock: state.keyLock, capacity: 0n });
   await tx.completeFeeChangeToOutput(sessionSigner(session, client), tx.outputs.length - 1);
   if (tx.outputs[tx.outputs.length - 1].capacity < KEY_CELL_MIN) {

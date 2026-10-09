@@ -114,18 +114,37 @@ const { binding } = await openSession(wallet, session, deployment, { budget: 200
 await spendInSession(session, client, deployment, binding, { to: creatorAcp, amount: 1n * CKB, topUp: true });
 ```
 
-`npm run smoke:pay-per-read` runs it on testnet. Run on 8 Oct 2026:
-[creator's cell created](https://testnet.explorer.nervos.org/transaction/0x27077cf1f2bc1d03b99321d915f4de2ff559a837e815ed092da5a7f7701c407c) (61 CKB) →
-[session opened](https://testnet.explorer.nervos.org/transaction/0x2d5425fb87675445371f17710105b0835cb57ad9591af3398a12954fc6006dfe)
-(reader signs once, recipient = creator) →
-reads [#1](https://testnet.explorer.nervos.org/transaction/0x2dc6b584b5e136507745385a5b829fd314838acd1e3e630a7a91d120641281bf),
-[#2](https://testnet.explorer.nervos.org/transaction/0x5c2300fca21b7153587d2328b37a6ffa41f7f124a1aa30c8ce7f07fc0409b8d8),
-[#3](https://testnet.explorer.nervos.org/transaction/0xe6641a8c1fd0502325af81459c317288783bab52e854c8483ddefa2be5064507)
-at 1 CKB each, session key only (creator's cell 61 → 64 CKB) →
+**Server-verified unlocks, no database.** Each payment names its article in a
+memo (`spendInSession(…, { memo })`), stored in the witness the session key signs,
+so the payment commits to what it buys. To read, the browser signs a request with
+the same key (`signAccess`), and the server checks the chain (`verifyAccess`):
+committed, the creator gained at least the price, the memo matches, and the key
+that signed the request is the key that paid. Anyone can see a payment on-chain;
+only its payer can use it, and only for that article. The article text is never
+in the page bundle.
+
+```ts
+// browser
+const tx = await spendInSession(session, client, deployment, binding, { to: creatorAcp, amount: 1n * CKB, topUp: true, memo: paymentMemo("read:since") });
+const proof = await signAccess(session, tx, paymentMemo("read:since"));
+// server
+const check = await verifyAccess(client, proof, { to: creatorLock, minAmount: 1n * CKB, memo: paymentMemo("read:since") });
+```
+
+`npm run smoke:pay-per-read` runs it on testnet; with `ARTICLE_API` set it also
+claims each article through the demo's `/api/article` route. Run on 9 Oct 2026
+against the production build:
+[session opened](https://testnet.explorer.nervos.org/transaction/0xbaa5657c27d44e37e9557b1dbb0ee38fb3cda95924098529892906857b7ae72d)
+(reader signs once, recipient = creator) → reads
+[#1](https://testnet.explorer.nervos.org/transaction/0x5aeeb65326efb1ff2d651ba22f5a685c224162e974b51ceb9638f6576d056942),
+[#2](https://testnet.explorer.nervos.org/transaction/0x575becbaa7aa2b03d26406c974ca417b82f06d044b863919d07cf5d760e6910b),
+[#3](https://testnet.explorer.nervos.org/transaction/0x3b54027483f7239c1b5af7c82a773263107493c8db88183d9aef740091680eb0)
+at 1 CKB each, session key only, each released by the route to the payer, while
+a claim by another key and a claim for another article were refused →
 paying anyone else and paying 6 CKB (limit 5) refused before signing →
-[key cell returned](https://testnet.explorer.nervos.org/transaction/0xa815c46c7e98e43999664831839540f623a222ab0efe8d4d3a52c76cb25a6a4e)
-and [session swept](https://testnet.explorer.nervos.org/transaction/0x8dc5260ebfb232939cff48570610d61d620d2c727675ec2498be956458309cf5).
-The on-chain side of those refusals is covered by the CKB-VM tests below.
+[key cell returned](https://testnet.explorer.nervos.org/transaction/0xf7d9f2cc05d0841d59fa82d66ae5e3152b69860155fd6c6b2ca82dba15fa9493)
+and [session swept](https://testnet.explorer.nervos.org/transaction/0x978e186aceeadca6d963cf6f570066c36028d7ba0273e5f84bfb7c6e46c9e281).
+The on-chain side of the refusals is covered by the CKB-VM tests below.
 
 **Try it in the browser:** [ckb-session-kit.vercel.app/read](https://ckb-session-kit.vercel.app/read)
 (the `/read` page of the demo): open a reading session with one wallet signature,

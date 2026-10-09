@@ -25,3 +25,5 @@ export {
   spendInSession,
 } from "./onchain.js";
 export type { OnChainBinding, SessionCells } from "./onchain.js";
+export { paymentMemo, signAccess, verifyAccess } from "./paywall.js";
+export type { AccessCheck, AccessProof } from "./paywall.js";

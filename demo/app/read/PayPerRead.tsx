@@ -8,39 +8,50 @@ import {
   indexedDbStore,
   isActive,
   openSession,
+  paymentMemo,
+  signAccess,
   spendInSession,
   type Session,
   type SessionCells,
   type SessionLockDeployment,
 } from "ckb-session-kit";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import deploymentJson from "../../../deployment/testnet.json";
 import { ckb, describeFailure, explorerAddr, explorerTx, Footer, Log, Nav, short, type LogEntry } from "../shared";
 import { Prompt, Terminal } from "../Terminal";
 import { ARTICLES } from "./articles";
+import { CREATOR, memoLabel, PRICE } from "./config";
 
 const deployment = deploymentJson as SessionLockDeployment;
 // Its own slot, so it never touches the session on the wallet page.
 const store = indexedDbStore(undefined, "pay-per-read");
 
-/** The creator's anyone-can-pay address on testnet. Readers top up its cells. */
-const CREATOR =
-  "ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vqfrks0ww06uv9pgqzwuajnq694mjncvctg0t589g";
 const CKB = 100_000_000n;
-const PRICE = 1n * CKB;
 const MAX_PER_TX = 5n * CKB;
 const BUDGET = 200n * CKB;
 /** A session cell with a recipient occupies this much; it is not spendable. */
 const CELL_RESERVE = 153n * CKB;
 
 const UNLOCKED_KEY = "ckb-session-kit:pay-per-read:unlocked";
-type Unlocked = Record<string, string>; // article id → payment tx hash
+/** Article id → its payment, and the text once the server has released it. */
+type Unlocked = Record<string, { tx: string; body?: string[] }>;
 
 function loadUnlocked(): Unlocked {
   try {
-    return JSON.parse(localStorage.getItem(UNLOCKED_KEY) ?? "{}");
+    const raw = JSON.parse(localStorage.getItem(UNLOCKED_KEY) ?? "{}");
+    // Entries saved before server checks are bare tx hashes of payments with no
+    // memo; the server can never release those, so they are dropped.
+    return Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === "object" && v !== null)) as Unlocked;
   } catch {
     return {};
+  }
+}
+
+function saveUnlocked(u: Unlocked) {
+  try {
+    localStorage.setItem(UNLOCKED_KEY, JSON.stringify(u));
+  } catch {
+    // storage blocked: the unlock still holds for this visit
   }
 }
 
@@ -114,6 +125,38 @@ export default function PayPerRead() {
     return () => clearInterval(t);
   }, [client, pending, refresh]);
 
+  // Paid but not yet released: once the payment is committed, prove to the
+  // server that this browser's session key paid, and get the text.
+  const claiming = useRef(new Set<string>());
+  useEffect(() => {
+    if (!session) return;
+    for (const [id, { tx, body }] of Object.entries(unlocked)) {
+      if (body || tx === pending || claiming.current.has(id)) continue;
+      claiming.current.add(id);
+      (async () => {
+        try {
+          const proof = await signAccess(session, tx as ccc.Hex, paymentMemo(memoLabel(id)));
+          const res = await fetch("/api/article", { method: "POST", body: JSON.stringify({ id, proof }) });
+          const data = await res.json();
+          if (!res.ok) {
+            push({ level: "err", text: `server refused “${id}”: ${data.error}` });
+            return;
+          }
+          setUnlocked((u) => {
+            const next = { ...u, [id]: { tx, body: data.body } };
+            saveUnlocked(next);
+            return next;
+          });
+          push({ level: "ok", text: `server checked the payment on-chain and released “${id}”` });
+        } catch (e) {
+          push(describeFailure(e));
+        } finally {
+          claiming.current.delete(id);
+        }
+      })();
+    }
+  }, [session, unlocked, pending]);
+
   const active = session?.onchain && isActive(session, now);
   const spendable = cells ? (cells.balance > CELL_RESERVE ? cells.balance - CELL_RESERVE : 0n) : undefined;
   const isOwner = Boolean(
@@ -150,15 +193,15 @@ export default function PayPerRead() {
         to: CREATOR,
         amount: PRICE,
         topUp: true,
+        memo: paymentMemo(memoLabel(id)),
       });
-      const next = { ...unlocked, [id]: hash };
-      setUnlocked(next);
-      try {
-        localStorage.setItem(UNLOCKED_KEY, JSON.stringify(next));
-      } catch {
-        // storage blocked: the unlock still holds for this visit
-      }
+      // Pending first, so the claim waits for the payment to commit.
       setPending(hash);
+      setUnlocked((u) => {
+        const next = { ...u, [id]: { tx: hash } };
+        saveUnlocked(next);
+        return next;
+      });
       push({ level: "ok", text: `paid 1 CKB for “${title}” · session key only, no wallet popup`, hash });
     } catch (e) {
       push(describeFailure(e));
@@ -201,8 +244,9 @@ export default function PayPerRead() {
         </p>
         <p className="note">
           # payments top up the creator&apos;s{" "}
-          <a href={explorerAddr(CREATOR)}>anyone-can-pay cell</a>: a new cell would need 61 CKB. This demo
-          ships the article text in the page; a real site would serve it after checking the payment.
+          <a href={explorerAddr(CREATOR)}>anyone-can-pay cell</a>: a new cell would need 61 CKB. Each payment
+          names its article in a memo the session key signs; the server releases the text only after
+          checking, on-chain, that this key paid for that article.
         </p>
 
         <section className="block">
@@ -291,19 +335,25 @@ export default function PayPerRead() {
               <article key={a.id} className={`article${paid ? " open" : ""}`}>
                 <h3>{a.title}</h3>
                 <p>{a.teaser}</p>
-                {paid ? (
+                {paid?.body ? (
                   <>
-                    {a.body.map((para, i) => (
+                    {paid.body.map((para, i) => (
                       <p key={i}>{para}</p>
                     ))}
                     <p className="hint">
-                      # paid 1 CKB · tx <a href={explorerTx(paid)}>{short(paid)}</a>
+                      # paid 1 CKB · tx <a href={explorerTx(paid.tx)}>{short(paid.tx)}</a> · released by the
+                      server after checking it on-chain
                     </p>
                   </>
+                ) : paid ? (
+                  <p className="hint">
+                    # paid · tx <a href={explorerTx(paid.tx)}>{short(paid.tx)}</a> · the server releases the text
+                    once the payment is committed… <span className="cursor" />
+                  </p>
                 ) : (
                   <>
                     <p className="locked" aria-hidden>
-                      {a.body[0]}
+                      {"█".repeat(48)} {"█".repeat(36)} {"█".repeat(52)}
                     </p>
                     <button disabled={!active || busy || Boolean(pending)} onClick={() => unlock(a.id, a.title)}>
                       {!session?.onchain

@@ -4,7 +4,9 @@
  *
  *   setup  — the creator has an anyone-can-pay (ACP) cell; readers top it up
  *   open   — the reader's wallet funds a session scoped to that ACP address (one signature)
- *   read×3 — the session key alone adds 1 CKB to the creator's cell, three times
+ *   read×3 — the session key alone adds 1 CKB to the creator's cell, three times;
+ *            each payment carries the article in a signed memo, and the claim is
+ *            checked against the chain the way a server would (verifyAccess)
  *   refuse — paying anyone else, or more than the per-tx limit, is refused
  *   close  — the key cell and what is left go back to the reader
  *
@@ -13,6 +15,8 @@
  * creator's signature, and the session lock's recipient rule allows nothing else.
  *
  * Usage: FUNDER_KEY=0x... CREATOR_KEY=0x... npm run smoke:pay-per-read
+ * With ARTICLE_API=http://localhost:3000/api/article (the demo running), each
+ * article is also claimed through the demo's server route.
  */
 import { ccc } from "@ckb-ccc/core";
 import { readFileSync } from "node:fs";
@@ -21,8 +25,11 @@ import {
   createSession,
   findSessionCells,
   openSession,
+  paymentMemo,
   ScopeError,
+  signAccess,
   spendInSession,
+  verifyAccess,
   type SessionLockDeployment,
 } from "../src/index.js";
 
@@ -84,11 +91,31 @@ async function main(): Promise<void> {
   console.log(`  ${explorer(openTx)}`);
   await committed(client, openTx);
 
-  for (const article of ["#1", "#2", "#3"]) {
-    const tx = await spendInSession(session, client, deployment, binding, { to: acpAddress, amount: PRICE, topUp: true });
-    console.log(`read article ${article}: 1 CKB to the creator, session key only`);
+  const expectFor = (memo: ccc.Hex) => ({ to: acp.script, minAmount: PRICE, memo });
+  for (const article of ["occupied-capacity", "since", "delegation"]) {
+    const memo = paymentMemo(`read:${article}`);
+    const tx = await spendInSession(session, client, deployment, binding, { to: acpAddress, amount: PRICE, topUp: true, memo });
+    console.log(`read ${article}: 1 CKB to the creator, session key only`);
     console.log(`  ✓ ${explorer(tx)}`);
     await committed(client, tx);
+
+    const claim = await verifyAccess(client, await signAccess(session, tx, memo), expectFor(memo));
+    if (!claim.ok) throw new Error(`payer's claim refused: ${claim.reason}`);
+    const thief = await verifyAccess(client, await signAccess(createSession(session.policy), tx, memo), expectFor(memo));
+    if (thief.ok) throw new Error("a claim by another key was accepted");
+    const other = paymentMemo("read:not-paid-for");
+    const reuse = await verifyAccess(client, await signAccess(session, tx, other), expectFor(other));
+    if (reuse.ok) throw new Error("the payment unlocked an article it did not pay for");
+    if (process.env.ARTICLE_API) {
+      const res = await fetch(process.env.ARTICLE_API, {
+        method: "POST",
+        body: JSON.stringify({ id: article, proof: await signAccess(session, tx, memo) }),
+      });
+      const data = (await res.json()) as { body?: string[]; error?: string };
+      if (!res.ok || !data.body?.length) throw new Error(`route refused the payer: ${res.status} ${data.error}`);
+      console.log(`  ✓ ${process.env.ARTICLE_API} released ${data.body.length} paragraph(s) to the payer`);
+    }
+    console.log(`  ✓ server check: payer accepted · another key refused (${thief.reason}) · other article refused (${reuse.reason})`);
   }
 
   const after = await balanceOf(client, acp.script);
