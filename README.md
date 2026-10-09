@@ -12,7 +12,7 @@ Browser-held self-custody sessions for CKB applications.
 | w/c 12 Oct | ✅ Session key held in the browser signs a testnet transfer; live demo |
 | w/c 19 Oct | ✅ Session lock script (Rust) — outflow limit, recipient, rate limit enforced on-chain; deployed to testnet |
 | w/c 26 Oct | ✅ Delegate, act repeatedly with no wallet dialog, revoke — library + demo (v0.2) |
-| w/c 2 Nov | Survives reload; device-loss recovery |
+| w/c 2 Nov | ✅ Survives reload; ✅ device-loss recovery |
 | w/c 23 Nov | v1.0 on npm |
 
 ## The problem
@@ -68,6 +68,30 @@ the wallet. Run on 8 Oct 2026: [open](https://testnet.explorer.nervos.org/transa
 and [pay 80 CKB](https://testnet.explorer.nervos.org/transaction/0x9391051dcc7f490ade402dbc2057de4382e005e9c9d21ad8d7f835328ddcd182)
 (session key only) → 150 CKB refused → [key cell returned](https://testnet.explorer.nervos.org/transaction/0xe8eb8954674665aa1a4b990ecfd8ffea1ad728e8689a5f5aafdb9fc17c00b8d9)
 and [session swept](https://testnet.explorer.nervos.org/transaction/0x0d2a05460bdbfd5693c2d91a55e9c96b2eaaa6fbb7e0b1e3237a1fe9c2d6f1e4) (owner signs).
+
+### Lost the device? The wallet alone gets it back
+
+The session key lives only in one browser. If that browser is gone, the owner's
+wallet can still recover every session it ever opened:
+
+```ts
+await recoverSessions(wallet, deployment); // finds them all, one signature
+```
+
+Session-lock args begin with the owner's lock hash, so an indexer prefix search
+finds the session cells without knowing the lost key, and owner mode sweeps them.
+Cells whose args are malformed are skipped: the lock rejects them even in owner
+mode, and anyone could plant one with the owner's hash as a prefix to block a
+sweep. What cannot come back is the key cell (the fee budget), which only the
+session key can spend; keep it small (61 CKB is the minimum).
+
+`npm run smoke:recover` runs it on testnet. Run on 9 Oct 2026: two sessions
+[opened](https://testnet.explorer.nervos.org/transaction/0x289291b3026af3d1e1929308b75276bc72d0c8de151f1b74f6b7926f29bda74b)
+([second](https://testnet.explorer.nervos.org/transaction/0xb4d91cdb0751c7fd9908ac18930c07c74d09c67f7338916f9893eb8190acd883)),
+one [spent from](https://testnet.explorer.nervos.org/transaction/0xf173fd2b02b1b8e208bd493c9d31ead9d5052b5aae190119a2393554de0e8079),
+a [decoy](https://testnet.explorer.nervos.org/transaction/0x40781ca16108dfde33328ded076721137c6be935d2417258c881dfe4266f000f)
+planted, both keys dropped → [one owner transaction](https://testnet.explorer.nervos.org/transaction/0x4efd8b7875c8a0f2883ac2b21ed509ff86c72012e6f4a24816783aa25e02eeaf)
+swept every session cell back, decoy skipped.
 
 ## Example: pay-per-read
 

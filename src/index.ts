@@ -15,9 +15,11 @@ export {
 export type { SessionLockDeployment, SessionLockParams } from "./lock.js";
 export {
   closeSession,
+  findOwnedSessionCells,
   findSessionCells,
   keyLockOf,
   openSession,
+  recoverSessions,
   SessionBalanceError,
   sessionLockOf,
   spendInSession,

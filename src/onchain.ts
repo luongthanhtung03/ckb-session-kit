@@ -20,6 +20,8 @@ import { ScopeError, sessionSigner } from "./transfer.js";
  *   new one, so a payment can be any size (a new cell needs at least 61 CKB).
  * - `closeSession` — the key cell goes back to the owner (session key signs), then
  *   the owner sweeps the session cells (one wallet signature).
+ * - `recoverSessions` — the device holding the session key is gone: the owner's
+ *   wallet alone finds every session it opened and sweeps them back.
  */
 
 /** What the browser must remember, besides the key, to find and spend the session. */
@@ -230,22 +232,65 @@ export async function closeSession(
     result.keyTx = await sessionSigner(session, client).sendTransaction(tx);
   }
 
-  if (state.sessionCells.length) {
-    // Owner mode needs an owner-locked input; completeInputsAtLeastOne adds one.
-    const tx = ccc.Transaction.from({
-      inputs: state.sessionCells.map((c) => ({ previousOutput: c.outPoint })),
-      outputs: [],
-      cellDeps: [sessionLockCellDep(deployment)],
-    });
-    let ownerInput = false;
-    for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {
-      tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
-      ownerInput = true;
-      break;
-    }
-    if (!ownerInput) throw new SessionBalanceError("the owner needs one plain cell to prove ownership");
-    await tx.completeFeeBy(owner); // everything returns to the owner as change
-    result.sweepTx = await owner.sendTransaction(tx);
-  }
+  if (state.sessionCells.length) result.sweepTx = await ownerSweep(owner, deployment, state.sessionCells);
   return result;
+}
+
+/**
+ * Every live session cell this owner opened, found without any session key.
+ *
+ * Session-lock args begin with the owner's lock hash, so an indexer prefix search
+ * on the args finds them all. Only well-formed args (80 or 112 bytes) are kept: a
+ * cell with malformed args would fail the lock even in owner mode, and anyone can
+ * create one with this owner's hash as a prefix to block a sweep.
+ */
+export async function findOwnedSessionCells(
+  owner: ccc.Signer,
+  deployment: SessionLockDeployment,
+): Promise<ccc.Cell[]> {
+  const ownerLock = (await owner.getRecommendedAddressObj()).script;
+  const cells: ccc.Cell[] = [];
+  for await (const cell of owner.client.findCells({
+    script: { codeHash: deployment.codeHash, hashType: deployment.hashType, args: ownerLock.hash() },
+    scriptType: "lock",
+    scriptSearchMode: "prefix",
+    withData: true,
+  })) {
+    const argBytes = (cell.cellOutput.lock.args.length - 2) / 2;
+    if ((argBytes === 80 || argBytes === 112) && !cell.cellOutput.type) cells.push(cell);
+  }
+  return cells;
+}
+
+/**
+ * Device-loss recovery: sweeps every session this owner opened back to the owner,
+ * in one transaction and one wallet signature. Needs nothing from the lost device.
+ *
+ * The key cell (the fee budget) is under the session key's own lock and cannot be
+ * recovered without that key; keep it small.
+ */
+export async function recoverSessions(
+  owner: ccc.Signer,
+  deployment: SessionLockDeployment,
+): Promise<{ txHash?: ccc.Hex; recovered: bigint; cells: number }> {
+  const cells = await findOwnedSessionCells(owner, deployment);
+  if (!cells.length) return { recovered: 0n, cells: 0 };
+  const recovered = cells.reduce((sum, c) => sum + c.cellOutput.capacity, 0n);
+  return { txHash: await ownerSweep(owner, deployment, cells), recovered, cells: cells.length };
+}
+
+/** Spends `cells` in owner mode: everything returns to the owner as change. */
+async function ownerSweep(owner: ccc.Signer, deployment: SessionLockDeployment, cells: ccc.Cell[]): Promise<ccc.Hex> {
+  const tx = ccc.Transaction.from({
+    inputs: cells.map((c) => ({ previousOutput: c.outPoint })),
+    outputs: [],
+    cellDeps: [sessionLockCellDep(deployment)],
+  });
+  // Owner mode needs an owner-locked input in the transaction.
+  for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {
+    tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
+    await tx.completeFeeBy(owner);
+    return owner.sendTransaction(tx);
+  }
+  throw new SessionBalanceError("the owner needs one plain cell to prove ownership");
 }

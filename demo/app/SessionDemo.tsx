@@ -4,10 +4,12 @@ import { ccc, useCcc, useSigner } from "@ckb-ccc/connector-react";
 import {
   closeSession,
   createSession,
+  findOwnedSessionCells,
   findSessionCells,
   indexedDbStore,
   isActive,
   openSession,
+  recoverSessions,
   spendInSession,
   type Session,
   type SessionCells,
@@ -156,7 +158,25 @@ export default function SessionDemo() {
               }
             }}
           />
-        ) : !session.onchain ? (
+        ) : null}
+
+        {!loading && !session && signer && (
+          <RecoverPanel
+            signer={signer}
+            onRecover={async () => {
+              try {
+                push({ level: "info", text: "looking for this wallet's sessions, then waiting for your wallet…" });
+                const { txHash, recovered, cells } = await recoverSessions(signer, deployment);
+                if (txHash) push({ level: "ok", text: `recovered ${ckb(recovered)} from ${cells} session cell(s)`, hash: txHash });
+                else push({ level: "info", text: "no sessions to recover" });
+              } catch (e) {
+                push(describeFailure(e));
+              }
+            }}
+          />
+        )}
+
+        {loading || !session ? null : !session.onchain ? (
           <section className="block">
             <h2>legacy session</h2>
             <p className="hint"># this session is from v0.1 (browser-only, no on-chain lock). End it to open an on-chain one.</p>
@@ -403,5 +423,47 @@ function SendForm({ session, onSend }: { session: Session; onSend: (to: string, 
         {busy ? "signing…" : "run ⏎"}
       </button>
     </form>
+  );
+}
+
+/** Device-loss recovery: shown when this browser has no session but a wallet is connected. */
+function RecoverPanel({ signer, onRecover }: { signer: ccc.Signer; onRecover: () => Promise<void> }) {
+  const [found, setFound] = useState<{ cells: number; total: bigint }>();
+  const [busy, setBusy] = useState(false);
+
+  const scan = useCallback(async () => {
+    const cells = await findOwnedSessionCells(signer, deployment);
+    setFound({ cells: cells.length, total: cells.reduce((s, c) => s + c.cellOutput.capacity, 0n) });
+  }, [signer]);
+
+  useEffect(() => {
+    scan().catch(() => setFound(undefined));
+  }, [scan]);
+
+  if (!found?.cells) return null;
+  return (
+    <section className="block">
+      <h2>recover</h2>
+      <Prompt path="~">session recover --owner wallet</Prompt>
+      <p className="hint">
+        # this wallet has {found.cells} session cell(s) holding {ckb(found.total)}, opened from another
+        browser or a lost device. The wallet alone can sweep them back: one signature, no session key needed.
+      </p>
+      <button
+        className="danger"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await onRecover();
+            await scan();
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "waiting for wallet…" : `recover ${ckb(found.total)} ⏎`}
+      </button>
+    </section>
   );
 }

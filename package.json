@@ -36,6 +36,7 @@
     "smoke:flow": "tsx scripts/testnet-session-flow.ts",
     "smoke:pay-per-read": "tsx scripts/testnet-pay-per-read.ts",
     "setup:creator": "tsx scripts/setup-creator.ts",
+    "smoke:recover": "tsx scripts/testnet-recover.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"
   },
