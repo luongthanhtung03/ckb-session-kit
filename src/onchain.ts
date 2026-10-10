@@ -6,7 +6,7 @@ import {
   type SessionLockDeployment,
   type SessionLockParams,
 } from "./lock.js";
-import { checkRequest, type Session } from "./session.js";
+import { checkRequest, SessionPolicyError, type Session } from "./session.js";
 import { ScopeError, sessionSigner } from "./transfer.js";
 
 /**
@@ -91,17 +91,37 @@ export async function findSessionCells(
   return { lock, keyLock, sessionCells, keyCells, balance: sum(sessionCells), feeBalance: sum(keyCells) };
 }
 
-/** Owner funds the session: one transaction, one signature from `owner`. */
+/**
+ * The recipient the session lock will enforce, taken from the session's own scope
+ * so the browser and the chain cannot disagree. The lock holds one recipient, so a
+ * scope listing several cannot be enforced on-chain and is refused.
+ */
+export function onchainRecipient(session: Session): string | undefined {
+  const { recipients } = session.policy.scope;
+  if (!recipients) return undefined;
+  if (recipients.length !== 1) {
+    throw new SessionPolicyError(
+      `the session lock enforces one recipient; scope.recipients lists ${recipients.length}`,
+    );
+  }
+  return recipients[0];
+}
+
+/**
+ * Owner funds the session: one transaction, one signature from `owner`.
+ * The on-chain recipient comes from `session.policy.scope.recipients`.
+ */
 export async function openSession(
   owner: ccc.Signer,
   session: Session,
   deployment: SessionLockDeployment,
-  opts: { budget: bigint; feeBudget?: bigint; minInterval?: bigint; recipient?: string },
+  opts: { budget: bigint; feeBudget?: bigint; minInterval?: bigint },
 ): Promise<{ txHash: ccc.Hex; binding: OnChainBinding }> {
   const client = owner.client;
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
-  const recipientLockHash = opts.recipient
-    ? (await ccc.Address.fromString(opts.recipient, client)).script.hash()
+  const recipient = onchainRecipient(session);
+  const recipientLockHash = recipient
+    ? (await ccc.Address.fromString(recipient, client)).script.hash()
     : undefined;
   const binding: OnChainBinding = {
     ownerLock: { codeHash: ownerLock.codeHash, hashType: ownerLock.hashType, args: ownerLock.args },

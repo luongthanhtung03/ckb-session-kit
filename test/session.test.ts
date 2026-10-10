@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checkRequest, createSession, isActive, SessionPolicyError } from "../src/session.js";
+import { onchainRecipient } from "../src/onchain.js";
 
 const now = new Date("2026-10-08T00:00:00Z");
 const later = new Date("2026-10-08T01:00:00Z");
@@ -59,5 +60,22 @@ describe("checkRequest", () => {
 
   it("treats the expiry instant as expired", () => {
     expect(isActive(s, later)).toBe(false);
+  });
+});
+
+describe("onchainRecipient", () => {
+  const a = "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfkcv98jy3q3fhn84n7s6r7c0kpqtsx56salqyeg";
+
+  it("takes the on-chain recipient from the scope, so the two cannot drift apart", () => {
+    expect(onchainRecipient(createSession({ ...policy, scope: { maxPerTx: 1n, recipients: [a] } }, { now }))).toBe(a);
+  });
+
+  it("enforces no recipient when the scope allows any", () => {
+    expect(onchainRecipient(createSession(policy, { now }))).toBeUndefined();
+  });
+
+  it("refuses a scope the lock cannot enforce: more than one recipient", () => {
+    const s = createSession({ ...policy, scope: { maxPerTx: 1n, recipients: [a, a + "x"] } }, { now });
+    expect(() => onchainRecipient(s)).toThrow(SessionPolicyError);
   });
 });

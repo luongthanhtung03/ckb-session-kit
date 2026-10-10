@@ -18,6 +18,7 @@ export {
   findOwnedSessionCells,
   findSessionCells,
   keyLockOf,
+  onchainRecipient,
   openSession,
   recoverSessions,
   SessionBalanceError,

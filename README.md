@@ -110,7 +110,7 @@ this work on CKB:
 
 ```ts
 const session = createSession({ expiresAt, scope: { maxPerTx: 5n * CKB, recipients: [creatorAcp] } });
-const { binding } = await openSession(wallet, session, deployment, { budget: 200n * CKB, recipient: creatorAcp });
+const { binding } = await openSession(wallet, session, deployment, { budget: 200n * CKB });
 await spendInSession(session, client, deployment, binding, { to: creatorAcp, amount: 1n * CKB, topUp: true });
 ```
 
@@ -169,18 +169,49 @@ Rust. A cell under it can be spent two ways:
   - **recipient allowlist** (optional) — payments may only go to one lock (plus
     change, the key cell, and the owner);
   - **rate limit** (optional) — each session cell must have aged `min_interval`
-    blocks before it can be spent again (relative `since`).
+    blocks before it can be spent again (relative `since`). The limit is **per
+    cell**: with *n* session cells, the key can spend from each of them in the same
+    block. `openSession` creates one cell;
+  - **no splitting** — a session spend may send at most one cell back to the
+    session lock, so the key can merge session cells but never multiply them.
+    Only the owner decides how many cells a session has, which makes the per-cell
+    rate limit a per-session one for sessions opened with `openSession`.
 
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
 cryptography: **4.3 KB, no allocator, no C, 12,893 cycles per run** — about 0.8% of
-a session spend. 22 tests run it in the real CKB-VM, most asserting a specific
+a session spend. 27 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has
 passed (`since` is a lower bound) but never that it has not. Expiry is enforced
 in the browser; the owner can revoke on-chain at any moment, and the session
 cell's balance caps the total at risk.
+
+**Enforced where:**
+
+| Rule | Browser (`checkRequest`) | Session lock (on-chain) |
+|---|---|---|
+| `expiresAt` | yes | **no** (cannot be) |
+| `maxPerTx` | yes | yes, fees included |
+| recipient | yes | yes, if `scope.recipients` has one entry (`openSession` reads it from the scope) |
+| rate limit | — | yes, per cell (`min_interval` blocks) |
+| revocation | — | only by an owner transaction (`closeSession` / `recoverSessions`) |
+
+### If a session key leaks
+
+The key cannot be revoked by expiry: after `expiresAt` it still satisfies the lock
+until the owner acts. Until then it can move at most `max_per_tx` per transaction,
+only to the recipient if one is set, and, with a rate limit, once per
+`min_interval` blocks per session cell. The owner should sweep at once:
+
+- with the key still at hand: `closeSession(wallet, session, deployment, binding)`;
+- without it (device lost or wiped): `recoverSessions(wallet, deployment)` finds
+  every session the wallet opened and sweeps them in one transaction, without the key.
+
+An owner sweep is accepted at any time and ignores the scope, so it wins against
+any spend not yet committed. Keep budgets small: the budget is the most a session
+can ever lose.
 
 A session-lock cell occupies 121 CKB (153 CKB with a recipient), so its balance
 and its change must stay above that.
@@ -189,6 +220,9 @@ and its change must stay above that.
 
 Deployed on testnet: code hash `0x1ae8b8f7…26bc20` (`data2`), see
 [`deployment/testnet.json`](deployment/testnet.json).
+The no-splitting rule (error 16, added 11 Oct after a community review) is in
+the source and tested in CKB-VM; this deployment predates it and will be replaced
+by a redeploy.
 `npm run smoke:lock` runs every rule against public testnet. Run on 8 Oct 2026:
 
 | Step | Network said |

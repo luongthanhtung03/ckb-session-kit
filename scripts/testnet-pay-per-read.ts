@@ -83,10 +83,7 @@ async function main(): Promise<void> {
   });
   // A session cell with a recipient needs 153 CKB to exist; 200 leaves 47 to spend.
   console.log("open: the reader's wallet funds a 200 CKB session that can only pay the creator (one signature)");
-  const { txHash: openTx, binding } = await openSession(reader, session, deployment, {
-    budget: 200n * CKB,
-    recipient: acpAddress,
-  });
+  const { txHash: openTx, binding } = await openSession(reader, session, deployment, { budget: 200n * CKB });
   session.onchain = binding;
   console.log(`  ${explorer(openTx)}`);
   await committed(client, openTx);

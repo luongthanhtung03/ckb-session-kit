@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   ];
 
   console.log("open: two sessions (one owner signature each)");
-  const a = await openSession(owner, sessions[0], deployment, { budget: 200n * CKB, recipient: ownerAddress, feeBudget: 61n * CKB });
+  const a = await openSession(owner, sessions[0], deployment, { budget: 200n * CKB, feeBudget: 61n * CKB });
   console.log(`  with recipient: ${explorer(a.txHash)}`);
   await committed(client, a.txHash);
   const b = await openSession(owner, sessions[1], deployment, { budget: 250n * CKB, feeBudget: 70n * CKB });

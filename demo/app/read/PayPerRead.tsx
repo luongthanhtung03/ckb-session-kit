@@ -172,7 +172,7 @@ export default function PayPerRead() {
         scope: { maxPerTx: MAX_PER_TX, recipients: [CREATOR] },
       });
       push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
-      const { txHash, binding } = await openSession(signer, draft, deployment, { budget: BUDGET, recipient: CREATOR });
+      const { txHash, binding } = await openSession(signer, draft, deployment, { budget: BUDGET });
       const s = { ...draft, onchain: binding };
       await store.save(s);
       setSession(s);

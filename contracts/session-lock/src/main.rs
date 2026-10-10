@@ -31,7 +31,11 @@
 //! 2. **Rate limit.** If `min_interval > 0`, every input in this group must carry
 //!    a relative block-number `since` of at least `min_interval`, so a session
 //!    can spend at most once per `min_interval` blocks per cell.
-//! 3. **Recipient.** If a recipient is set, every output must be locked by this
+//! 3. **No splitting.** At most one output may go back to this exact lock. A
+//!    session spend can merge cells but never multiply them, so the key cannot
+//!    split a cell into many and then spend each one in the same interval: the
+//!    number of session cells is fixed by the owner.
+//! 4. **Recipient.** If a recipient is set, every output must be locked by this
 //!    lock (change), the session key lock (its key cell), the owner lock, or the
 //!    recipient. Nothing else.
 //!
@@ -77,6 +81,7 @@ enum Error {
     RecipientNotAllowed = 13,
     RateLimited = 14,
     CapacityOverflow = 15,
+    TooManyChangeCells = 16,
 }
 
 impl From<SysError> for Error {
@@ -232,10 +237,15 @@ fn run() -> Result<(), Error> {
         },
     )?;
     let mut change: u64 = 0;
+    let mut change_cells = 0;
     each(
         |i| lock_hash(i, Source::Output),
         |i, lock| {
             if lock == own_hash {
+                change_cells += 1;
+                if change_cells > 1 {
+                    return Err(Error::TooManyChangeCells);
+                }
                 change = change
                     .checked_add(capacity(i, Source::Output)?)
                     .ok_or(Error::CapacityOverflow)?;

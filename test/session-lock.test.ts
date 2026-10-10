@@ -24,6 +24,7 @@ const E = {
   OUTFLOW_EXCEEDED: 12,
   RECIPIENT_NOT_ALLOWED: 13,
   RATE_LIMITED: 14,
+  TOO_MANY_CHANGE_CELLS: 16,
 } as const;
 
 const CKB = 100_000_000n;
@@ -260,6 +261,63 @@ describe.skipIf(skip)("session lock", () => {
 
     it("rejects a relative epoch since: the interval is in blocks", async () => {
       await fails(E.RATE_LIMITED, limited, spend((1n << 63n) | (1n << 61n) | 10n), out);
+    });
+  });
+
+  // min_interval is per cell. If the key could split one cell into many (zero
+  // outflow: it all stays under this lock), it could wait one interval and then
+  // spend every piece in parallel, in the same block. So a session spend may
+  // leave at most one change cell: cells can merge, never multiply.
+  describe("no splitting (session mode)", () => {
+    const limited: Scope = { ...scope100, minInterval: 10n };
+    const mature = (capacity: bigint): Cell => ({ lock: "session", capacity, since: relativeBlocks(10n) });
+
+    it("rejects splitting one session cell into two, even with zero outflow", async () => {
+      await fails(
+        E.TOO_MANY_CHANGE_CELLS,
+        limited,
+        [mature(500n * CKB), KEY_CELL],
+        [{ lock: "session", capacity: 250n * CKB }, { lock: "session", capacity: 250n * CKB }, KEY_CELL],
+      );
+    });
+
+    it("rejects a payment that also splits the change", async () => {
+      await fails(
+        E.TOO_MANY_CHANGE_CELLS,
+        scope100,
+        [{ lock: "session", capacity: 500n * CKB }, KEY_CELL],
+        [
+          { lock: "stranger", capacity: 100n * CKB },
+          { lock: "session", capacity: 200n * CKB },
+          { lock: "session", capacity: 200n * CKB },
+          KEY_CELL,
+        ],
+      );
+    });
+
+    it("accepts merging two mature cells into one, outflow summed across both", async () => {
+      await ok(
+        limited,
+        [mature(300n * CKB), mature(300n * CKB), KEY_CELL],
+        [{ lock: "stranger", capacity: 100n * CKB }, { lock: "session", capacity: 500n * CKB }, KEY_CELL],
+      );
+    });
+
+    it("rejects two mature cells in one transaction moving more than max_per_tx together", async () => {
+      await fails(
+        E.OUTFLOW_EXCEEDED,
+        limited,
+        [mature(300n * CKB), mature(300n * CKB), KEY_CELL],
+        [{ lock: "stranger", capacity: 200n * CKB }, { lock: "session", capacity: 400n * CKB }, KEY_CELL],
+      );
+    });
+
+    it("still lets the owner split, since owner mode ignores the scope", async () => {
+      await ok(
+        limited,
+        [{ lock: "session", capacity: 500n * CKB }, { lock: "owner", capacity: 100n * CKB }],
+        [{ lock: "session", capacity: 250n * CKB }, { lock: "session", capacity: 250n * CKB }, { lock: "owner", capacity: 100n * CKB }],
+      );
     });
   });
 

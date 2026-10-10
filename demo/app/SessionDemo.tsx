@@ -297,7 +297,7 @@ function remaining(s: Session, now: Date): string {
   return `${m}m${sec.toString().padStart(2, "0")}s`;
 }
 
-type OpenOpts = { budget: bigint; minInterval: bigint; recipient?: string };
+type OpenOpts = { budget: bigint; minInterval: bigint };
 
 function OpenForm({
   signer,
@@ -330,7 +330,6 @@ function OpenForm({
           await onOpen(draft, {
             budget: ccc.fixedPointFrom(budget),
             minInterval: BigInt(interval || "0"),
-            ...(to && { recipient: to }),
           });
         } catch (e) {
           setError(e instanceof Error ? e.message : String(e));
