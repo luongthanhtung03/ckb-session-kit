@@ -69,6 +69,11 @@ Every live, well-formed, type-free session cell whose args start with the
 owner's lock hash, found without any session key. `deployments` is one
 deployment or a list.
 
+### `assertSigningLock(lock, client)`
+Throws `SessionPolicyError` for an owner lock that unlocks without a signature
+(anyone-can-pay, Omnilock in anyone-can-pay mode): the session lock trusts that
+an input under the owner's lock means the owner signed. `openSession` calls it.
+
 ### `onchainRecipient(session) → string | undefined`
 The recipient the lock will enforce: `scope.recipients[0]`. More than one
 recipient cannot be enforced on-chain and throws `SessionPolicyError`.

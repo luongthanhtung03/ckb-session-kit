@@ -1,7 +1,7 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionLockScript, TESTNET_DEPLOYMENT as d } from "../src/lock.js";
-import { openSession, recoverSessions, SessionBalanceError } from "../src/onchain.js";
+import { assertSigningLock, openSession, recoverSessions, SessionBalanceError } from "../src/onchain.js";
 import { createSession } from "../src/session.js";
 
 const CKB = 100_000_000n;
@@ -62,6 +62,23 @@ describe("recoverSessions", () => {
     );
     expect(await recoverSessions(owner, d)).toMatchObject({ recovered: 600n * CKB, cells: 2, failed: 1 });
     expect(sent).toHaveLength(2);
+  });
+});
+
+describe("assertSigningLock", () => {
+  // Found in review: an owner lock that needs no signature hands owner mode to anyone.
+  const client = new ccc.ClientPublicTestnet();
+  const known = async (k: ccc.KnownScript, args: string) =>
+    ccc.Script.from({ ...(await client.getKnownScript(k)), args });
+
+  it("accepts a plain secp256k1 owner and a signing Omnilock", async () => {
+    await expect(assertSigningLock(await known(ccc.KnownScript.Secp256k1Blake160, "0x" + "11".repeat(20)), client)).resolves.toBeUndefined();
+    await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x00" + "11".repeat(20) + "00"), client)).resolves.toBeUndefined();
+  });
+
+  it("refuses anyone-can-pay, and Omnilock in anyone-can-pay mode", async () => {
+    await expect(assertSigningLock(await known(ccc.KnownScript.AnyoneCanPay, "0x" + "11".repeat(20)), client)).rejects.toThrow(/anyone-can-pay/);
+    await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x00" + "11".repeat(20) + "02" + "0000"), client)).rejects.toThrow(/anyone-can-pay/);
   });
 });
 
