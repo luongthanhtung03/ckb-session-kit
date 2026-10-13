@@ -15,6 +15,7 @@ export {
 } from "./lock.js";
 export type { SessionLockDeployment, SessionLockParams } from "./lock.js";
 export {
+  assertSigningLock,
   closeSession,
   findOwnedSessionCells,
   findSessionCells,

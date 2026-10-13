@@ -109,3 +109,44 @@ amounts its args impose.
 3. Implement T1–T5 in the lock behind the new args lengths; every threat in the
    table gets a CKB-VM test; the existing 33 tests must pass unchanged.
 4. Adversarial review of the code; deploy as a new code hash; smoke on testnet.
+
+## Review, 14 Oct 2026 (adversarial pass) — changes adopted
+
+Verdict: T1–T5 hold the bounds against a leaked key, once "amount" is defined
+by type. Changes:
+
+- **Amount is type-gated (was the main gap).** `amount(c) = u128 LE of
+  data[0..16]` if `type_hash(c) == token_type_hash`, else 0, on every side
+  (group inputs, change, T4). Otherwise an untyped change with data `ff…ff`
+  underflows T2 into a "top-up" and the key takes everything. A token-typed
+  input with fewer than 16 bytes of data is rejected. Checked u128 sums; no
+  supply assumption (xUDT owner mode can mint u128::MAX).
+- **All token reads after the owner-mode return**, as capacity reads are today,
+  so planted junk can never make an owner sweep fail at the lock.
+- **T3:** a token-typed change has exactly 16 bytes; an untyped change counts 0.
+- **T4:** Σ amount(outputs under the key lock) ≤ Σ amount(inputs under it); a
+  key-locked output with the token type and short data is rejected; malformed
+  key inputs count 0.
+- **Optional (recipient set):** every output not under the key lock is untyped or
+  typed `token_type_hash`, so a leaked key cannot pay the recipient in a cell
+  typed with a script it controls (bounded griefing, also possible today).
+- **Threat 9 corrected:** a token cell with short data can only be made in xUDT
+  owner mode (the issuer) and the owner cannot sweep it either; recovery skips it.
+- **Threat 8 named:** testnet xUDT with hash_type `type` points at an upgradable
+  Type ID cell held by an ordinary key; the `data1` code hash pins the binary.
+  `token_type_hash` must be the exact script on the owner's cells (the two
+  testnet forms are different tokens).
+- **Off-chain checks in openSession:** refuse xUDT args ≥ 36 bytes with extension
+  flags (`flags & 0x1FFFFFFF != 0`); refuse owner locks that sign nothing.
+- **Already fixed (affected today's sessions too):** an anyone-can-pay owner
+  lock, or Omnilock in anyone-can-pay mode, unlocks with no signature and would
+  give anyone owner mode. `openSession` now refuses them (`assertSigningLock`).
+- **Facts verified:** a third party can top up an xUDT cell under the RFC 0026
+  ACP lock with no signature (testnet tx 0x3275381a…b27c, 10,000 units into a
+  142 CKB cell); Omnilock-ACP requires at least 1 unit/shannon per top-up. A
+  token session cell occupies 250 CKB (128-byte args) or 282 CKB (160-byte).
+- **Harness:** token tests need per-cell data and two type modes — a stand-in
+  token type to reach the lock's own error codes, and the real xudt_rce + ACP
+  binaries for integration (top-up, owner sweep).
+
+Full review: E:\REMOTE\ckb\drafts\token-sessions-review.md (local).

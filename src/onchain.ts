@@ -109,6 +109,32 @@ export function onchainRecipient(session: Session): string | undefined {
 }
 
 /**
+ * Throws if `lock` can be unlocked without a signature: the session lock grants
+ * owner mode to any transaction with an input under the owner's lock, so that
+ * lock must sign the whole transaction. Anyone-can-pay (RFC 0026), and Omnilock
+ * with its anyone-can-pay flag, unlock with no signature: anyone could spend the
+ * owner's cell back to itself unchanged and sweep every session.
+ */
+export async function assertSigningLock(lock: ccc.Script, client: ccc.Client): Promise<void> {
+  const is = async (known: ccc.KnownScript) => {
+    try {
+      const s = await client.getKnownScript(known);
+      return s.codeHash === lock.codeHash && s.hashType === lock.hashType;
+    } catch {
+      return false; // not deployed on this network
+    }
+  };
+  if (await is(ccc.KnownScript.AnyoneCanPay)) {
+    throw new SessionPolicyError("the owner's lock is anyone-can-pay: it needs no signature, so it cannot own a session");
+  }
+  // Omnilock args: auth flag (1) + auth content (20) + omnilock flags (1) …; 0x02 = anyone-can-pay mode.
+  const omniFlags = (ccc.bytesFrom(lock.args)[21] ?? 0) & 0x02;
+  if (omniFlags && (await is(ccc.KnownScript.OmniLock))) {
+    throw new SessionPolicyError("the owner's Omnilock is in anyone-can-pay mode: it cannot own a session");
+  }
+}
+
+/**
  * Owner funds the session: one transaction, one signature from `owner`.
  * The on-chain recipient comes from `session.policy.scope.recipients`.
  *
@@ -136,6 +162,7 @@ export async function openSession(
     );
   }
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
+  await assertSigningLock(ownerLock, client);
   const recipient = onchainRecipient(session);
   const recipientLockHash = recipient
     ? (await ccc.Address.fromString(recipient, client)).script.hash()
