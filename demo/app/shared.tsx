@@ -49,12 +49,13 @@ export function Log({ entries }: { entries: LogEntry[] }) {
   );
 }
 
-/** The two pages of the demo. */
-export function Nav({ here }: { here: "wallet" | "read" }) {
+/** The pages of the demo. */
+export function Nav({ here }: { here: "wallet" | "read" | "place" }) {
   return (
     <nav className="tabs">
       {here === "wallet" ? <span className="on">./session</span> : <a href="/">./session</a>}
       {here === "read" ? <span className="on">./pay-per-read</span> : <a href="/read">./pay-per-read</a>}
+      {here === "place" ? <span className="on">./place</span> : <a href="/place">./place</a>}
     </nav>
   );
 }
