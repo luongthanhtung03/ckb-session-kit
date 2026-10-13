@@ -123,6 +123,59 @@ recipient gained at least `minAmount`. One payment buys one claim.
 
 ### Types: `AccessProof`, `AccessCheck`
 
+## A shared pixel board (CKB Place)
+
+A board is an anyone-can-pay address. Each placement is a session payment that
+tops it up with `price × pixels` and lists the pixels in its memo:
+`spendInSession(…, { to: board, amount: placementPrice(n), topUp: true, memo: encodePlacement(pixels) })`.
+The board is rebuilt from the chain with no database: find the transactions on
+the board's lock, keep those `checkPlacement` accepts, `applyPlacements`. These
+functions do no network I/O; the demo's `demo/app/place/chain.ts` does the reading.
+
+Memo format, version 1: the bytes `"px1"` (`0x70 0x78 0x31`), then one
+`x u8 | y u8 | colour u8` triple per pixel, 1 to `maxPixels` of them. One bad
+triple makes the whole memo invalid.
+
+### `PLACE_BOARD`
+The demo's board: `{ width: 32, height: 32, colours: 16, price: 0.1 CKB, maxPixels: 32 }`.
+Every function takes a `PlaceBoard` as its last argument and defaults to this one.
+
+### `encodePlacement(pixels, board?) → Hex`
+The memo for a placement. Throws `PlaceMemoError` for no pixels, more than
+`maxPixels`, or a pixel off the board or outside the palette.
+
+### `decodePlacement(memo, board?) → Pixel[] | undefined`
+The pixels in a memo, in order; `undefined` for anything that is not a valid
+version-1 memo for this board. Never throws: memos come from anyone. The length
+is checked before anything is read, so a memo is at most `3 + 3 × maxPixels` bytes.
+
+### `placementPrice(pixels, board?) → bigint`
+`price × pixels`, in shannons.
+
+### `placementMemo(tx, board?) → { index, pixels } | undefined`
+The cheap check, before resolving any input: the transaction carries exactly one
+memo, in a witness at an input's index, and it decodes.
+
+### `checkPlacement(tx, inputs, boardLock, board?) → PlacementCheck`
+Whether a transaction is a valid placement, given its input cells resolved in
+order: one valid memo, in the first witness of a lock group that is not the
+board's (the witness the payer's lock signs: `spendInSession` puts it on the
+key cell), and the board's lock gained at least `price × pixels`, outputs minus
+inputs. `{ ok: true, pixels, paid }` or `{ ok: false, reason }`.
+
+### `applyPlacements(placements, board?) → BoardState`
+The board after the placements, in chain order (block number, then position in
+the block) whatever order they come in; last write wins. A row-major array of
+`{ colour, txHash, blockNumber }`, `undefined` where nothing was placed.
+
+### Types: `PlaceBoard`, `Pixel`, `Placement`, `PlacedPixel`, `BoardState`, `PlacementCheck`
+`Placement` is `{ txHash, blockNumber, txIndex, pixels }`: a checked placement
+and where it sits in the chain.
+
+### `PlaceMemoError`
+A placement that cannot be encoded, or a board that does not fit the format
+(sides and palette 1–256, positive price).
+
 ## Keeping a session between page loads
 
 ### `indexedDbStore(idb?, key?) → SessionStore`

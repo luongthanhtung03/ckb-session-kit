@@ -29,3 +29,14 @@ export {
 export type { OnChainBinding, SessionCells } from "./onchain.js";
 export { paymentMemo, signAccess, verifyAccess } from "./paywall.js";
 export type { AccessCheck, AccessProof } from "./paywall.js";
+export {
+  applyPlacements,
+  checkPlacement,
+  decodePlacement,
+  encodePlacement,
+  PLACE_BOARD,
+  placementMemo,
+  placementPrice,
+  PlaceMemoError,
+} from "./place.js";
+export type { BoardState, Pixel, PlaceBoard, PlacedPixel, Placement, PlacementCheck } from "./place.js";
