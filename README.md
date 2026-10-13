@@ -176,6 +176,24 @@ to spend; the rest comes back on close. Each payment consumes one of the creator
 cells, so readers paying at the same moment compete for them; the library picks
 one at random, and `npm run setup:creator` gives the demo's creator three.
 
+## Example: CKB Place, a pixel board on testnet
+
+[`/place`](https://ckb-session-kit.vercel.app/place): a shared 32×32 board. Open a
+session once (one wallet signature; the session lock lets it pay only the board),
+then every batch of up to 32 pixels is one 0.1 CKB-per-pixel payment signed by
+the session key, with no wallet popup. The pixels travel in the payment's memo
+(`"px1"` + `x, y, colour` per pixel); the board is rebuilt from the chain by
+reading those memos in chain order, counting only payments that carry exactly one
+memo, signed by the payer, for at least the price. No server, no database:
+[`src/place.ts`](src/place.ts).
+
+`npm run smoke:place` paints "CKB" on testnet. Run on 14 Oct 2026:
+[board cells created](https://testnet.explorer.nervos.org/transaction/0x2dbcf33a2c8360a1ad2a7984f2f1331f345b0c9874511e7f5c7f828db24dea1f)
+→ [session opened](https://testnet.explorer.nervos.org/transaction/0x91cfac448029eba2354e08a6a3f6fbeaf4227a6507ebcda267e5a4e0060d3715)
+→ [29 pixels, 2.9 CKB, no wallet](https://testnet.explorer.nervos.org/transaction/0x91acae7b00a0210e3779b76ec974395964ba65e7797780dd3a9d815e4245d0f5)
+→ [swept](https://testnet.explorer.nervos.org/transaction/0x3c3b734fdda064e108dbcf0d989d573625e5823a54f92233a66f0cfa0e08b1e3)
+and [key cell back](https://testnet.explorer.nervos.org/transaction/0x3c369a5c81e66847003ff4019fd01773d97563378a07d05857a5c18d4096e006).
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in

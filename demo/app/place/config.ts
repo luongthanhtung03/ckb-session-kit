@@ -10,7 +10,8 @@ const PLACEHOLDER = "ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vqg
  * PLACEHOLDER until `npm run setup:board` has run: paste the address it prints
  * here. Until then the page shows the (empty) board but will not open a session.
  */
-export const BOARD: string = PLACEHOLDER;
+export const BOARD: string =
+  "ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vq23ehjqsnd72l2827xkcpn396zf4xq70vg8x8upn";
 export const BOARD_READY = BOARD !== PLACEHOLDER;
 
 /** 32×32, 16 colours, 0.1 CKB a pixel, up to 32 pixels in one payment. */
