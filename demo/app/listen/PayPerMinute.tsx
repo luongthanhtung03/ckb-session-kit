@@ -90,6 +90,8 @@ export default function PayPerMinute() {
   /** Why playback stopped on its own: a payment or a release failed. */
   const [halt, setHalt] = useState<string>();
   const [retry, setRetry] = useState(0);
+  /** Close was refused because a paid minute is unreleased: offer to forfeit it, in case its payment never lands. */
+  const [blocked, setBlocked] = useState(false);
 
   const player = useRef<Player | undefined>(undefined);
   const paidRef = useRef<Paid>({});
@@ -330,12 +332,17 @@ export default function PayPerMinute() {
     }
   }
 
-  async function close() {
+  async function close(forfeit = false) {
     if (!signer || !session?.onchain) return;
     setBusy(true);
     try {
-      if (paying.current || pending || mine.some((e) => !e.segment)) {
+      if (paying.current) {
+        push({ level: "err", text: "a payment is being sent; close once it is on its way" });
+        return;
+      }
+      if (!forfeit && (pending || mine.some((e) => !e.segment))) {
         // Only this session's key can claim its payments; closing would forfeit them.
+        setBlocked(true);
         push({ level: "err", text: "a minute you paid for is not released yet; close once it is" });
         return;
       }
@@ -349,6 +356,7 @@ export default function PayPerMinute() {
         return;
       }
       await store.clear(session);
+      setBlocked(false);
       setSession(undefined);
       setCells(undefined);
       setPending(undefined);
@@ -550,9 +558,16 @@ export default function PayPerMinute() {
               {isOwner ? "." : " — connect the wallet that opened it first."} Waits until every paid minute is
               released.
             </p>
-            <button className="danger" disabled={!isOwner || busy} onClick={close}>
-              close session
-            </button>
+            <div className="row">
+              <button className="danger" disabled={!isOwner || busy} onClick={() => close()}>
+                close session
+              </button>
+              {blocked && (
+                <button className="link" disabled={!isOwner || busy} onClick={() => close(true)}>
+                  close anyway, forfeit the unreleased minute
+                </button>
+              )}
+            </div>
           </section>
         )}
 
