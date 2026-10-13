@@ -25,6 +25,7 @@ const E = {
   RECIPIENT_NOT_ALLOWED: 13,
   RATE_LIMITED: 14,
   TOO_MANY_CHANGE_CELLS: 16,
+  KEY_CELL_GREW: 17,
 } as const;
 
 const CKB = 100_000_000n;
@@ -231,6 +232,31 @@ describe.skipIf(skip)("session lock", () => {
         [{ lock: "session", capacity: 500n * CKB }, { lock: "recipient", capacity: 61n * CKB }, KEY_CELL],
         [{ lock: "recipient", capacity: 162n * CKB }, { lock: "session", capacity: 399n * CKB }, KEY_CELL],
       );
+    });
+
+    // The key cell may pay the fee but not grow. Otherwise a leaked key moves
+    // max_per_tx into its own cell each spend and pays anyone from there.
+    it("accepts the key cell coming back smaller (it paid the fee)", async () => {
+      await ok(scoped, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
+        { lock: "recipient", capacity: 100n * CKB },
+        { lock: "session", capacity: 400n * CKB },
+        { lock: "key", capacity: 61n * CKB - 1000n },
+      ]);
+    });
+
+    it("rejects moving session funds into the key cell", async () => {
+      await fails(E.KEY_CELL_GREW, scoped, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
+        { lock: "session", capacity: 400n * CKB },
+        { lock: "key", capacity: 161n * CKB },
+      ]);
+    });
+
+    it("rejects a new key-locked cell funded from the session", async () => {
+      await fails(E.KEY_CELL_GREW, scoped, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
+        { lock: "key", capacity: 100n * CKB },
+        { lock: "session", capacity: 400n * CKB },
+        KEY_CELL,
+      ]);
     });
   });
 

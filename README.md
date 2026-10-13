@@ -167,7 +167,9 @@ Rust. A cell under it can be spent two ways:
   - **outflow limit** — at most `max_per_tx` shannons leave per transaction, fees
     included, so the fee cannot be used to drain the cell;
   - **recipient allowlist** (optional) — payments may only go to one lock (plus
-    change, the key cell, and the owner);
+    change, the key cell, and the owner). The key cell may come back smaller
+    (it pays the fee) but never larger, so the key cannot park session funds in
+    its own cell and pay anyone from there;
   - **rate limit** (optional) — each session cell must have aged `min_interval`
     blocks before it can be spent again (relative `since`). The limit is **per
     cell**: with *n* session cells, the key can spend from each of them in the same
@@ -179,8 +181,8 @@ Rust. A cell under it can be spent two ways:
 
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
-cryptography: **4.3 KB, no allocator, no C, 12,893 cycles per run** — about 0.8% of
-a session spend. 27 tests run it in the real CKB-VM, most asserting a specific
+cryptography: **4.9 KB, no allocator, no C, 12,893 cycles per run** — about 0.8% of
+a session spend. 30 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has
@@ -220,9 +222,9 @@ and its change must stay above that.
 
 Deployed on testnet: code hash `0x1ae8b8f7…26bc20` (`data2`), see
 [`deployment/testnet.json`](deployment/testnet.json).
-The no-splitting rule (error 16, added 11 Oct after a community review) is in
-the source and tested in CKB-VM; this deployment predates it and will be replaced
-by a redeploy.
+The no-splitting rule (error 16, added 11 Oct) and the key-cell cap (error 17,
+added 13 Oct), both from community reviews, are in the source and tested in
+CKB-VM; this deployment predates them and will be replaced by a redeploy.
 `npm run smoke:lock` runs every rule against public testnet. Run on 8 Oct 2026:
 
 | Step | Network said |

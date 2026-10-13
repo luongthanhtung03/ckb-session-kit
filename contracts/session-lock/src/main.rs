@@ -37,7 +37,10 @@
 //!    number of session cells is fixed by the owner.
 //! 4. **Recipient.** If a recipient is set, every output must be locked by this
 //!    lock (change), the session key lock (its key cell), the owner lock, or the
-//!    recipient. Nothing else.
+//!    recipient. Nothing else. Outputs under the session key lock may hold no
+//!    more than inputs under it brought in: the key cell can pay the fee but not
+//!    grow, or the key could move `max_per_tx` into it each spend and then pay
+//!    anyone from there, past the recipient rule.
 //!
 //! What it cannot do: enforce an expiry time. A CKB script can prove time has
 //! passed (`since` is a lower bound) but never that it has not. Expiry is
@@ -82,6 +85,7 @@ enum Error {
     RateLimited = 14,
     CapacityOverflow = 15,
     TooManyChangeCells = 16,
+    KeyCellGrew = 17,
 }
 
 impl From<SysError> for Error {
@@ -195,11 +199,19 @@ fn run() -> Result<(), Error> {
 
     let mut owner_present = false;
     let mut session_present = false;
+    let mut key_in: u64 = 0;
     each(
         |i| lock_hash(i, Source::Input),
-        |_, lock| {
+        |i, lock| {
             owner_present |= lock == args.owner_lock_hash;
-            session_present |= lock == args.session_lock_hash;
+            if lock == args.session_lock_hash {
+                session_present = true;
+                if args.recipient_lock_hash.is_some() {
+                    key_in = key_in
+                        .checked_add(capacity(i, Source::Input)?)
+                        .ok_or(Error::CapacityOverflow)?;
+                }
+            }
             Ok(())
         },
     )?;
@@ -238,6 +250,7 @@ fn run() -> Result<(), Error> {
     )?;
     let mut change: u64 = 0;
     let mut change_cells = 0;
+    let mut key_out: u64 = 0;
     each(
         |i| lock_hash(i, Source::Output),
         |i, lock| {
@@ -250,15 +263,20 @@ fn run() -> Result<(), Error> {
                     .checked_add(capacity(i, Source::Output)?)
                     .ok_or(Error::CapacityOverflow)?;
             } else if let Some(recipient) = args.recipient_lock_hash {
-                let allowed =
-                    lock == recipient || lock == args.session_lock_hash || lock == args.owner_lock_hash;
-                if !allowed {
+                if lock == args.session_lock_hash {
+                    key_out = key_out
+                        .checked_add(capacity(i, Source::Output)?)
+                        .ok_or(Error::CapacityOverflow)?;
+                } else if lock != recipient && lock != args.owner_lock_hash {
                     return Err(Error::RecipientNotAllowed);
                 }
             }
             Ok(())
         },
     )?;
+    if key_out > key_in {
+        return Err(Error::KeyCellGrew);
+    }
     // Topping the cell up (change > spent) is an outflow of zero.
     if spent.saturating_sub(change) > args.max_per_tx {
         return Err(Error::OutflowExceeded);
