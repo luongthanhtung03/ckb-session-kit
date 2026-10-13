@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   } catch {
     return Response.json({ error: "bad request" }, { status: 400 });
   }
-  const body = typeof id === "string" ? BODIES[id] : undefined;
+  const body = typeof id === "string" && Object.hasOwn(BODIES, id) ? BODIES[id] : undefined;
   if (!body) return Response.json({ error: "no such article" }, { status: 404 });
 
   const { script } = await ccc.Address.fromString(CREATOR, client);

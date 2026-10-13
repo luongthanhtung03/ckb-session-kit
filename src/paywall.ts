@@ -14,7 +14,14 @@ import { sessionSigner } from "./transfer.js";
  * committed, the recipient gained enough, the memo matches, and the request is
  * signed by the key that paid. Anyone can see the payment on-chain; only the
  * payer can use it.
+ *
+ * One payment, one claim: a payment transaction may carry exactly one memo.
+ * Otherwise one transaction could pay the creator once and carry memos from
+ * several keys, each claiming the full amount for a different article or reader.
  */
+
+/** A session payment has a handful of inputs; more is not one, and costs RPC calls to check. */
+const MAX_PAYMENT_INPUTS = 16;
 
 /** The memo for a payment: a short UTF-8 label, e.g. `read:article-1`. */
 export function paymentMemo(label: string): ccc.Hex {
@@ -66,6 +73,20 @@ export async function verifyAccess(
   if (!res) return { ok: false, reason: "payment not found" };
   if (res.status !== "committed") return { ok: false, reason: `payment is ${res.status}, not committed` };
   const tx = res.transaction;
+
+  // Cheap checks first, before resolving any input over RPC.
+  if (tx.inputs.length > MAX_PAYMENT_INPUTS) return { ok: false, reason: "not a session payment: too many inputs" };
+  let memos = 0;
+  for (let i = 0; i < tx.witnesses.length; i++) {
+    let inputType: ccc.Hex | undefined;
+    try {
+      inputType = tx.getWitnessArgsAt(i)?.inputType;
+    } catch {
+      continue; // not WitnessArgs: carries no memo
+    }
+    if (inputType !== undefined) memos++;
+  }
+  if (memos !== 1) return { ok: false, reason: "a payment must carry exactly one memo" };
 
   // The payer's lock: the standard secp256k1 lock of the key that signed the request.
   const payerLock = (await new ccc.SignerCkbPublicKey(client, proof.publicKey).getAddressObjSecp256k1()).script;
