@@ -48,6 +48,8 @@ export const SESSION_LOCK_ERRORS: Record<number, string> = {
   14: "rate limited: input too young",
   15: "capacity overflow",
   16: "too many change cells: a session spend may not split the session cell",
+  17: "the key cell may not grow in a session spend",
+  18: "session cells and their change may not carry a type script",
 };
 
 const U64_MAX = (1n << 64n) - 1n;

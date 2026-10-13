@@ -41,6 +41,11 @@
 //!    more than inputs under it brought in: the key cell can pay the fee but not
 //!    grow, or the key could move `max_per_tx` into it each spend and then pay
 //!    anyone from there, past the recipient rule.
+//! 5. **No type scripts.** This group's inputs and the change must carry no type
+//!    script. The limits count capacity only, so a typed session cell (a token)
+//!    would let the key move the tokens at zero outflow; and a change cell given a
+//!    type the key controls could later refuse every spend, the owner's sweep too,
+//!    freezing the whole balance in one transaction.
 //!
 //! What it cannot do: enforce an expiry time. A CKB script can prove time has
 //! passed (`since` is a lower bound) but never that it has not. Expiry is
@@ -86,6 +91,7 @@ enum Error {
     CapacityOverflow = 15,
     TooManyChangeCells = 16,
     KeyCellGrew = 17,
+    TypedCell = 18,
 }
 
 impl From<SysError> for Error {
@@ -151,6 +157,15 @@ fn capacity(index: usize, source: Source) -> Result<u64, SysError> {
     let mut buf = [0u8; 8];
     syscalls::load_cell_by_field(&mut buf, 0, index, source, CellField::Capacity)?;
     Ok(u64::from_le_bytes(buf))
+}
+
+fn has_type(index: usize, source: Source) -> Result<bool, SysError> {
+    let mut buf = [0u8; 32];
+    match syscalls::load_cell_by_field(&mut buf, 0, index, source, CellField::TypeHash) {
+        Ok(_) => Ok(true),
+        Err(SysError::ItemMissing) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 fn since(index: usize, source: Source) -> Result<u64, SysError> {
@@ -224,6 +239,11 @@ fn run() -> Result<(), Error> {
 
     // Session mode from here on.
 
+    each(
+        |i| has_type(i, Source::GroupInput),
+        |_, typed| if typed { Err(Error::TypedCell) } else { Ok(()) },
+    )?;
+
     if args.min_interval > 0 {
         each(
             |i| since(i, Source::GroupInput),
@@ -258,6 +278,9 @@ fn run() -> Result<(), Error> {
                 change_cells += 1;
                 if change_cells > 1 {
                     return Err(Error::TooManyChangeCells);
+                }
+                if has_type(i, Source::Output)? {
+                    return Err(Error::TypedCell);
                 }
                 change = change
                     .checked_add(capacity(i, Source::Output)?)

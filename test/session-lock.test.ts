@@ -26,6 +26,7 @@ const E = {
   RATE_LIMITED: 14,
   TOO_MANY_CHANGE_CELLS: 16,
   KEY_CELL_GREW: 17,
+  TYPED_CELL: 18,
 } as const;
 
 const CKB = 100_000_000n;
@@ -47,6 +48,8 @@ interface Cell {
   lock: "session" | "owner" | "key" | "recipient" | "stranger" | "other-session";
   capacity: bigint;
   since?: bigint;
+  /** A type script on the cell: a token, or one the session key controls. */
+  typed?: boolean;
 }
 
 // ckb-testtool's types point at CCC's CommonJS build and ours at its ESM build:
@@ -81,13 +84,15 @@ function build(scope: Scope, inputs: Cell[], outputs: Cell[], argsOverride?: str
   const otherSession = ccc.Script.from({ ...session, args: args.slice(0, -2) + (args.endsWith("ff") ? "00" : "ff") });
 
   const locks = { session, owner, key, recipient, stranger, "other-session": otherSession };
+  const anyType = plain("0x7070");
+  const typeOf = (c: Cell) => (c.typed ? asTt(anyType) : undefined);
   for (const c of inputs) {
-    const input = Resource.createCellInput(resource.mockCell(asTt(locks[c.lock]), undefined, "0x", c.capacity));
+    const input = Resource.createCellInput(resource.mockCell(asTt(locks[c.lock]), typeOf(c), "0x", c.capacity));
     if (c.since !== undefined) input.since = c.since;
     tx.inputs.push(input);
   }
   for (const c of outputs) {
-    tx.outputs.push(Resource.createCellOutput(asTt(locks[c.lock]), undefined, c.capacity));
+    tx.outputs.push(Resource.createCellOutput(asTt(locks[c.lock]), typeOf(c), c.capacity));
     tx.outputsData.push("0x");
   }
   // ckb-testtool's `codeHash` filter actually matches the full script hash.
@@ -256,6 +261,32 @@ describe.skipIf(skip)("session lock", () => {
         { lock: "key", capacity: 100n * CKB },
         { lock: "session", capacity: 400n * CKB },
         KEY_CELL,
+      ]);
+    });
+  });
+
+  // Found in review: the limits count capacity only, so type scripts must stay out.
+  describe("no type scripts (session mode)", () => {
+    // The whole balance comes back as change (outflow 0) under a type the key
+    // controls; upgraded to always-fail, it would refuse even the owner's sweep.
+    it("rejects change given a type script, even at zero outflow", async () => {
+      await fails(E.TYPED_CELL, { ...scope100, recipient: true }, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
+        { lock: "session", capacity: 500n * CKB, typed: true },
+        { lock: "key", capacity: 61n * CKB - 1000n },
+      ]);
+    });
+
+    // A token in a session cell would move at zero CKB outflow.
+    it("rejects spending a typed session cell", async () => {
+      await fails(E.TYPED_CELL, scope100, [{ lock: "session", capacity: 200n * CKB, typed: true }, KEY_CELL], [
+        { lock: "session", capacity: 200n * CKB },
+        { lock: "stranger", capacity: 61n * CKB, typed: true },
+      ]);
+    });
+
+    it("owner mode may still sweep a typed cell (the type script decides for itself)", async () => {
+      await ok(scope100, [{ lock: "session", capacity: 200n * CKB, typed: true }, { lock: "owner", capacity: 61n * CKB }], [
+        { lock: "owner", capacity: 261n * CKB, typed: true },
       ]);
     });
   });
