@@ -194,6 +194,23 @@ memo, signed by the payer, for at least the price. No server, no database:
 → [swept](https://testnet.explorer.nervos.org/transaction/0x3c3b734fdda064e108dbcf0d989d573625e5823a54f92233a66f0cfa0e08b1e3)
 and [key cell back](https://testnet.explorer.nervos.org/transaction/0x3c369a5c81e66847003ff4019fd01773d97563378a07d05857a5c18d4096e006).
 
+## Example: pay-per-minute
+
+[`/listen`](https://ckb-session-kit.vercel.app/listen): a player for three
+generative tracks (Web Audio, composed per minute on the server). Open a session
+once; while it plays, the session key pays 0.5 CKB for the next minute 30 s
+before it is needed, with memo `listen:<track>:<minute>`, and the server releases
+that minute only to the key that paid for it (`verifyAccess`). Pause, and the
+payments stop. No database.
+
+`npm run smoke:listen` runs it on testnet with the server's own gating. Run on 14 Oct 2026:
+[session opened](https://testnet.explorer.nervos.org/transaction/0x818094035373e3a62d34af39f98fab664f6dc089d3149d57b0a53ea7e3a30c1b)
+→ [minute 0](https://testnet.explorer.nervos.org/transaction/0x10df4596aaad21201c33784fb28387d8f129d4bcf546c6a54b49ea8cb48c55c7)
+→ [minute 1](https://testnet.explorer.nervos.org/transaction/0xb53479536932ff07a19d87d4d0d48fada4981e1bc66687a7a9ddd5f0fac1b6f1),
+each released by the server; minute 2 claimed with minute 0's payment: refused
+→ [swept](https://testnet.explorer.nervos.org/transaction/0x2f091ff6430b62d157743450cf18cc9d5f52d91852012cc348ff377f79dab8e0)
+and [key cell back](https://testnet.explorer.nervos.org/transaction/0x5024c47cd6eacb822bc6c9392270bc6b4389110a353b0139475aafdbddb8cf2e).
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in

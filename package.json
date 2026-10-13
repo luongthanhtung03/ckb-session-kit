@@ -39,6 +39,7 @@
     "setup:board": "tsx scripts/setup-board.ts",
     "smoke:recover": "tsx scripts/testnet-recover.ts",
     "smoke:place": "tsx scripts/testnet-place.ts",
+    "smoke:listen": "tsx --tsconfig examples/tsconfig.json scripts/testnet-listen.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"
   },
