@@ -11,6 +11,7 @@ import {
   openSession,
   recoverSessions,
   spendInSession,
+  TESTNET_LEGACY_DEPLOYMENTS,
   type Session,
   type SessionCells,
   type SessionLockDeployment,
@@ -21,6 +22,8 @@ import { ckb, describeFailure, explorerAddr, explorerTx, Footer, Log, Nav, short
 import { Prompt, Terminal } from "./Terminal";
 
 const deployment = deploymentJson as SessionLockDeployment;
+/** Recovery also sweeps sessions opened under earlier versions of the lock. */
+const everyDeployment = [deployment, ...TESTNET_LEGACY_DEPLOYMENTS];
 const store = indexedDbStore();
 
 export default function SessionDemo() {
@@ -178,7 +181,7 @@ export default function SessionDemo() {
             onRecover={async () => {
               try {
                 push({ level: "info", text: "looking for this wallet's sessions, then waiting for your wallet…" });
-                const { txHashes, recovered, cells, failed } = await recoverSessions(signer, deployment);
+                const { txHashes, recovered, cells, failed } = await recoverSessions(signer, everyDeployment);
                 txHashes.forEach((hash, i) =>
                   push({
                     level: "ok",
@@ -455,7 +458,7 @@ function RecoverPanel({ signer, onRecover }: { signer: ccc.Signer; onRecover: ()
   const [busy, setBusy] = useState(false);
 
   const scan = useCallback(async () => {
-    const cells = await findOwnedSessionCells(signer, deployment);
+    const cells = await findOwnedSessionCells(signer, everyDeployment);
     setFound({ cells: cells.length, total: cells.reduce((s, c) => s + c.cellOutput.capacity, 0n) });
   }, [signer]);
 

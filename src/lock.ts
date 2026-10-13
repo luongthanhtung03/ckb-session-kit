@@ -31,13 +31,29 @@ export interface SessionLockDeployment {
  * deployment/testnet.json by a test.
  */
 export const TESTNET_DEPLOYMENT: SessionLockDeployment = {
-  codeHash: "0x1ae8b8f71ed1846e2823ecccd8c3f80527be2895689f5dae54a53bd42526bc20",
+  codeHash: "0x1cb7724269e2e86359b5b47cad6b1860ccd6da254c25c651056c8431d11590cd",
   hashType: "data2",
   cellDep: {
-    outPoint: { txHash: "0xab2e69b8b97c15bddeb80954edd6d33befcd2fe9e4243377a46f14a3e1c343d2", index: "0x0" },
+    outPoint: { txHash: "0x37cfe04f64fd4dbec3803a972a51b7080f9ca1a3042535e97b7a756d0e03b071", index: "0x0" },
     depType: "code",
   },
 };
+
+/**
+ * Earlier testnet deployments, newest first. Their code is immutable, so sessions
+ * opened under them keep their old rules; pass these to `recoverSessions` too so
+ * those sessions can still be swept. 8 Oct 2026: before errors 16, 17 and 18.
+ */
+export const TESTNET_LEGACY_DEPLOYMENTS: SessionLockDeployment[] = [
+  {
+    codeHash: "0x1ae8b8f71ed1846e2823ecccd8c3f80527be2895689f5dae54a53bd42526bc20",
+    hashType: "data2",
+    cellDep: {
+      outPoint: { txHash: "0xab2e69b8b97c15bddeb80954edd6d33befcd2fe9e4243377a46f14a3e1c343d2", index: "0x0" },
+      depType: "code",
+    },
+  },
+];
 
 /** Error codes returned by the session lock, for reading node rejections. */
 export const SESSION_LOCK_ERRORS: Record<number, string> = {

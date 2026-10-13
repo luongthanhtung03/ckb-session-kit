@@ -1,14 +1,14 @@
 {
   "network": "testnet",
-  "codeHash": "0x1ae8b8f71ed1846e2823ecccd8c3f80527be2895689f5dae54a53bd42526bc20",
+  "codeHash": "0x1cb7724269e2e86359b5b47cad6b1860ccd6da254c25c651056c8431d11590cd",
   "hashType": "data2",
   "cellDep": {
     "outPoint": {
-      "txHash": "0xab2e69b8b97c15bddeb80954edd6d33befcd2fe9e4243377a46f14a3e1c343d2",
+      "txHash": "0x37cfe04f64fd4dbec3803a972a51b7080f9ca1a3042535e97b7a756d0e03b071",
       "index": "0x0"
     },
     "depType": "code"
   },
-  "binaryBytes": 4344,
-  "deployedAt": "2026-10-08T10:14:00.347Z"
+  "binaryBytes": 5344,
+  "deployedAt": "2026-10-13T16:50:11.062Z"
 }

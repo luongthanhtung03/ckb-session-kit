@@ -11,6 +11,7 @@ export {
   sessionLockErrorFrom,
   sessionLockScript,
   TESTNET_DEPLOYMENT,
+  TESTNET_LEGACY_DEPLOYMENTS,
 } from "./lock.js";
 export type { SessionLockDeployment, SessionLockParams } from "./lock.js";
 export {

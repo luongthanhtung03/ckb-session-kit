@@ -8,7 +8,10 @@
  *  3. Session tries one shannon over max_per_tx    → the network rejects it (12).
  *  4. Rate-limited cell, spent with no since       → the network rejects it (14).
  *  5. Rate-limited cell, spent with since = N blocks → accepted once N blocks pass.
- *  6. Owner sweeps everything back                  → accepted, ignoring the scope.
+ *  6. Session splits its change into two cells       → rejected (16).
+ *  7. Recipient-scoped cell, key cell grows           → rejected (17).
+ *  8. Change given a type script (a valid Type ID)    → rejected (18).
+ *  9. Owner sweeps everything back                  → accepted, ignoring the scope.
  *
  * Usage: FUNDER_KEY=0x... npm run smoke:lock
  */
@@ -67,14 +70,17 @@ async function main(): Promise<void> {
   const params = { ownerLockHash: ownerLock.hash(), sessionLockHash: keyLock.hash(), maxPerTx: MAX };
   const plainLock = sessionLockScript(deployment, params);
   const limitedLock = sessionLockScript(deployment, { ...params, minInterval: INTERVAL });
+  // Recipient set (here the owner, for simplicity): 112-byte args, 153 CKB occupied.
+  const scopedLock = sessionLockScript(deployment, { ...params, recipientLockHash: ownerLock.hash() });
   const dep = sessionLockCellDep(deployment);
 
-  console.log("1. owner funds two session cells (400 CKB each) and the key cell (200 CKB)");
+  console.log("1. owner funds three session cells (400, 400, 300 CKB) and the key cell (200 CKB)");
   const setup = ccc.Transaction.from({
     outputs: [
       { lock: plainLock, capacity: 400n * CKB },
       { lock: limitedLock, capacity: 400n * CKB },
       { lock: keyLock, capacity: 200n * CKB },
+      { lock: scopedLock, capacity: 300n * CKB },
     ],
   });
   await setup.completeInputsByCapacity(owner);
@@ -146,9 +152,52 @@ async function main(): Promise<void> {
   console.log(`  ✓ accepted once mature: ${explorer(rateHash)}`);
   await committed(client, rateHash);
 
-  console.log(`6. owner sweeps both session cells and the key cell back`);
+  // A session-mode transaction of any shape, fee paid by the key cell (last output).
+  const keySpend = async (inputs: ccc.CellInput[], outputs: ccc.CellOutputLike[]) => {
+    const tx = ccc.Transaction.from({ inputs, outputs, outputsData: outputs.map(() => "0x"), cellDeps: [dep] });
+    await tx.completeFeeChangeToOutput(keySigner, outputs.length - 1);
+    return keySigner.sendTransaction(tx);
+  };
+  const keyIn = at(rateHash, 2);
+
+  console.log("6. session splits its change into two cells (outflow 0)");
+  await expectRejected(
+    () =>
+      keySpend(
+        [at(okHash, 1), keyIn],
+        [
+          { lock: plainLock, capacity: 150n * CKB },
+          { lock: plainLock, capacity: 150n * CKB },
+          { lock: keyLock, capacity: 0n },
+        ],
+      ),
+    16,
+    "split",
+  );
+
+  console.log("7. recipient-scoped cell: 50 CKB moved into the key cell");
+  await expectRejected(
+    () => keySpend([at(setupHash, 3), keyIn], [{ lock: scopedLock, capacity: 250n * CKB }, { lock: keyLock, capacity: 0n }]),
+    17,
+    "key cell growth",
+  );
+
+  console.log("8. change given a type script (a valid Type ID, so only the session lock objects)");
+  const typeIdArgs = ccc.hashTypeId(at(okHash, 1), 0);
+  const typeId = await ccc.Script.fromKnownScript(client, ccc.KnownScript.TypeId, typeIdArgs);
+  await expectRejected(
+    () =>
+      keySpend(
+        [at(okHash, 1), keyIn],
+        [{ lock: plainLock, type: typeId, capacity: 300n * CKB }, { lock: keyLock, capacity: 0n }],
+      ),
+    18,
+    "typed change",
+  );
+
+  console.log(`9. owner sweeps the three session cells and the key cell back`);
   const sweep = ccc.Transaction.from({
-    inputs: [at(okHash, 1), at(rateHash, 1), at(rateHash, 2)],
+    inputs: [at(okHash, 1), at(rateHash, 1), at(setupHash, 3), at(rateHash, 2)],
     outputs: [],
     cellDeps: [dep],
   });

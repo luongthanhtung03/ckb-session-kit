@@ -207,7 +207,7 @@ Rust. A cell under it can be spent two ways:
 
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
-cryptography: **5.2 KB, no allocator, no C, 12,893 cycles per run** — about 0.8% of
+cryptography: **5.2 KB, no allocator, no C, 14,881 cycles per run** — about 0.9% of
 a session spend. 33 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
@@ -252,26 +252,29 @@ and its change must stay above that.
 
 ### Enforced by the real network
 
-Deployed on testnet: code hash `0x1ae8b8f7…26bc20` (`data2`), see
-[`deployment/testnet.json`](deployment/testnet.json).
-The no-splitting rule (error 16, added 11 Oct), the key-cell cap (error 17) and
-the no-type-scripts rule (error 18, both added 13 Oct), all from reviews, are in
-the source and tested in CKB-VM; this deployment predates them and will be
-replaced by a redeploy.
-`npm run smoke:lock` runs every rule against public testnet. Run on 8 Oct 2026:
+Deployed on testnet: code hash `0x1cb77242…1590cd` (`data2`, [deploy tx](https://testnet.explorer.nervos.org/transaction/0x37cfe04f64fd4dbec3803a972a51b7080f9ca1a3042535e97b7a756d0e03b071)),
+see [`deployment/testnet.json`](deployment/testnet.json). The code is immutable.
+The first deployment (8 Oct, before errors 16–18) is kept in
+`TESTNET_LEGACY_DEPLOYMENTS`, so `recoverSessions` still sweeps sessions opened
+under it.
+
+`npm run smoke:lock` runs every rule against public testnet. Run on 13 Oct 2026:
 
 | Step | Network said |
 |---|---|
-| Owner funds two session cells and a key cell | [accepted](https://testnet.explorer.nervos.org/transaction/0x7f1476477ebc17c50f338595aeca941722946fb5e3da48c52555a114b2c159de) |
-| Session key spends exactly `max_per_tx` (100 CKB), no owner signature | [accepted](https://testnet.explorer.nervos.org/transaction/0x48b3bde2a50bb8ba3aff0800e850b2aa521793b35628d165eab7f22f984be828) |
+| Owner funds three session cells and a key cell | [accepted](https://testnet.explorer.nervos.org/transaction/0xaab24e5d27e428dc00b1dd27452352abff5cb805b0029123f7c3162136c75179) |
+| Session key spends exactly `max_per_tx` (100 CKB), no owner signature | [accepted](https://testnet.explorer.nervos.org/transaction/0xaf37efbf23c9ce950520d9c65f5ec5b14dd8d84525444c05fa83a13b95f499e3) |
 | Session key spends 100 CKB + 1 shannon | **rejected**, error 12 (outflow exceeds max_per_tx) |
 | Rate-limited cell spent with no `since` | **rejected**, error 14 (rate limited) |
-| Same cell with `since` = 3 relative blocks | [accepted once mature](https://testnet.explorer.nervos.org/transaction/0xd2038582a6099ede9e1b906f257509ca0a50ec9a7aba2c12e39b519319b458cb) |
-| Owner sweeps everything back | [accepted](https://testnet.explorer.nervos.org/transaction/0x4edd74ccfc854482cc3a5114aa8563e169f7666028f6bfb6d1c1b30f22ca53d6) |
+| Same cell with `since` = 3 relative blocks | [accepted once mature](https://testnet.explorer.nervos.org/transaction/0x8d49466d8c1bc271c0923168dfc5783a99f04ebd2f1025e6b86e70209ea5f88f) |
+| Change split into two cells | **rejected**, error 16 (too many change cells) |
+| Recipient-scoped cell, 50 CKB moved into the key cell | **rejected**, error 17 (key cell may not grow) |
+| Change given a type script (a valid Type ID) | **rejected**, error 18 (no type scripts) |
+| Owner sweeps everything back | [accepted](https://testnet.explorer.nervos.org/transaction/0xe8ebad7a3b9eff8c67e9757567674047b43c0ad04ec01604f84f5090f8bbd38b) |
 
 Cycles, measured with [ckb-cycle-tools](https://github.com/luongthanhtung03/ckb-cycle-tools)
-on the accepted session spend — the session lock 12,893, the key cell's
-secp256k1 lock 1,635,560, matching the node's 1,648,453 exactly.
+on the accepted session spend: the session lock 14,881, the key cell's
+secp256k1 lock 1,658,440, matching the node's 1,673,321 exactly.
 
 ### v0.1 browser flow, verified on public testnet
 

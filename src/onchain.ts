@@ -293,21 +293,26 @@ export async function closeSession(
  * on the args finds them all. Only well-formed args (80 or 112 bytes) are kept: a
  * cell with malformed args would fail the lock even in owner mode, and anyone can
  * create one with this owner's hash as a prefix to block a sweep.
+ *
+ * Pass several deployments (`[TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]`)
+ * to find sessions opened under earlier versions of the lock as well.
  */
 export async function findOwnedSessionCells(
   owner: ccc.Signer,
-  deployment: SessionLockDeployment,
+  deployments: SessionLockDeployment | SessionLockDeployment[],
 ): Promise<ccc.Cell[]> {
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
   const cells: ccc.Cell[] = [];
-  for await (const cell of owner.client.findCells({
-    script: { codeHash: deployment.codeHash, hashType: deployment.hashType, args: ownerLock.hash() },
-    scriptType: "lock",
-    scriptSearchMode: "prefix",
-    withData: true,
-  })) {
-    const argBytes = (cell.cellOutput.lock.args.length - 2) / 2;
-    if ((argBytes === 80 || argBytes === 112) && !cell.cellOutput.type) cells.push(cell);
+  for (const deployment of [deployments].flat()) {
+    for await (const cell of owner.client.findCells({
+      script: { codeHash: deployment.codeHash, hashType: deployment.hashType, args: ownerLock.hash() },
+      scriptType: "lock",
+      scriptSearchMode: "prefix",
+      withData: true,
+    })) {
+      const argBytes = (cell.cellOutput.lock.args.length - 2) / 2;
+      if ((argBytes === 80 || argBytes === 112) && !cell.cellOutput.type) cells.push(cell);
+    }
   }
   return cells;
 }
@@ -327,8 +332,9 @@ export async function findOwnedSessionCells(
  */
 export async function recoverSessions(
   owner: ccc.Signer,
-  deployment: SessionLockDeployment,
+  deployments: SessionLockDeployment | SessionLockDeployment[],
 ): Promise<{ txHashes: ccc.Hex[]; recovered: bigint; cells: number; failed: number }> {
+  const deployment = [deployments].flat();
   const cells = await findOwnedSessionCells(owner, deployment);
   const total = (cs: ccc.Cell[]) => cs.reduce((sum, c) => sum + c.cellOutput.capacity, 0n);
   if (!cells.length) return { txHashes: [], recovered: 0n, cells: 0, failed: 0 };
@@ -356,11 +362,17 @@ export async function recoverSessions(
 }
 
 /** Spends `cells` in owner mode: everything returns to the owner as change. */
-async function ownerSweep(owner: ccc.Signer, deployment: SessionLockDeployment, cells: ccc.Cell[]): Promise<ccc.Hex> {
+async function ownerSweep(
+  owner: ccc.Signer,
+  deployments: SessionLockDeployment | SessionLockDeployment[],
+  cells: ccc.Cell[],
+): Promise<ccc.Hex> {
+  // The code of every lock version these cells are under, and only those.
+  const used = [deployments].flat().filter((d) => cells.some((c) => c.cellOutput.lock.codeHash === d.codeHash));
   const tx = ccc.Transaction.from({
     inputs: cells.map((c) => ({ previousOutput: c.outPoint })),
     outputs: [],
-    cellDeps: [sessionLockCellDep(deployment)],
+    cellDeps: used.map(sessionLockCellDep),
   });
   // Owner mode needs an owner-locked input in the transaction.
   for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {

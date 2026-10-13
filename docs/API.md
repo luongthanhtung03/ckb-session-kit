@@ -54,7 +54,7 @@ The owner sweeps the session cells (one signature), then the session key returns
 the key cell to the owner. If the key cell cannot be returned, `keyError` says
 why and the key should be kept for a retry.
 
-### `recoverSessions(owner, deployment) → { txHashes, recovered, cells, failed }`
+### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
 Device-loss recovery, with the wallet alone: finds every session cell this owner
 opened and sweeps them, in one transaction if it can, else one per session (so a
 planted cell spent ahead of the sweep fails alone). Key cells cannot be
@@ -64,9 +64,10 @@ recovered without their key.
 The live session cells and key cells of one session, with their totals
 (`balance`, `feeBalance`).
 
-### `findOwnedSessionCells(owner, deployment) → Cell[]`
+### `findOwnedSessionCells(owner, deployments) → Cell[]`
 Every live, well-formed, type-free session cell whose args start with the
-owner's lock hash, found without any session key.
+owner's lock hash, found without any session key. `deployments` is one
+deployment or a list.
 
 ### `onchainRecipient(session) → string | undefined`
 The recipient the lock will enforce: `scope.recipients[0]`. More than one
@@ -87,6 +88,11 @@ cell occupies.
 ### `TESTNET_DEPLOYMENT`
 Where the lock lives on testnet (`codeHash`, `hashType: "data2"`, `cellDep`).
 Equal to [`deployment/testnet.json`](../deployment/testnet.json).
+
+### `TESTNET_LEGACY_DEPLOYMENTS`
+Earlier deployments, newest first. Deployed code is immutable, so sessions opened
+under an earlier version keep its rules until swept; recover with
+`recoverSessions(wallet, [TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS])`.
 
 ### `sessionLockScript(deployment, params)`, `sessionLockArgs(params)`, `sessionLockCellDep(deployment)`
 Build the lock script, its 80- or 112-byte args
