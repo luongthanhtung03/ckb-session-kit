@@ -33,8 +33,12 @@ const BUDGET = 200n * CKB;
 const CELL_RESERVE = 153n * CKB;
 
 const UNLOCKED_KEY = "ckb-session-kit:pay-per-read:unlocked";
-/** Article id → its payment, and the text once the server has released it. */
-type Unlocked = Record<string, { tx: string; body?: string[] }>;
+/**
+ * Article id → its payment, the session key that paid (only that key can claim
+ * it), and the text once the server has released it.
+ */
+type Entry = { tx: string; key?: string; body?: string[] };
+type Unlocked = Record<string, Entry>;
 
 function loadUnlocked(): Unlocked {
   try {
@@ -47,12 +51,15 @@ function loadUnlocked(): Unlocked {
   }
 }
 
-function saveUnlocked(u: Unlocked) {
+/** Read-modify-write, so a second tab's records are kept. */
+function recordUnlocked(u: Unlocked, id: string, entry: Entry): Unlocked {
+  const next = { ...u, ...loadUnlocked(), [id]: entry };
   try {
-    localStorage.setItem(UNLOCKED_KEY, JSON.stringify(u));
+    localStorage.setItem(UNLOCKED_KEY, JSON.stringify(next));
   } catch {
     // storage blocked: the unlock still holds for this visit
   }
+  return next;
 }
 
 export default function PayPerRead() {
@@ -130,8 +137,9 @@ export default function PayPerRead() {
   const claiming = useRef(new Set<string>());
   useEffect(() => {
     if (!session) return;
-    for (const [id, { tx, body }] of Object.entries(unlocked)) {
+    for (const [id, { tx, key, body }] of Object.entries(unlocked)) {
       if (body || tx === pending || claiming.current.has(id)) continue;
+      if (key && key !== session.publicKey) continue; // paid by another session: only its key can claim
       claiming.current.add(id);
       (async () => {
         try {
@@ -142,11 +150,7 @@ export default function PayPerRead() {
             push({ level: "err", text: `server refused “${id}”: ${data.error}` });
             return;
           }
-          setUnlocked((u) => {
-            const next = { ...u, [id]: { tx, body: data.body } };
-            saveUnlocked(next);
-            return next;
-          });
+          setUnlocked((u) => recordUnlocked(u, id, { tx, key, body: data.body }));
           push({ level: "ok", text: `server checked the payment on-chain and released “${id}”` });
         } catch (e) {
           push(describeFailure(e));
@@ -172,12 +176,23 @@ export default function PayPerRead() {
         scope: { maxPerTx: MAX_PER_TX, recipients: [CREATOR] },
       });
       push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
-      const { txHash, binding } = await openSession(signer, draft, deployment, { budget: BUDGET });
-      const s = { ...draft, onchain: binding };
-      await store.save(s);
-      setSession(s);
-      setPending(txHash);
-      push({ level: "ok", text: "reading session opened · it can only pay the creator", hash: txHash });
+      let saved = false;
+      try {
+        // Saved before the funds are sent: a key that exists nowhere would lose them.
+        const { txHash, binding } = await openSession(signer, draft, deployment, {
+          budget: BUDGET,
+          beforeSend: async (b) => {
+            await store.save({ ...draft, onchain: b });
+            saved = true;
+          },
+        });
+        setSession({ ...draft, onchain: binding });
+        setPending(txHash);
+        push({ level: "ok", text: "reading session opened · it can only pay the creator", hash: txHash });
+      } catch (e) {
+        if (saved) await store.clear(draft); // never funded
+        throw e;
+      }
     } catch (e) {
       push(describeFailure(e));
     } finally {
@@ -197,11 +212,7 @@ export default function PayPerRead() {
       });
       // Pending first, so the claim waits for the payment to commit.
       setPending(hash);
-      setUnlocked((u) => {
-        const next = { ...u, [id]: { tx: hash } };
-        saveUnlocked(next);
-        return next;
-      });
+      setUnlocked((u) => recordUnlocked(u, id, { tx: hash, key: session.publicKey }));
       push({ level: "ok", text: `paid 1 CKB for “${title}” · session key only, no wallet popup`, hash });
     } catch (e) {
       push(describeFailure(e));
@@ -214,11 +225,22 @@ export default function PayPerRead() {
     if (!signer || !session?.onchain) return;
     setBusy(true);
     try {
-      push({ level: "info", text: "returning the key cell, then waiting for your wallet…" });
-      const { keyTx, sweepTx } = await closeSession(signer, session, deployment, session.onchain);
-      if (keyTx) push({ level: "ok", text: "key cell returned to you", hash: keyTx });
+      const unclaimed = Object.values(unlocked).some((e) => !e.body && e.key === session.publicKey);
+      if (unclaimed) {
+        // Only this session's key can claim its payments; closing would forfeit them.
+        push({ level: "err", text: "an article you paid for is not released yet; close once it is" });
+        return;
+      }
+      push({ level: "info", text: "waiting for your wallet to sweep the balance, then returning the key cell…" });
+      const { keyTx, sweepTx, keyError } = await closeSession(signer, session, deployment, session.onchain);
       if (sweepTx) push({ level: "ok", text: "unspent balance swept back to you", hash: sweepTx });
-      await store.clear();
+      if (keyTx) push({ level: "ok", text: "key cell returned to you", hash: keyTx });
+      if (keyError) {
+        // Keep the key: the key cell is still under it. Close again to retry.
+        push({ level: "err", text: `key cell not returned: ${keyError}` });
+        return;
+      }
+      await store.clear(session);
       setSession(undefined);
       setCells(undefined);
       setPending(undefined);
@@ -330,7 +352,9 @@ export default function PayPerRead() {
         <section className="block">
           <h2>articles</h2>
           {ARTICLES.map((a) => {
-            const paid = unlocked[a.id];
+            const entry = unlocked[a.id];
+            // A payment by another (closed) session cannot be claimed here: offer the article again.
+            const paid = entry && (entry.body || !entry.key || entry.key === session?.publicKey) ? entry : undefined;
             return (
               <article key={a.id} className={`article${paid ? " open" : ""}`}>
                 <h3>{a.title}</h3>

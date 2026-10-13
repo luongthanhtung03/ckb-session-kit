@@ -147,12 +147,24 @@ export default function SessionDemo() {
               if (!signer) return;
               try {
                 push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
-                const { txHash, binding } = await openSession(signer, draft, deployment, opts);
-                const s = { ...draft, onchain: binding };
-                await store.save(s);
-                setSession(s);
-                setPending(txHash);
-                push({ level: "ok", text: "session opened · key saved in this browser only", hash: txHash });
+                let saved = false;
+                try {
+                  // Saved before the funds are sent: a key that exists nowhere would lose them.
+                  const { txHash, binding } = await openSession(signer, draft, deployment, {
+                    ...opts,
+                    beforeSend: async (b) => {
+                      await store.save({ ...draft, onchain: b });
+                      saved = true;
+                    },
+                  });
+                  setSession({ ...draft, onchain: binding });
+                  setPending(txHash);
+                  push({ level: "ok", text: "session opened · key saved in this browser only", hash: txHash });
+                } catch (e) {
+                  if (saved) await store.clear(draft); // never funded
+                  throw e;
+                }
+                return;
               } catch (e) {
                 push(describeFailure(e));
               }
@@ -166,9 +178,16 @@ export default function SessionDemo() {
             onRecover={async () => {
               try {
                 push({ level: "info", text: "looking for this wallet's sessions, then waiting for your wallet…" });
-                const { txHash, recovered, cells } = await recoverSessions(signer, deployment);
-                if (txHash) push({ level: "ok", text: `recovered ${ckb(recovered)} from ${cells} session cell(s)`, hash: txHash });
-                else push({ level: "info", text: "no sessions to recover" });
+                const { txHashes, recovered, cells, failed } = await recoverSessions(signer, deployment);
+                txHashes.forEach((hash, i) =>
+                  push({
+                    level: "ok",
+                    text: i ? "another session swept" : `recovered ${ckb(recovered)} from ${cells} session cell(s)`,
+                    hash,
+                  }),
+                );
+                if (failed) push({ level: "err", text: `${failed} session(s) could not be swept; try again` });
+                if (!txHashes.length && !failed) push({ level: "info", text: "no sessions to recover" });
               } catch (e) {
                 push(describeFailure(e));
               }
@@ -183,7 +202,7 @@ export default function SessionDemo() {
             <button
               className="danger"
               onClick={async () => {
-                await store.clear();
+                await store.clear(session);
                 setSession(undefined);
                 push({ level: "info", text: "v0.1 session discarded" });
               }}
@@ -264,11 +283,16 @@ export default function SessionDemo() {
                 onClick={async () => {
                   if (!signer) return;
                   try {
-                    push({ level: "info", text: "returning the key cell, then waiting for your wallet…" });
-                    const { keyTx, sweepTx } = await closeSession(signer, session, deployment, session.onchain!);
-                    if (keyTx) push({ level: "ok", text: "key cell returned to the owner", hash: keyTx });
+                    push({ level: "info", text: "waiting for your wallet to sweep the session, then returning the key cell…" });
+                    const { keyTx, sweepTx, keyError } = await closeSession(signer, session, deployment, session.onchain!);
                     if (sweepTx) push({ level: "ok", text: "session swept back to the owner", hash: sweepTx });
-                    await store.clear();
+                    if (keyTx) push({ level: "ok", text: "key cell returned to the owner", hash: keyTx });
+                    if (keyError) {
+                      // Keep the key: the key cell is still under it. Close again to retry.
+                      push({ level: "err", text: `key cell not returned: ${keyError}` });
+                      return;
+                    }
+                    await store.clear(session);
                     setSession(undefined);
                     setCells(undefined);
                     setPending(undefined);
@@ -345,7 +369,7 @@ function OpenForm({
         {recipient.trim() && ` --allow ${short(recipient.trim())}`}
       </Prompt>
       <label>
-        --budget (CKB the session may spend in total; min 121)
+        --budget (CKB put in the session cell; min 121, or 153 with --allow, which stays locked as the cell itself)
         <div className="field">
           <input type="number" min="121" step="any" value={budget} onChange={(e) => setBudget(e.target.value)} />
         </div>
@@ -365,7 +389,7 @@ function OpenForm({
       <label>
         --interval (blocks between spends, enforced on-chain; 0 = none)
         <div className="field">
-          <input type="number" min="0" value={interval} onChange={(e) => setInterval_(e.target.value)} />
+          <input type="number" min="0" max="72057594037927935" value={interval} onChange={(e) => setInterval_(e.target.value)} />
         </div>
       </label>
       <label>
@@ -374,7 +398,7 @@ function OpenForm({
           <input placeholder="ckt1…" value={recipient} onChange={(e) => setRecipient(e.target.value)} spellCheck={false} />
         </div>
       </label>
-      <p className="hint"># the wallet also funds a 100 CKB key cell that pays the session&apos;s fees; it comes back on close.</p>
+      <p className="hint"># the wallet also funds a 62 CKB key cell that pays the session&apos;s fees; it comes back on close, but not on a recovery.</p>
       {error && <p className="bad">error: {error}</p>}
       <button type="submit" disabled={!signer || busy}>
         {!signer ? "connect a wallet first" : busy ? "waiting for wallet…" : "open session (1 signature) ⏎"}
@@ -445,8 +469,10 @@ function RecoverPanel({ signer, onRecover }: { signer: ccc.Signer; onRecover: ()
       <h2>recover</h2>
       <Prompt path="~">session recover --owner wallet</Prompt>
       <p className="hint">
-        # this wallet has {found.cells} session cell(s) holding {ckb(found.total)}, opened from another
-        browser or a lost device. The wallet alone can sweep them back: one signature, no session key needed.
+        # this wallet has {found.cells} session cell(s) holding {ckb(found.total)}: every session it
+        opened, on any device, including the reading page in this browser. The wallet alone sweeps them
+        back, no session key needed: one signature (one per session if a cell was spent meanwhile). Key
+        cells stay with their keys.
       </p>
       <button
         className="danger"

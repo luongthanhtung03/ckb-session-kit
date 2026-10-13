@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   ];
 
   console.log("open: two sessions (one owner signature each)");
-  const a = await openSession(owner, sessions[0], deployment, { budget: 200n * CKB, feeBudget: 61n * CKB });
+  const a = await openSession(owner, sessions[0], deployment, { budget: 200n * CKB, feeBudget: 62n * CKB });
   console.log(`  with recipient: ${explorer(a.txHash)}`);
   await committed(client, a.txHash);
   const b = await openSession(owner, sessions[1], deployment, { budget: 250n * CKB, feeBudget: 70n * CKB });
@@ -88,10 +88,13 @@ async function main(): Promise<void> {
   if (found.length !== before.length + 2) throw new Error(`expected ${before.length + 2}, found ${found.length}`);
   if (found.some((c) => c.cellOutput.lock.eq(decoyLock))) throw new Error("decoy was not filtered out");
 
-  const { txHash, recovered, cells } = await recoverSessions(owner, deployment);
-  console.log(`  swept ${cells} cell(s), ${ccc.fixedPointToString(recovered)} CKB back to the owner, one signature`);
-  console.log(`  ${explorer(txHash!)}`);
-  await committed(client, txHash!);
+  const { txHashes, recovered, cells, failed } = await recoverSessions(owner, deployment);
+  if (failed) throw new Error(`${failed} session(s) could not be swept`);
+  console.log(`  swept ${cells} cell(s), ${ccc.fixedPointToString(recovered)} CKB back to the owner, ${txHashes.length} signature(s)`);
+  for (const h of txHashes) {
+    console.log(`  ${explorer(h)}`);
+    await committed(client, h);
+  }
 
   const after = await findOwnedSessionCells(owner, deployment);
   if (after.length) throw new Error(`${after.length} session cell(s) left after recovery`);

@@ -46,6 +46,7 @@ export class SessionBalanceError extends Error {
 }
 
 const KEY_CELL_MIN = 61n * 100_000_000n;
+const DEFAULT_FEE_BUDGET = 62n * 100_000_000n;
 
 export async function keyLockOf(session: Session, client: ccc.Client): Promise<ccc.Script> {
   return (await sessionSigner(session, client).getRecommendedAddressObj()).script;
@@ -110,14 +111,30 @@ export function onchainRecipient(session: Session): string | undefined {
 /**
  * Owner funds the session: one transaction, one signature from `owner`.
  * The on-chain recipient comes from `session.policy.scope.recipients`.
+ *
+ * `beforeSend` runs once the transaction is built and before it is sent: save the
+ * session there (`store.save({ ...session, onchain: binding })`). Saved after
+ * sending, a failed save would leave funds under a key that exists nowhere.
  */
 export async function openSession(
   owner: ccc.Signer,
   session: Session,
   deployment: SessionLockDeployment,
-  opts: { budget: bigint; feeBudget?: bigint; minInterval?: bigint },
+  opts: {
+    budget: bigint;
+    feeBudget?: bigint;
+    minInterval?: bigint;
+    beforeSend?: (binding: OnChainBinding) => Promise<void>;
+  },
 ): Promise<{ txHash: ccc.Hex; binding: OnChainBinding }> {
   const client = owner.client;
+  if (opts.minInterval !== undefined) relativeBlocksSince(opts.minInterval); // a spend must be able to meet it
+  const feeBudget = opts.feeBudget ?? DEFAULT_FEE_BUDGET;
+  if (feeBudget <= KEY_CELL_MIN) {
+    throw new SessionBalanceError(
+      `feeBudget must be above ${ccc.fixedPointToString(KEY_CELL_MIN)} CKB: the key cell must stay that size after paying fees`,
+    );
+  }
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
   const recipient = onchainRecipient(session);
   const recipientLockHash = recipient
@@ -134,7 +151,7 @@ export async function openSession(
   const tx = ccc.Transaction.from({
     outputs: [
       { lock, capacity: opts.budget },
-      { lock: keyLock, capacity: opts.feeBudget ?? 100n * 100_000_000n },
+      { lock: keyLock, capacity: feeBudget },
     ],
   });
   // CCC raises an output to its occupied capacity; a budget below that is a mistake.
@@ -143,6 +160,7 @@ export async function openSession(
   }
   await tx.completeInputsByCapacity(owner);
   await tx.completeFeeBy(owner);
+  await opts.beforeSend?.(binding);
   return { txHash: await owner.sendTransaction(tx), binding };
 }
 
@@ -233,30 +251,38 @@ export async function spendInSession(
 }
 
 /**
- * Ends the session: the key cell returns to the owner (session key signs, no
- * wallet), then the owner sweeps the session cells (one wallet signature).
+ * Ends the session: the owner sweeps the session cells (one wallet signature),
+ * then the key cell returns to the owner (session key signs, no wallet).
+ *
+ * The sweep goes first because it is what matters: a key cell too small to pay
+ * for the owner's lock (some wallets' locks need more than 61 CKB) must not block
+ * it. A key-cell failure is reported in `keyError`; the key stays usable for a retry.
  */
 export async function closeSession(
   owner: ccc.Signer,
   session: Session,
   deployment: SessionLockDeployment,
   binding: OnChainBinding,
-): Promise<{ keyTx?: ccc.Hex; sweepTx?: ccc.Hex }> {
+): Promise<{ keyTx?: ccc.Hex; sweepTx?: ccc.Hex; keyError?: string }> {
   const client = owner.client;
   const ownerLock = ccc.Script.from(binding.ownerLock);
   const state = await findSessionCells(session, client, deployment, binding);
-  const result: { keyTx?: ccc.Hex; sweepTx?: ccc.Hex } = {};
-
-  if (state.keyCells.length) {
-    const tx = ccc.Transaction.from({
-      inputs: state.keyCells.map((c) => ({ previousOutput: c.outPoint })),
-      outputs: [{ lock: ownerLock, capacity: 0n }],
-    });
-    await tx.completeFeeChangeToOutput(sessionSigner(session, client), 0);
-    result.keyTx = await sessionSigner(session, client).sendTransaction(tx);
-  }
+  const result: { keyTx?: ccc.Hex; sweepTx?: ccc.Hex; keyError?: string } = {};
 
   if (state.sessionCells.length) result.sweepTx = await ownerSweep(owner, deployment, state.sessionCells);
+
+  if (state.keyCells.length) {
+    try {
+      const tx = ccc.Transaction.from({
+        inputs: state.keyCells.map((c) => ({ previousOutput: c.outPoint })),
+        outputs: [{ lock: ownerLock, capacity: 0n }],
+      });
+      await tx.completeFeeChangeToOutput(sessionSigner(session, client), 0);
+      result.keyTx = await sessionSigner(session, client).sendTransaction(tx);
+    } catch (e) {
+      result.keyError = e instanceof Error ? e.message : String(e);
+    }
+  }
   return result;
 }
 
@@ -290,17 +316,43 @@ export async function findOwnedSessionCells(
  * Device-loss recovery: sweeps every session this owner opened back to the owner,
  * in one transaction and one wallet signature. Needs nothing from the lost device.
  *
+ * Anyone can create a cell under a session lock carrying this owner's hash and
+ * their own key, and spend it before the sweep lands, which would make a single
+ * sweep fail. So if the one transaction is refused, each session (cells sharing a
+ * session key) is swept on its own, one signature each: a cell someone else can
+ * spend fails alone, and `failed` counts the sessions not recovered.
+ *
  * The key cell (the fee budget) is under the session key's own lock and cannot be
  * recovered without that key; keep it small.
  */
 export async function recoverSessions(
   owner: ccc.Signer,
   deployment: SessionLockDeployment,
-): Promise<{ txHash?: ccc.Hex; recovered: bigint; cells: number }> {
+): Promise<{ txHashes: ccc.Hex[]; recovered: bigint; cells: number; failed: number }> {
   const cells = await findOwnedSessionCells(owner, deployment);
-  if (!cells.length) return { recovered: 0n, cells: 0 };
-  const recovered = cells.reduce((sum, c) => sum + c.cellOutput.capacity, 0n);
-  return { txHash: await ownerSweep(owner, deployment, cells), recovered, cells: cells.length };
+  const total = (cs: ccc.Cell[]) => cs.reduce((sum, c) => sum + c.cellOutput.capacity, 0n);
+  if (!cells.length) return { txHashes: [], recovered: 0n, cells: 0, failed: 0 };
+  try {
+    return { txHashes: [await ownerSweep(owner, deployment, cells)], recovered: total(cells), cells: cells.length, failed: 0 };
+  } catch {
+    // Fall through: one session at a time.
+  }
+  const sessions = new Map<string, ccc.Cell[]>();
+  for (const c of cells) {
+    const keyHash = c.cellOutput.lock.args.slice(66, 130); // session_lock_hash, bytes 32..64
+    sessions.set(keyHash, [...(sessions.get(keyHash) ?? []), c]);
+  }
+  const result = { txHashes: [] as ccc.Hex[], recovered: 0n, cells: 0, failed: 0 };
+  for (const group of sessions.values()) {
+    try {
+      result.txHashes.push(await ownerSweep(owner, deployment, group));
+      result.recovered += total(group);
+      result.cells += group.length;
+    } catch {
+      result.failed++;
+    }
+  }
+  return result;
 }
 
 /** Spends `cells` in owner mode: everything returns to the owner as change. */

@@ -1,7 +1,7 @@
 import { ccc } from "@ckb-ccc/core";
 import { describe, expect, it } from "vitest";
 import { createSession } from "../src/session.js";
-import { deserializeSession, memoryStore, serializeSession } from "../src/store.js";
+import { deserializeSession, indexedDbStore, memoryStore, serializeSession, SessionStoreConflict } from "../src/store.js";
 import { ScopeError, sendInScope } from "../src/transfer.js";
 
 const now = new Date("2026-10-08T00:00:00Z");
@@ -46,10 +46,62 @@ describe("session storage", () => {
     expect(await store.load()).toBeUndefined();
     await store.save(session);
     expect(await store.load()).toEqual(session);
-    await store.clear();
+    await store.clear(session);
     expect(await store.load()).toBeUndefined();
   });
+
+  // Found in review: two tabs share one slot. A second session must not replace a
+  // stored one (its key may hold funds), and a stale tab's close must not delete
+  // a newer session's key.
+  const other = createSession({ expiresAt: new Date("2026-10-09T00:00:00Z"), scope: { maxPerTx: 1n } }, { now });
+
+  it.each([
+    ["memory", () => [memoryStore()].flatMap((s) => [s, s])],
+    ["IndexedDB, two tabs", () => { const idb = fakeIdb(); return [indexedDbStore(idb), indexedDbStore(idb)]; }],
+  ])("%s: refuses to replace a different stored session", async (_, stores) => {
+    const [tabA, tabB] = stores();
+    await tabA.save(session);
+    await expect(tabB.save(other)).rejects.toBeInstanceOf(SessionStoreConflict);
+    await tabA.save(session); // the same session may be saved again
+    expect((await tabB.load())?.privateKey).toBe(session.privateKey);
+  });
+
+  it.each([
+    ["memory", () => [memoryStore()].flatMap((s) => [s, s])],
+    ["IndexedDB, two tabs", () => { const idb = fakeIdb(); return [indexedDbStore(idb), indexedDbStore(idb)]; }],
+  ])("%s: a stale clear does not delete a newer session", async (_, stores) => {
+    const [tabA, tabB] = stores();
+    await tabA.save(session);
+    await tabA.clear(session);
+    await tabA.save(other);
+    await tabB.clear(session); // tab B still shows the old session
+    expect((await tabA.load())?.privateKey).toBe(other.privateKey);
+  });
+
+  it("refuses an invalid expiry date", () => {
+    expect(() => createSession({ expiresAt: new Date(NaN), scope: { maxPerTx: 1n } }, { now })).toThrow(/valid date/);
+  });
 });
+
+/** Just enough of IndexedDB for the store: one object store, async requests. */
+function fakeIdb(): IDBFactory {
+  const backing = new Map<string, unknown>();
+  const req = <T>(fn: () => T) => {
+    const r: { result?: T; onsuccess?: () => void } = {};
+    queueMicrotask(() => {
+      r.result = fn();
+      r.onsuccess?.();
+    });
+    return r;
+  };
+  const store = {
+    get: (k: string) => req(() => backing.get(k)),
+    put: (v: unknown, k: string) => req(() => void backing.set(k, v)),
+    delete: (k: string) => req(() => void backing.delete(k)),
+  };
+  const db = { transaction: () => ({ objectStore: () => store }), close: () => {} };
+  return { open: () => req(() => db) } as unknown as IDBFactory;
+}
 
 describe("sendInScope", () => {
   // Refusals must happen before any network access, so a client that throws on

@@ -49,6 +49,9 @@ const SECP256K1_N = BigInt(
 
 export function createSession(policy: SessionPolicy, options: CreateOptions = {}): Session {
   const now = options.now ?? new Date();
+  if (!Number.isFinite(policy.expiresAt.getTime())) {
+    throw new SessionPolicyError("expiresAt is not a valid date");
+  }
   if (policy.expiresAt.getTime() <= now.getTime()) {
     throw new SessionPolicyError("expiresAt must be in the future");
   }

@@ -75,15 +75,20 @@ The session key lives only in one browser. If that browser is gone, the owner's
 wallet can still recover every session it ever opened:
 
 ```ts
-await recoverSessions(wallet, deployment); // finds them all, one signature
+await recoverSessions(wallet, deployment); // finds them all, usually one signature
 ```
 
 Session-lock args begin with the owner's lock hash, so an indexer prefix search
 finds the session cells without knowing the lost key, and owner mode sweeps them.
 Cells whose args are malformed are skipped: the lock rejects them even in owner
 mode, and anyone could plant one with the owner's hash as a prefix to block a
-sweep. What cannot come back is the key cell (the fee budget), which only the
-session key can spend; keep it small (61 CKB is the minimum).
+sweep. Anyone can also plant a *well-formed* cell with the owner's hash and their
+own key, and spend it just before the sweep lands; if the single sweep fails,
+each session is swept on its own (one signature each), so only the planted cell
+is left out. What cannot come back is the key cell (the fee budget), which only
+the session key can spend; keep it small. It must stay at 61 CKB after paying
+fees, so `openSession` takes more than 61 (62 CKB by default, enough for
+thousands of fees).
 
 `npm run smoke:recover` runs it on testnet. Run on 9 Oct 2026: two sessions
 [opened](https://testnet.explorer.nervos.org/transaction/0x289291b3026af3d1e1929308b75276bc72d0c8de151f1b74f6b7926f29bda74b)
@@ -175,14 +180,19 @@ Rust. A cell under it can be spent two ways:
     cell**: with *n* session cells, the key can spend from each of them in the same
     block. `openSession` creates one cell;
   - **no splitting** — a session spend may send at most one cell back to the
-    session lock, so the key can merge session cells but never multiply them.
-    Only the owner decides how many cells a session has, which makes the per-cell
-    rate limit a per-session one for sessions opened with `openSession`.
+    session lock, so the key can merge session cells but never multiply them,
+    which makes the per-cell rate limit a per-session one for sessions opened
+    with `openSession`. (Anyone can add cells under a session lock, but only
+    with their own money: it never multiplies what the owner put in);
+  - **no type scripts** — the session cells spent and their change carry no type
+    script. The limits count capacity only: a token in a session cell would move
+    at zero outflow, and a change cell given a type the key controls could later
+    refuse every spend, the owner's sweep included, freezing the whole balance.
 
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
-cryptography: **4.9 KB, no allocator, no C, 12,893 cycles per run** — about 0.8% of
-a session spend. 30 tests run it in the real CKB-VM, most asserting a specific
+cryptography: **5.2 KB, no allocator, no C, 12,893 cycles per run** — about 0.8% of
+a session spend. 33 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has
@@ -209,11 +219,17 @@ only to the recipient if one is set, and, with a rate limit, once per
 
 - with the key still at hand: `closeSession(wallet, session, deployment, binding)`;
 - without it (device lost or wiped): `recoverSessions(wallet, deployment)` finds
-  every session the wallet opened and sweeps them in one transaction, without the key.
+  every session the wallet opened and sweeps them, without the key.
 
-An owner sweep is accepted at any time and ignores the scope, so it wins against
-any spend not yet committed. Keep budgets small: the budget is the most a session
-can ever lose.
+An owner sweep is accepted at any time and ignores the scope. It is not certain
+to beat a spend already racing it: the key holder can replace a pending sweep by
+paying a higher fee, so sweep early, and resweep what is left. Keep budgets
+small: the budget is the most a session can ever lose.
+
+**Owner and session locks must need a signature.** The lock trusts that an input
+under the owner's lock means the owner signed. Plain secp256k1, JoyID and
+Omnilock are fine; an anyone-can-pay owner lock is not, since anyone may spend
+into it and would get owner mode.
 
 A session-lock cell occupies 121 CKB (153 CKB with a recipient), so its balance
 and its change must stay above that.
@@ -222,9 +238,10 @@ and its change must stay above that.
 
 Deployed on testnet: code hash `0x1ae8b8f7…26bc20` (`data2`), see
 [`deployment/testnet.json`](deployment/testnet.json).
-The no-splitting rule (error 16, added 11 Oct) and the key-cell cap (error 17,
-added 13 Oct), both from community reviews, are in the source and tested in
-CKB-VM; this deployment predates them and will be replaced by a redeploy.
+The no-splitting rule (error 16, added 11 Oct), the key-cell cap (error 17) and
+the no-type-scripts rule (error 18, both added 13 Oct), all from reviews, are in
+the source and tested in CKB-VM; this deployment predates them and will be
+replaced by a redeploy.
 `npm run smoke:lock` runs every rule against public testnet. Run on 8 Oct 2026:
 
 | Step | Network said |

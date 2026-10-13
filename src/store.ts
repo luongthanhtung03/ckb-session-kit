@@ -7,9 +7,24 @@ import type { Session } from "./session.js";
  */
 export interface SessionStore {
   load(): Promise<Session | undefined>;
+  /**
+   * Stores `session`. Refuses (SessionStoreConflict) to replace a *different*
+   * session: its key may hold funds, and another tab may have just saved it.
+   */
   save(session: Session): Promise<void>;
-  clear(): Promise<void>;
+  /** Forgets `session`, only if it is still the stored one; another tab may have replaced it. */
+  clear(session: Session): Promise<void>;
 }
+
+export class SessionStoreConflict extends Error {
+  constructor() {
+    super("another session is already stored here (opened in another tab?); reload the page");
+    this.name = "SessionStoreConflict";
+  }
+}
+
+/** The stored value's public key, without parsing the rest. */
+const storedKey = (raw: string | undefined) => (raw === undefined ? undefined : (JSON.parse(raw) as StoredSession).publicKey);
 
 /** JSON-safe form: bigints as decimal strings, dates as ISO strings. */
 interface StoredSession {
@@ -77,10 +92,12 @@ export function memoryStore(): SessionStore {
   return {
     load: async () => (value === undefined ? undefined : deserializeSession(value)),
     save: async (s) => {
+      const held = storedKey(value);
+      if (held !== undefined && held !== s.publicKey) throw new SessionStoreConflict();
       value = serializeSession(s);
     },
-    clear: async () => {
-      value = undefined;
+    clear: async (s) => {
+      if (storedKey(value) === s.publicKey) value = undefined;
     },
   };
 }
@@ -107,24 +124,39 @@ async function open(idb: IDBFactory): Promise<IDBDatabase> {
  * session (a wallet page and a reader page, say) pass different keys.
  */
 export function indexedDbStore(idb: IDBFactory = globalThis.indexedDB, key: string = KEY): SessionStore {
-  const run = async <T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>) => {
+  // Read and write in one readwrite transaction, so two tabs cannot interleave.
+  const update = async (decide: (raw: string | undefined) => "put" | "delete" | "keep", value?: string) => {
     const db = await open(idb);
     try {
-      return await request(fn(db.transaction(STORE, mode).objectStore(STORE)));
+      const store = db.transaction(STORE, "readwrite").objectStore(STORE);
+      const raw = await request<string | undefined>(store.get(key));
+      const action = decide(raw);
+      if (action === "put") await request(store.put(value, key));
+      if (action === "delete") await request(store.delete(key));
     } finally {
       db.close();
     }
   };
   return {
     load: async () => {
-      const raw = await run<string | undefined>("readonly", (s) => s.get(key));
-      return raw === undefined ? undefined : deserializeSession(raw);
+      const db = await open(idb);
+      try {
+        const raw = await request<string | undefined>(db.transaction(STORE, "readonly").objectStore(STORE).get(key));
+        return raw === undefined ? undefined : deserializeSession(raw);
+      } finally {
+        db.close();
+      }
     },
     save: async (session) => {
-      await run("readwrite", (s) => s.put(serializeSession(session), key));
+      const value = serializeSession(session);
+      await update((raw) => {
+        const held = storedKey(raw);
+        if (held !== undefined && held !== session.publicKey) throw new SessionStoreConflict();
+        return "put";
+      }, value);
     },
-    clear: async () => {
-      await run("readwrite", (s) => s.delete(key));
+    clear: async (session) => {
+      await update((raw) => (storedKey(raw) === session.publicKey ? "delete" : "keep"));
     },
   };
 }
