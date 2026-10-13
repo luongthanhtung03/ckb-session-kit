@@ -26,7 +26,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p examples",
     "test": "vitest run",
     "smoke:testnet": "tsx scripts/testnet-smoke.ts",
     "demo": "npm run build && npm run dev -w demo",

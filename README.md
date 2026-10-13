@@ -98,6 +98,22 @@ a [decoy](https://testnet.explorer.nervos.org/transaction/0x40781ca16108dfde3332
 planted, both keys dropped → [one owner transaction](https://testnet.explorer.nervos.org/transaction/0x4efd8b7875c8a0f2883ac2b21ed509ff86c72012e6f4a24816783aa25e02eeaf)
 swept every session cell back, decoy skipped.
 
+## Examples and API
+
+- [`examples/node-quickstart.ts`](examples/node-quickstart.ts): open, pay twice
+  with no wallet, close, in one file (`OWNER_KEY=0x… npx tsx --tsconfig examples/tsconfig.json examples/node-quickstart.ts`).
+  Run on 13 Oct 2026: [open](https://testnet.explorer.nervos.org/transaction/0x8229533c8769bb30730d075abd5c6cf60b39ab9765a3fc24adeb6d6af649cf8c)
+  → [pay 61](https://testnet.explorer.nervos.org/transaction/0x75e3673ce82d202dd76bd30903f199b83eddd0e4b2085fd45b2cd286cf27fea7)
+  → [pay 65](https://testnet.explorer.nervos.org/transaction/0x821816ec1916c805e98b0de1ec5e3c606837950edb468a7a4d998dd7f8f9598a)
+  → [sweep](https://testnet.explorer.nervos.org/transaction/0x36d47d37139d21affe8d0660395dba03aba2d3b247566f1e34684d85b9aac67d)
+  and [key cell back](https://testnet.explorer.nervos.org/transaction/0x41604d6d13fc7f7b0e7adc92316651a25507a7a2ffe8b2964887b3935498de75).
+- [`examples/browser-session.ts`](examples/browser-session.ts): what an app does
+  around any CCC wallet: save before funding, one session per tab, restore on load.
+- [`examples/paywall-server.ts`](examples/paywall-server.ts): a paywall with no
+  database, on `node:http`.
+- [`docs/API.md`](docs/API.md): every export, grouped by task. CI typechecks the
+  examples and fails if an export is missing from the reference.
+
 ## Example: pay-per-read
 
 A reader's wallet signs once to open a session scoped to one creator. Each article
