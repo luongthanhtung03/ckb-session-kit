@@ -40,6 +40,7 @@
     "smoke:recover": "tsx scripts/testnet-recover.ts",
     "smoke:place": "tsx scripts/testnet-place.ts",
     "smoke:listen": "tsx --tsconfig examples/tsconfig.json scripts/testnet-listen.ts",
+    "smoke:token": "tsx scripts/testnet-token.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"
   },
