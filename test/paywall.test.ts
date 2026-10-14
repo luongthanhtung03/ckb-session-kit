@@ -62,6 +62,16 @@ describe("verifyAccess", () => {
     expect(r).toEqual({ ok: false, reason: "the signing key did not pay this transaction" });
   });
 
+  it("refuses a stranger's claim on a public payment after one input lookup", async () => {
+    const { client, creator } = await setup();
+    let lookups = 0;
+    const getCell = client.getCell.bind(client);
+    client.getCell = (async (op: ccc.OutPointLike) => (lookups++, getCell(op))) as never;
+    const r = await verifyAccess(client, await signAccess(newSession(), TX_HASH, MEMO), { to: creator, minAmount: 1n * CKB, memo: MEMO });
+    expect(r).toEqual({ ok: false, reason: "the signing key did not pay this transaction" });
+    expect(lookups).toBe(1);
+  });
+
   it("rejects a payment made for something else", async () => {
     const { client, payer, creator } = await setup({ memo: paymentMemo("read:other") });
     const proof = await signAccess(payer, TX_HASH, MEMO);

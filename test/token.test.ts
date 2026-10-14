@@ -132,7 +132,8 @@ describe("spendInSession in a token session", () => {
     } as never);
     vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockResolvedValue(true as never);
     const sent: ccc.Transaction[] = [];
-    vi.spyOn(ccc.SignerCkbPrivateKey.prototype, "sendTransaction").mockImplementation(async (tx) => {
+    vi.spyOn(ccc.SignerCkbPrivateKey.prototype, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
+    vi.spyOn(client, "sendTransaction").mockImplementation(async (tx) => {
       sent.push(ccc.Transaction.from(tx));
       return h("ee");
     });
@@ -141,8 +142,17 @@ describe("spendInSession in a token session", () => {
 
   it("tops up the recipient's token cell, keeping the rest of the tokens and all the CKB", async () => {
     const { session, binding, recipient, lock, type, sent } = await setup({ tokens: 100n * T, capacity: 300n * CKB, recipient: true });
-    await spendInSession(session, client, d, binding, { to: recipient, token: 3n * T, topUp: true });
+    let recorded: ccc.Hex | undefined;
+    const hash = await spendInSession(session, client, d, binding, {
+      to: recipient,
+      token: 3n * T,
+      topUp: true,
+      beforeSend: async (txHash) => void (recorded = txHash),
+    });
     const [tx] = sent;
+    // The payment is recorded against its final hash before it is sent (hardening review M2).
+    expect(recorded).toBe(tx.hash());
+    expect(hash).toBe(h("ee"));
     expect(tx.outputs[0].type?.eq(type)).toBe(true);
     expect(tx.outputs[0].capacity).toBe(142n * CKB);
     expect(tokenAmount(tx.outputsData[0])).toBe(8n * T);

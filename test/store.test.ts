@@ -99,7 +99,18 @@ function fakeIdb(): IDBFactory {
     put: (v: unknown, k: string) => req(() => void backing.set(k, v)),
     delete: (k: string) => req(() => void backing.delete(k)),
   };
-  const db = { transaction: () => ({ objectStore: () => store }), close: () => {} };
+  // A transaction completes once the requests made on it have run.
+  const db = {
+    transaction: () => {
+      const tx: { objectStore: () => typeof store; oncomplete?: () => void; abort: () => void } = {
+        objectStore: () => store,
+        abort: () => {},
+      };
+      setTimeout(() => tx.oncomplete?.(), 0);
+      return tx;
+    },
+    close: () => {},
+  };
   return { open: () => req(() => db) } as unknown as IDBFactory;
 }
 

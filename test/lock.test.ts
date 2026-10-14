@@ -42,6 +42,15 @@ describe("sessionLockErrorFrom", () => {
       "Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 12 on page https://nervosnetwork.github.io/ckb-script-e";
     expect(sessionLockErrorFrom(msg)).toEqual({ code: 12, meaning: "outflow exceeds max_per_tx" });
   });
+  // Hardening review, 14 Oct: an xUDT or anyone-can-pay failure is not a session-lock error.
+  it("ignores codes from type scripts, and from inputs that are not session cells", () => {
+    const at = (source: string) =>
+      `Verification failed Script(TransactionScriptError { source: ${source}, cause: ValidationFailure: see error code 12 on page`;
+    expect(sessionLockErrorFrom(at("Outputs[0].Type"))).toBeUndefined();
+    expect(sessionLockErrorFrom(at("Inputs[0].Type"))).toBeUndefined();
+    expect(sessionLockErrorFrom(at("Inputs[1].Lock"), [0])).toBeUndefined();
+    expect(sessionLockErrorFrom(at("Inputs[0].Lock"), [0])?.code).toBe(12);
+  });
   it("returns undefined when there is no code", () => {
     expect(sessionLockErrorFrom("PoolIsFull")).toBeUndefined();
   });

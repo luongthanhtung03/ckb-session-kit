@@ -23,8 +23,20 @@ export class SessionStoreConflict extends Error {
   }
 }
 
+const UNREADABLE = "the stored session is unreadable; it may still hold a funded key, so it is never overwritten";
+
 /** The stored value's public key, without parsing the rest. */
-const storedKey = (raw: string | undefined) => (raw === undefined ? undefined : (JSON.parse(raw) as StoredSession).publicKey);
+function storedKey(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  let key: unknown;
+  try {
+    key = (JSON.parse(raw) as StoredSession).publicKey;
+  } catch {
+    throw new Error(UNREADABLE);
+  }
+  if (typeof key !== "string") throw new Error(UNREADABLE);
+  return key;
+}
 
 /** JSON-safe form: bigints as decimal strings, dates as ISO strings. */
 interface StoredSession {
@@ -39,6 +51,7 @@ interface StoredSession {
     minInterval: string;
     recipientLockHash?: string;
     token?: { type: { codeHash: string; hashType: string; args: string }; maxPerTx: string };
+    openTx?: string;
   };
 }
 
@@ -58,6 +71,7 @@ export function serializeSession(s: Session): string {
         ...(s.onchain.token && {
           token: { type: s.onchain.token.type, maxPerTx: s.onchain.token.maxPerTx.toString() },
         }),
+        ...(s.onchain.openTx && { openTx: s.onchain.openTx }),
       },
     }),
   };
@@ -65,7 +79,12 @@ export function serializeSession(s: Session): string {
 }
 
 export function deserializeSession(json: string): Session {
-  const d = JSON.parse(json) as StoredSession;
+  let d: StoredSession;
+  try {
+    d = JSON.parse(json) as StoredSession;
+  } catch {
+    throw new Error(UNREADABLE);
+  }
   if (d.v !== 1) throw new Error(`unsupported stored session version: ${String(d.v)}`);
   return {
     privateKey: d.privateKey as ccc.Hex,
@@ -96,6 +115,7 @@ export function deserializeSession(json: string): Session {
             maxPerTx: BigInt(d.onchain.token.maxPerTx),
           },
         }),
+        ...(d.onchain.openTx && { openTx: d.onchain.openTx as ccc.Hex }),
       },
     }),
   };
@@ -139,14 +159,30 @@ async function open(idb: IDBFactory): Promise<IDBDatabase> {
  */
 export function indexedDbStore(idb: IDBFactory = globalThis.indexedDB, key: string = KEY): SessionStore {
   // Read and write in one readwrite transaction, so two tabs cannot interleave.
+  // It resolves only once the transaction has committed, durably: a save is what
+  // makes it safe to send funds to the key.
   const update = async (decide: (raw: string | undefined) => "put" | "delete" | "keep", value?: string) => {
     const db = await open(idb);
     try {
-      const store = db.transaction(STORE, "readwrite").objectStore(STORE);
+      const tx = db.transaction(STORE, "readwrite", { durability: "strict" });
+      const done = new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onabort = () => reject(tx.error ?? new Error("session store transaction aborted"));
+        tx.onerror = () => reject(tx.error ?? new Error("session store transaction failed"));
+      });
+      done.catch(() => {}); // awaited below; a decide() error aborts it first
+      const store = tx.objectStore(STORE);
       const raw = await request<string | undefined>(store.get(key));
-      const action = decide(raw);
+      let action: "put" | "delete" | "keep";
+      try {
+        action = decide(raw);
+      } catch (e) {
+        tx.abort();
+        throw e;
+      }
       if (action === "put") await request(store.put(value, key));
       if (action === "delete") await request(store.delete(key));
+      await done;
     } finally {
       db.close();
     }

@@ -101,7 +101,7 @@ describe("assertSigningLock", () => {
 
 describe("openSession", () => {
   it("refuses a fee budget the key cell could not pay a single fee from", async () => {
-    const { owner } = fakeOwner([], () => true);
+    const owner = new ccc.SignerCkbPrivateKey(new ccc.ClientPublicTestnet(), "0x" + "42".repeat(32));
     const s = createSession({ expiresAt: new Date(Date.now() + 60_000), scope: { maxPerTx: 5n * CKB } });
     await expect(openSession(owner, s, d, { budget: 200n * CKB, feeBudget: 61n * CKB })).rejects.toBeInstanceOf(
       SessionBalanceError,

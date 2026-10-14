@@ -29,6 +29,8 @@ export interface Session {
     recipientLockHash?: ccc.Hex;
     /** A token session: the xUDT type its cells hold, and the most units one spend may move. */
     token?: { type: { codeHash: ccc.Hex; hashType: ccc.HashType; args: ccc.Hex }; maxPerTx: bigint };
+    /** The funding transaction, so a key is not forgotten while its funds are still on the way. */
+    openTx?: ccc.Hex;
   };
 }
 

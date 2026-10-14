@@ -52,7 +52,41 @@ export class SessionBalanceError extends Error {
 }
 
 const KEY_CELL_MIN = 61n * 100_000_000n;
-const DEFAULT_FEE_BUDGET = 62n * 100_000_000n;
+/** What the key cell keeps above the cell it returns to the owner as, for fees. */
+const FEE_MARGIN = 1n * 100_000_000n;
+
+/**
+ * The smallest key cell that can still be returned to the owner: a cell under the
+ * owner's lock (63 CKB for JoyID or Omnilock, whose args are 22 bytes), and never
+ * below a key cell's own 61 CKB.
+ */
+function keyCellFloor(ownerLock: ccc.ScriptLike): bigint {
+  const ownerCell = ccc.CellOutput.from({ lock: ownerLock }, "0x").capacity;
+  return ownerCell > KEY_CELL_MIN ? ownerCell : KEY_CELL_MIN;
+}
+
+/**
+ * Signs `tx`, hands its final hash to `beforeSend`, then sends it. The hash is
+ * known before anything leaves, so a caller can record the payment or the key
+ * against it first. If the send throws but the node did take the transaction (a
+ * timeout on the reply, say), the hash is returned all the same.
+ */
+async function signAndSend(
+  signer: ccc.Signer,
+  tx: ccc.Transaction,
+  beforeSend?: (txHash: ccc.Hex) => Promise<void>,
+): Promise<ccc.Hex> {
+  const signed = await signer.signTransaction(tx);
+  const hash = signed.hash();
+  await beforeSend?.(hash);
+  try {
+    return await signer.client.sendTransaction(signed);
+  } catch (e) {
+    const known = await signer.client.getTransaction(hash).catch(() => undefined);
+    if (known && ["pending", "proposed", "committed"].includes(known.status)) return hash;
+    throw e;
+  }
+}
 
 export async function keyLockOf(session: Session, client: ccc.Client): Promise<ccc.Script> {
   return (await sessionSigner(session, client).getRecommendedAddressObj()).script;
@@ -196,9 +230,14 @@ export async function assertSigningLock(lock: ccc.Script, client: ccc.Client): P
  * Owner funds the session: one transaction, one signature from `owner`.
  * The on-chain recipient comes from `session.policy.scope.recipients`.
  *
- * `beforeSend` runs once the transaction is built and before it is sent: save the
+ * `beforeSend` runs once the transaction is signed and before it is sent: save the
  * session there (`store.save({ ...session, onchain: binding })`). Saved after
- * sending, a failed save would leave funds under a key that exists nowhere.
+ * sending, a failed save would leave funds under a key that exists nowhere. The
+ * binding then carries `openTx`, the funding transaction's hash, which
+ * `closeSession` checks before reporting that nothing is left.
+ *
+ * The key cell (`feeBudget`) must be able to return to the owner at the end: by
+ * default it is the size of a cell under the owner's lock plus 1 CKB for fees.
  */
 export async function openSession(
   owner: ccc.Signer,
@@ -222,14 +261,16 @@ export async function openSession(
     }
   }
   if (opts.minInterval !== undefined) relativeBlocksSince(opts.minInterval); // a spend must be able to meet it
-  const feeBudget = opts.feeBudget ?? DEFAULT_FEE_BUDGET;
-  if (feeBudget <= KEY_CELL_MIN) {
-    throw new SessionBalanceError(
-      `feeBudget must be above ${ccc.fixedPointToString(KEY_CELL_MIN)} CKB: the key cell must stay that size after paying fees`,
-    );
-  }
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
   await assertSigningLock(ownerLock, client);
+  const floor = keyCellFloor(ownerLock);
+  const feeBudget = opts.feeBudget ?? floor + FEE_MARGIN;
+  if (feeBudget <= floor) {
+    throw new SessionBalanceError(
+      `feeBudget must be above ${ccc.fixedPointToString(floor)} CKB: the key cell pays fees and must still ` +
+        "be able to return to the owner's lock",
+    );
+  }
   const recipient = onchainRecipient(session);
   const recipientLockHash = recipient
     ? (await ccc.Address.fromString(recipient, client)).script.hash()
@@ -268,8 +309,12 @@ export async function openSession(
   }
   await tx.completeInputsByCapacity(owner);
   await tx.completeFeeBy(owner);
-  await opts.beforeSend?.(binding);
-  return { txHash: await owner.sendTransaction(tx), binding };
+  let funded = binding;
+  const txHash = await signAndSend(owner, tx, async (hash) => {
+    funded = { ...binding, openTx: hash };
+    await opts.beforeSend?.(funded);
+  });
+  return { txHash, binding: funded };
 }
 
 /**
@@ -314,8 +359,8 @@ export async function spendInSession(
   deployment: SessionLockDeployment,
   binding: OnChainBinding,
   request:
-    | { to: string; amount: bigint; token?: undefined; topUp?: boolean; memo?: ccc.HexLike }
-    | { to: string; token: bigint; amount?: undefined; topUp?: boolean; memo?: ccc.HexLike },
+    | { to: string; amount: bigint; token?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> }
+    | { to: string; token: bigint; amount?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> },
   now: Date = new Date(),
 ): Promise<ccc.Hex> {
   const tokenType = binding.token && ccc.Script.from(binding.token.type);
@@ -429,10 +474,11 @@ export async function spendInSession(
   if (request.memo !== undefined) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: request.memo });
   tx.addOutput({ lock: state.keyLock, capacity: 0n });
   await tx.completeFeeChangeToOutput(sessionSigner(session, client), tx.outputs.length - 1);
-  if (tx.outputs[tx.outputs.length - 1].capacity < KEY_CELL_MIN) {
+  // Below this, the key cell could no longer go back to the owner at the end.
+  if (tx.outputs[tx.outputs.length - 1].capacity < keyCellFloor(binding.ownerLock)) {
     throw new SessionBalanceError("the key cell cannot cover another fee; top it up");
   }
-  return sessionSigner(session, client).sendTransaction(tx);
+  return signAndSend(sessionSigner(session, client), tx, request.beforeSend);
 }
 
 /** The cells created at least `blocks` blocks before the tip: those a relative `since` of `blocks` can spend. */
@@ -452,17 +498,32 @@ export async function matureCells(client: ccc.Client, cells: ccc.Cell[], blocks:
  * The sweep goes first because it is what matters: a key cell too small to pay
  * for the owner's lock (some wallets' locks need more than 61 CKB) must not block
  * it. A key-cell failure is reported in `keyError`; the key stays usable for a retry.
+ *
+ * `nothingFound` means no cell is left under the session or the key: the key can
+ * be forgotten. If the funding transaction (`binding.openTx`) is still in flight
+ * or not yet indexed, this throws instead, so the key is never forgotten before
+ * the funds it controls arrive.
  */
 export async function closeSession(
   owner: ccc.Signer,
   session: Session,
   deployment: SessionLockDeployment,
   binding: OnChainBinding,
-): Promise<{ keyTx?: ccc.Hex; sweepTx?: ccc.Hex; keyError?: string }> {
+): Promise<{ keyTx?: ccc.Hex; sweepTx?: ccc.Hex; keyError?: string; nothingFound?: true }> {
   const client = owner.client;
   const ownerLock = ccc.Script.from(binding.ownerLock);
   const state = await findSessionCells(session, client, deployment, binding);
-  const result: { keyTx?: ccc.Hex; sweepTx?: ccc.Hex; keyError?: string } = {};
+  const result: { keyTx?: ccc.Hex; sweepTx?: ccc.Hex; keyError?: string; nothingFound?: true } = {};
+
+  if (!state.sessionCells.length && !state.keyCells.length) {
+    const open = binding.openTx && (await client.getTransaction(binding.openTx));
+    if (open && ["pending", "proposed", "committed"].includes(open.status)) {
+      throw new SessionBalanceError(
+        `the session's funding transaction is ${open.status === "committed" ? "not indexed yet" : open.status}; close again in a minute`,
+      );
+    }
+    return { nothingFound: true };
+  }
 
   if (state.sessionCells.length) result.sweepTx = await ownerSweep(owner, deployment, state.sessionCells);
 

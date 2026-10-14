@@ -133,10 +133,23 @@ export function relativeBlocksSince(blocks: bigint): bigint {
   return (1n << 63n) | blocks;
 }
 
-/** Pulls a session-lock error code out of a node's rejection message, if there is one. */
-export function sessionLockErrorFrom(message: string): { code: number; meaning: string } | undefined {
+/**
+ * Pulls a session-lock error code out of a node's rejection message, if there is
+ * one. The session lock only ever runs as an input's lock: a code from a type
+ * script (xUDT on a token payment, say) is not one, and gives undefined. An
+ * input lock can still be another lock in the same transaction (the recipient's
+ * anyone-can-pay cell on a top-up); pass `sessionInputs`, the indexes of the
+ * session cells, to rule that out too.
+ */
+export function sessionLockErrorFrom(
+  message: string,
+  sessionInputs?: number[],
+): { code: number; meaning: string } | undefined {
   const m = message.match(/error code (-?\d+)/i) ?? message.match(/ValidationFailure\D+(-?\d+)/);
   if (!m) return undefined;
+  const source = message.match(/source: (Inputs|Outputs)\[(\d+)\]\.(Lock|Type)/);
+  if (source && (source[1] !== "Inputs" || source[3] !== "Lock")) return undefined;
+  if (source && sessionInputs && !sessionInputs.includes(Number(source[2]))) return undefined;
   const code = Number(m[1]);
   return { code, meaning: SESSION_LOCK_ERRORS[code] ?? "unknown" };
 }

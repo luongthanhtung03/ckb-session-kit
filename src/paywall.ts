@@ -79,6 +79,7 @@ export async function verifyAccess(
   // Cheap checks first, before resolving any input over RPC.
   if (tx.inputs.length > MAX_PAYMENT_INPUTS) return { ok: false, reason: "not a session payment: too many inputs" };
   let memos = 0;
+  let memoAt = -1;
   for (let i = 0; i < tx.witnesses.length; i++) {
     let inputType: ccc.Hex | undefined;
     try {
@@ -86,12 +87,20 @@ export async function verifyAccess(
     } catch {
       continue; // not WitnessArgs: carries no memo
     }
-    if (inputType !== undefined) memos++;
+    if (inputType !== undefined) {
+      memos++;
+      memoAt = i;
+    }
   }
   if (memos !== 1) return { ok: false, reason: "a payment must carry exactly one memo" };
 
   // The payer's lock: the standard secp256k1 lock of the key that signed the request.
   const payerLock = (await new ccc.SignerCkbPublicKey(client, proof.publicKey).getAddressObjSecp256k1()).script;
+
+  // One lookup before all of them: anyone can sign a request for someone else's
+  // public payment, and must not get to make the server resolve every input.
+  const memoCell = memoAt < tx.inputs.length ? await client.getCell(tx.inputs[memoAt].previousOutput) : undefined;
+  if (!memoCell?.cellOutput.lock.eq(payerLock)) return { ok: false, reason: "the signing key did not pay this transaction" };
   const to = ccc.Script.from(expect.to);
   const token = expect.token && ccc.Script.from(expect.token);
   // What a cell gives the recipient: its capacity, or with a token its units of that exact token
