@@ -34,11 +34,16 @@ a scope the lock cannot enforce.
 
 ### `openSession(owner, session, deployment, opts) → { txHash, binding }`
 The owner's wallet funds a session cell (`opts.budget`) and a key cell
-(`opts.feeBudget`, default 62 CKB, must exceed 61) in one transaction: one
-signature. `opts.minInterval` sets the on-chain rate limit in blocks.
-`opts.beforeSend(binding)` runs after the transaction is built and before it is
-sent: save the session there, so funds never sit under a key that exists
-nowhere. Set `session.onchain = binding` afterwards. A session cell occupies
+(`opts.feeBudget`) in one transaction: one signature. The key cell must be able
+to go back to the owner at the end, so by default it is a cell under the owner's
+lock plus 1 CKB (62 CKB for a secp256k1 owner, 64 for JoyID or Omnilock, whose
+cells need 63), and a smaller `feeBudget` is refused. `opts.minInterval` sets
+the on-chain rate limit in blocks. `opts.beforeSend(binding)` runs after the
+transaction is signed and before it is sent: save the session there, so funds
+never sit under a key that exists nowhere. The binding carries `openTx`, the
+funding transaction's hash. Set `session.onchain = binding` afterwards. If the
+send throws but the node did take the transaction, `openSession` returns
+normally. A session cell occupies
 121 CKB (153 with a recipient), which stays locked as the cell itself.
 
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
@@ -47,13 +52,16 @@ cells, any surplus returned), and one spend may move at most `maxPerTx` units,
 enforced by the lock. Only plain xUDT is accepted (`assertPlainXudt`). A token
 session cell occupies 250 CKB (282 with a recipient).
 
-### `spendInSession(session, client, deployment, binding, { to, amount | token, topUp?, memo? }) → txHash`
+### `spendInSession(session, client, deployment, binding, { to, amount | token, topUp?, memo?, beforeSend? }) → txHash`
 The session key pays, no wallet involved. Checks the scope first (`ScopeError`),
 then the network checks it again in the lock. A plain payment creates a cell, so
 it is at least 61 CKB; `topUp: true` pays any amount into an existing
 anyone-can-pay cell of `to`. `memo` goes into the key cell's witness, which the
 key signs: see `verifyAccess`. Throws `SessionBalanceError` when the balance,
-the change or the key cell would fall below what a cell needs.
+the change or the key cell would fall below what a cell needs (for the key
+cell: what it needs to go back to the owner). `beforeSend(txHash)` runs with
+the final hash before the payment is sent: record the payment there, so it is
+never sent unrecorded.
 
 In a token session, `{ to, token }` pays `token` units instead of shannons:
 with `topUp: true` into the recipient's anyone-can-pay token cell (no CKB
@@ -61,10 +69,14 @@ leaves the session), otherwise in a new token cell whose capacity (about 142
 CKB) must fit in `maxPerTx`. Tokens always stay in the change; a CKB payment
 never burns them.
 
-### `closeSession(owner, session, deployment, binding) → { sweepTx?, keyTx?, keyError? }`
+### `closeSession(owner, session, deployment, binding) → { sweepTx?, keyTx?, keyError?, nothingFound? }`
 The owner sweeps the session cells (one signature), then the session key returns
 the key cell to the owner. If the key cell cannot be returned, `keyError` says
-why and the key should be kept for a retry.
+why and the key should be kept for a retry. `nothingFound` means no cell is
+left under the session or the key, and the key can be forgotten. While the
+funding transaction (`binding.openTx`) is still pending or not yet indexed it
+throws `SessionBalanceError` instead: forget a key only after `keyTx` or
+`nothingFound`.
 
 ### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
 Device-loss recovery, with the wallet alone: finds every session cell this owner
@@ -139,10 +151,13 @@ or 160 bytes: `token_type_hash | max_per_tx_token (u128)` before the recipient.
 ### `relativeBlocksSince(blocks)`
 The relative block-number `since` the rate limit requires (RFC 0017).
 
-### `SESSION_LOCK_ERRORS`, `sessionLockErrorFrom(message)`
+### `SESSION_LOCK_ERRORS`, `sessionLockErrorFrom(message, sessionInputs?)`
 The lock's error codes (10 bad args … 18 type script in session mode, 19
 malformed token data, 20 token outflow over its limit) and a
-parser that pulls the code out of a node's rejection message.
+parser that pulls the code out of a node's rejection message. A code from a
+type script is not the session lock's and gives undefined; with
+`sessionInputs` (the indexes of the session cells) so does one from another
+input's lock.
 
 ### Types: `SessionLockDeployment`, `SessionLockParams`
 

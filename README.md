@@ -86,9 +86,10 @@ sweep. Anyone can also plant a *well-formed* cell with the owner's hash and thei
 own key, and spend it just before the sweep lands; if the single sweep fails,
 each session is swept on its own (one signature each), so only the planted cell
 is left out. What cannot come back is the key cell (the fee budget), which only
-the session key can spend; keep it small. It must stay at 61 CKB after paying
-fees, so `openSession` takes more than 61 (62 CKB by default, enough for
-thousands of fees).
+the session key can spend; keep it small. It must stay big enough to go back to
+the owner after paying fees, so `openSession` sizes it from the owner's lock: 62
+CKB by default for a secp256k1 owner, 64 for JoyID or Omnilock (MetaMask, UniSat,
+OKX), whose cells need 63. The extra 1 CKB pays thousands of fees.
 
 `npm run smoke:recover` runs it on testnet. Run on 9 Oct 2026: two sessions
 [opened](https://testnet.explorer.nervos.org/transaction/0x289291b3026af3d1e1929308b75276bc72d0c8de151f1b74f6b7926f29bda74b)
