@@ -17,7 +17,23 @@ import {
 } from "ckb-session-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import deploymentJson from "../../../deployment/testnet.json";
-import { ckb, describeFailure, explorerAddr, explorerTx, Footer, Log, Nav, short, type LogEntry } from "../shared";
+import {
+  ckb,
+  claimWithRetry,
+  describeClose,
+  describeFailure,
+  explorerAddr,
+  explorerTx,
+  Footer,
+  FUNDING_UNSURE,
+  Log,
+  Nav,
+  neverSent,
+  openKept,
+  paymentState,
+  short,
+  type LogEntry,
+} from "../shared";
 import { Prompt, Terminal } from "../Terminal";
 import { ARTICLES } from "./articles";
 import { CREATOR, memoLabel, PRICE } from "./config";
@@ -35,9 +51,9 @@ const CELL_RESERVE = 153n * CKB;
 const UNLOCKED_KEY = "ckb-session-kit:pay-per-read:unlocked";
 /**
  * Article id → its payment, the session key that paid (only that key can claim
- * it), and the text once the server has released it.
+ * it), when it was sent, and the text once the server has released it.
  */
-type Entry = { tx: string; key?: string; body?: string[] };
+type Entry = { tx: string; key?: string; at?: number; body?: string[] };
 type Unlocked = Record<string, Entry>;
 
 function loadUnlocked(): Unlocked {
@@ -51,9 +67,7 @@ function loadUnlocked(): Unlocked {
   }
 }
 
-/** Read-modify-write, so a second tab's records are kept. */
-function recordUnlocked(u: Unlocked, id: string, entry: Entry): Unlocked {
-  const next = { ...u, ...loadUnlocked(), [id]: entry };
+function saveUnlockedTo(next: Unlocked): Unlocked {
   try {
     localStorage.setItem(UNLOCKED_KEY, JSON.stringify(next));
   } catch {
@@ -61,6 +75,19 @@ function recordUnlocked(u: Unlocked, id: string, entry: Entry): Unlocked {
   }
   return next;
 }
+
+/** Read-modify-write, so a second tab's records are kept. */
+const recordUnlocked = (u: Unlocked, id: string, entry: Entry) => saveUnlockedTo({ ...u, ...loadUnlocked(), [id]: entry });
+
+/** Forgets a payment that never happened, if `id` is still recorded against it. */
+function dropUnlocked(u: Unlocked, id: string, tx: string): Unlocked {
+  const all = { ...u, ...loadUnlocked() };
+  if (all[id]?.tx === tx) delete all[id];
+  return saveUnlockedTo(all);
+}
+
+/** This key's payments the server has not released yet. */
+const unclaimedBy = (u: Unlocked, key: string) => Object.values(u).filter((e) => !e.body && e.key === key);
 
 export default function PayPerRead() {
   const { open, disconnect, client } = useCcc();
@@ -76,20 +103,50 @@ export default function PayPerRead() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
+  /** Close was refused because a paid article is unreleased: offer to forfeit it, in case it never will be. */
+  const [blocked, setBlocked] = useState(false);
+
+  // The latest records and session, for the async claim loops.
+  const unlockedRef = useRef<Unlocked>({});
+  const sessionRef = useRef<Session | undefined>(undefined);
+  const stopped = useRef(false);
+  const saveUnlocked = (next: Unlocked) => {
+    unlockedRef.current = next;
+    setUnlocked(next);
+  };
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   const push = (e: Omit<LogEntry, "at">) => setLog((l) => [{ at: new Date(), ...e }, ...l]);
 
   useEffect(() => {
-    setUnlocked(loadUnlocked());
+    stopped.current = false;
+    const stored = loadUnlocked();
+    saveUnlocked(stored);
     store
       .load()
       .then((s) => {
         setSession(s);
-        if (s) push({ level: "info", text: "restored reading session from IndexedDB" });
+        if (!s) return;
+        push({ level: "info", text: "restored reading session from IndexedDB" });
+        // A payment sent before the reload: wait for it, then claim it.
+        const unclaimed = unclaimedBy(stored, s.publicKey).sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+        if (unclaimed.length) setPending(unclaimed[unclaimed.length - 1].tx);
       })
+      .catch((e) => push(describeFailure(e)))
       .finally(() => setLoading(false));
+    // Another tab's payments and releases.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === UNLOCKED_KEY) saveUnlocked(loadUnlocked());
+    };
+    window.addEventListener("storage", onStorage);
     const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
+    return () => {
+      stopped.current = true;
+      clearInterval(t);
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
 
   useEffect(() => {
@@ -119,38 +176,70 @@ export default function PayPerRead() {
   }, [refresh]);
 
   // Each read spends the cells the previous one created, so reads wait for the
-  // last one to confirm.
+  // last one to confirm. A payment that will never commit is forgotten: nothing was paid.
   useEffect(() => {
     if (!pending) return;
+    const since = Object.values(unlockedRef.current).find((e) => e.tx === pending)?.at ?? Date.now();
+    let done = false;
     const t = setInterval(async () => {
-      if ((await client.getTransaction(pending))?.status === "committed") {
-        setPending(undefined);
+      const state = await paymentState(client, pending, since);
+      if (state === "waiting" || done) return;
+      done = true;
+      setPending((p) => (p === pending ? undefined : p));
+      if (state === "committed") {
         push({ level: "info", text: `confirmed ${short(pending)}` });
-        refresh();
+      } else {
+        const lost = Object.entries(unlockedRef.current).find(([, e]) => e.tx === pending && !e.body);
+        if (lost) saveUnlocked(dropUnlocked(unlockedRef.current, lost[0], pending));
+        push({
+          level: "err",
+          text: lost
+            ? `the payment for “${lost[0]}” never committed (${short(pending)}); nothing was paid, read it again`
+            : `${short(pending)} never committed; nothing was spent`,
+        });
       }
+      refresh();
     }, 4000);
-    return () => clearInterval(t);
+    return () => {
+      done = true;
+      clearInterval(t);
+    };
   }, [client, pending, refresh]);
 
   // Paid but not yet released: once the payment is committed, prove to the
-  // server that this browser's session key paid, and get the text.
+  // server that this browser's session key paid, and get the text. While the
+  // server cannot tell yet (payment not committed, or the chain unreachable), retry.
   const claiming = useRef(new Set<string>());
   useEffect(() => {
     if (!session) return;
-    for (const [id, { tx, key, body }] of Object.entries(unlocked)) {
+    for (const [id, entry] of Object.entries(unlocked)) {
+      const { tx, key, body } = entry;
       if (body || tx === pending || claiming.current.has(id)) continue;
       if (key && key !== session.publicKey) continue; // paid by another session: only its key can claim
       claiming.current.add(id);
+      const since = entry.at ?? Date.now();
       (async () => {
         try {
           const proof = await signAccess(session, tx as ccc.Hex, paymentMemo(memoLabel(id)));
-          const res = await fetch("/api/article", { method: "POST", body: JSON.stringify({ id, proof }) });
-          const data = await res.json();
-          if (!res.ok) {
-            push({ level: "err", text: `server refused “${id}”: ${data.error}` });
+          const r = await claimWithRetry<{ body: string[] }>(
+            "/api/article",
+            JSON.stringify({ id, proof }),
+            async () => {
+              if (stopped.current || sessionRef.current?.publicKey !== session.publicKey) return false;
+              if (unlockedRef.current[id]?.tx !== tx) return false; // dropped or forfeited meanwhile
+              if ((await paymentState(client, tx, since)) !== "dropped") return true;
+              saveUnlocked(dropUnlocked(unlockedRef.current, id, tx));
+              push({ level: "err", text: `the payment for “${id}” never committed; nothing was paid, read it again` });
+              return false;
+            },
+            (why) => push({ level: "info", text: `“${id}”: ${why}` }),
+          );
+          if (!r) return;
+          if (!r.ok) {
+            push({ level: "err", text: `server refused “${id}”: ${r.error}` });
             return;
           }
-          setUnlocked((u) => recordUnlocked(u, id, { tx, key, body: data.body }));
+          saveUnlocked(recordUnlocked(unlockedRef.current, id, { ...entry, body: r.data.body }));
           push({ level: "ok", text: `server checked the payment on-chain and released “${id}”` });
         } catch (e) {
           push(describeFailure(e));
@@ -159,7 +248,7 @@ export default function PayPerRead() {
         }
       })();
     }
-  }, [session, unlocked, pending]);
+  }, [session, unlocked, pending, client]);
 
   const active = session?.onchain && isActive(session, now);
   const spendable = cells ? (cells.balance > CELL_RESERVE ? cells.balance - CELL_RESERVE : 0n) : undefined;
@@ -176,22 +265,16 @@ export default function PayPerRead() {
         scope: { maxPerTx: MAX_PER_TX, recipients: [CREATOR] },
       });
       push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
-      let saved = false;
-      try {
-        // Saved before the funds are sent: a key that exists nowhere would lose them.
-        const { txHash, binding } = await openSession(signer, draft, deployment, {
-          budget: BUDGET,
-          beforeSend: async (b) => {
-            await store.save({ ...draft, onchain: b });
-            saved = true;
-          },
-        });
-        setSession({ ...draft, onchain: binding });
-        setPending(txHash);
-        push({ level: "ok", text: "reading session opened · it can only pay the creator", hash: txHash });
-      } catch (e) {
-        if (saved) await store.clear(draft); // never funded
-        throw e;
+      // Saved before the funds are sent: a key that exists nowhere would lose them.
+      const opened = await openKept(client, store, draft, (beforeSend) =>
+        openSession(signer, draft, deployment, { budget: BUDGET, beforeSend }),
+      );
+      setSession(opened.session);
+      setPending(opened.txHash);
+      if (opened.error) {
+        push({ level: "err", text: `${describeFailure(opened.error).text} · ${FUNDING_UNSURE}`, hash: opened.txHash });
+      } else {
+        push({ level: "ok", text: "reading session opened · it can only pay the creator", hash: opened.txHash });
       }
     } catch (e) {
       push(describeFailure(e));
@@ -201,46 +284,71 @@ export default function PayPerRead() {
   }
 
   async function unlock(id: string, title: string) {
-    if (!session?.onchain) return;
+    if (!session?.onchain || pending) return;
+    // Another tab may have paid already: re-read what is recorded before paying.
+    const fresh = { ...unlockedRef.current, ...loadUnlocked() };
+    const known = new Set(Object.values(unlockedRef.current).map((e) => e.tx));
+    const elsewhere = unclaimedBy(fresh, session.publicKey).find((e) => !known.has(e.tx));
+    if (fresh[id] && (fresh[id].body || fresh[id].key === session.publicKey)) {
+      saveUnlocked(fresh);
+      push({ level: "info", text: `“${title}” is already paid for, in another tab` });
+      return;
+    }
+    if (elsewhere) {
+      saveUnlocked(fresh);
+      setPending(elsewhere.tx);
+      push({ level: "info", text: "another tab just paid from this session; waiting for that payment first" });
+      return;
+    }
     setBusy(true);
+    let sent = undefined as string | undefined; // set in a callback: not narrowed
     try {
       const hash = await spendInSession(session, client, deployment, session.onchain, {
         to: CREATOR,
         amount: PRICE,
         topUp: true,
         memo: paymentMemo(memoLabel(id)),
+        // Recorded before it is sent, and pending first so the claim waits for it to commit.
+        beforeSend: async (h) => {
+          sent = h;
+          saveUnlocked(recordUnlocked(unlockedRef.current, id, { tx: h, key: session.publicKey, at: Date.now() }));
+          setPending(h);
+        },
       });
-      // Pending first, so the claim waits for the payment to commit.
-      setPending(hash);
-      setUnlocked((u) => recordUnlocked(u, id, { tx: hash, key: session.publicKey }));
       push({ level: "ok", text: `paid 1 CKB for “${title}” · session key only, no wallet popup`, hash });
     } catch (e) {
+      // Forget the record only if the node never took the payment.
+      if (sent && (await neverSent(client, sent))) {
+        const gone = sent;
+        saveUnlocked(dropUnlocked(unlockedRef.current, id, gone));
+        setPending((p) => (p === gone ? undefined : p));
+      }
       push(describeFailure(e));
     } finally {
       setBusy(false);
     }
   }
 
-  async function close() {
-    if (!signer || !session?.onchain) return;
+  async function close(forfeit = false) {
+    if (!signer || !session?.onchain || pending) return;
     setBusy(true);
     try {
-      const unclaimed = Object.values(unlocked).some((e) => !e.body && e.key === session.publicKey);
-      if (unclaimed) {
+      const unclaimed = unclaimedBy({ ...unlockedRef.current, ...loadUnlocked() }, session.publicKey).length > 0;
+      if (unclaimed && !forfeit) {
         // Only this session's key can claim its payments; closing would forfeit them.
+        setBlocked(true);
         push({ level: "err", text: "an article you paid for is not released yet; close once it is" });
         return;
       }
       push({ level: "info", text: "waiting for your wallet to sweep the balance, then returning the key cell…" });
-      const { keyTx, sweepTx, keyError } = await closeSession(signer, session, deployment, session.onchain);
-      if (sweepTx) push({ level: "ok", text: "unspent balance swept back to you", hash: sweepTx });
-      if (keyTx) push({ level: "ok", text: "key cell returned to you", hash: keyTx });
-      if (keyError) {
-        // Keep the key: the key cell is still under it. Close again to retry.
-        push({ level: "err", text: `key cell not returned: ${keyError}` });
-        return;
-      }
+      const { forget, lines } = describeClose(
+        await closeSession(signer, session, deployment, session.onchain),
+        "unspent balance swept back to you",
+      );
+      lines.forEach(push);
+      if (!forget) return;
       await store.clear(session);
+      setBlocked(false);
       setSession(undefined);
       setCells(undefined);
       setPending(undefined);
@@ -312,8 +420,8 @@ export default function PayPerRead() {
             </Prompt>
             <p className="hint">
               # 200 CKB into the session (153 stay as the cell&apos;s own storage, 47 are spendable) plus a
-              100 CKB key cell for fees. Everything unspent comes back when you close. Needs ~301 testnet
-              CKB: <a href="https://faucet.nervos.org/">faucet</a>.
+              ~62–64 CKB key cell for fees (sized to your wallet&apos;s lock). Everything unspent comes back when
+              you close. Needs ~265 testnet CKB: <a href="https://faucet.nervos.org/">faucet</a>.
             </p>
             <button disabled={!signer || busy} onClick={openReading}>
               {!signer ? "connect a wallet first" : busy ? "waiting for wallet…" : "open session (1 signature) ⏎"}
@@ -401,11 +509,19 @@ export default function PayPerRead() {
             <Prompt path="~/session">session close --return-to reader</Prompt>
             <p className="hint">
               # returns the key cell and the unspent balance to your wallet. One signature
-              {isOwner ? "." : " — connect the wallet that opened it first."}
+              {isOwner ? "." : " — connect the wallet that opened it first."} Waits until every paid article is
+              released.
             </p>
-            <button className="danger" disabled={!isOwner || busy} onClick={close}>
-              close session
-            </button>
+            <div className="row">
+              <button className="danger" disabled={!isOwner || busy || Boolean(pending)} onClick={() => close()}>
+                {pending ? "waiting for the last transaction…" : "close session"}
+              </button>
+              {blocked && (
+                <button className="link" disabled={!isOwner || busy || Boolean(pending)} onClick={() => close(true)}>
+                  close anyway, forfeit the unreleased article
+                </button>
+              )}
+            </div>
           </section>
         )}
 

@@ -22,7 +22,22 @@ import {
 } from "ckb-session-kit";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import deploymentJson from "../../../deployment/testnet.json";
-import { ckb, describeFailure, explorerAddr, explorerTx, Footer, Log, Nav, short, type LogEntry } from "../shared";
+import {
+  ckb,
+  describeClose,
+  describeFailure,
+  explorerAddr,
+  explorerTx,
+  Footer,
+  FUNDING_UNSURE,
+  Log,
+  Nav,
+  neverSent,
+  openKept,
+  paymentState,
+  short,
+  type LogEntry,
+} from "../shared";
 import { Prompt, Terminal } from "../Terminal";
 import { emptyScan, scanBoard, type BoardScan } from "./chain";
 import { BOARD, BOARD_READY, PALETTE, PLACE } from "./config";
@@ -72,6 +87,7 @@ export default function Place() {
         setSession(s);
         if (s) push({ level: "info", text: "restored painting session from IndexedDB" });
       })
+      .catch((e) => push(describeFailure(e)))
       .finally(() => setLoading(false));
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
@@ -138,27 +154,34 @@ export default function Place() {
   // wait for the last one to confirm. Its pixels stay pending until the board shows them.
   useEffect(() => {
     if (!pending) return;
+    const since = Date.now();
+    let done = false;
     const t = setInterval(async () => {
-      const status = (await client.getTransaction(pending))?.status;
-      if (status === "committed") {
+      const state = await paymentState(client, pending, since);
+      if (state === "waiting" || done) return;
+      done = true;
+      if (state === "committed") {
         await sync();
         setPending(undefined);
         setSent((s) => (s?.hash === pending ? undefined : s));
         push({ level: "info", text: `confirmed ${short(pending)}` });
         refreshCells();
-      } else if (status === "rejected") {
-        // Dropped by the node (usually another player spent the same board cell): paint it again.
+      } else {
+        // Rejected, or gone from the node (usually another player spent the same board cell): paint it again.
         setPending(undefined);
         const lost = sentRef.current;
         if (lost?.hash === pending) {
           setSent(undefined);
           setDrafts((ds) => [...lost.pixels.filter((p) => !ds.some((d) => d.x === p.x && d.y === p.y)), ...ds].slice(0, PLACE.maxPixels));
         }
-        push({ level: "err", text: `${short(pending)} was rejected; its pixels are back in your batch, commit again` });
+        push({ level: "err", text: `${short(pending)} never committed; its pixels are back in your batch, commit again` });
         refreshCells();
       }
     }, 4000);
-    return () => clearInterval(t);
+    return () => {
+      done = true;
+      clearInterval(t);
+    };
   }, [client, pending, sync, refreshCells]);
 
   const board = useMemo(() => applyPlacements(scan.placements, PLACE), [scan]);
@@ -203,22 +226,16 @@ export default function Place() {
         scope: { maxPerTx: MAX_PER_TX, recipients: [BOARD] },
       });
       push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
-      let saved = false;
-      try {
-        // Saved before the funds are sent: a key that exists nowhere would lose them.
-        const { txHash, binding } = await openSession(signer, draft, deployment, {
-          budget: BUDGET,
-          beforeSend: async (b) => {
-            await store.save({ ...draft, onchain: b });
-            saved = true;
-          },
-        });
-        setSession({ ...draft, onchain: binding });
-        setPending(txHash);
-        push({ level: "ok", text: "painting session opened · it can only pay the board", hash: txHash });
-      } catch (e) {
-        if (saved) await store.clear(draft); // never funded
-        throw e;
+      // Saved before the funds are sent: a key that exists nowhere would lose them.
+      const opened = await openKept(client, store, draft, (beforeSend) =>
+        openSession(signer, draft, deployment, { budget: BUDGET, beforeSend }),
+      );
+      setSession(opened.session);
+      setPending(opened.txHash);
+      if (opened.error) {
+        push({ level: "err", text: `${describeFailure(opened.error).text} · ${FUNDING_UNSURE}`, hash: opened.txHash });
+      } else {
+        push({ level: "ok", text: "painting session opened · it can only pay the board", hash: opened.txHash });
       }
     } catch (e) {
       if (e instanceof SessionStoreConflict) {
@@ -235,15 +252,20 @@ export default function Place() {
     if (!session?.onchain || !drafts.length) return;
     setBusy(true);
     const pixels = drafts;
+    let sentHash = undefined as string | undefined; // set in a callback: not narrowed
     try {
       const hash = await spendInSession(session, client, deployment, session.onchain, {
         to: BOARD,
         amount: placementPrice(pixels.length, PLACE),
         topUp: true,
         memo: encodePlacement(pixels, PLACE),
+        // Pending before it is sent: a payment that goes out is always tracked.
+        beforeSend: async (h) => {
+          sentHash = h;
+          setPending(h);
+          setSent({ hash: h, pixels });
+        },
       });
-      setPending(hash);
-      setSent({ hash, pixels });
       setDrafts((ds) => ds.filter((d) => !pixels.includes(d)));
       push({
         level: "ok",
@@ -251,6 +273,17 @@ export default function Place() {
         hash,
       });
     } catch (e) {
+      if (sentHash) {
+        const h = sentHash;
+        if (await neverSent(client, h)) {
+          // Never left: the pixels are still in the batch.
+          setPending((p) => (p === h ? undefined : p));
+          setSent((s) => (s?.hash === h ? undefined : s));
+        } else {
+          // The node may have it: track it as sent, and the poll settles it.
+          setDrafts((ds) => ds.filter((d) => !pixels.includes(d)));
+        }
+      }
       push(describePlaceFailure(e));
     } finally {
       setBusy(false);
@@ -258,18 +291,16 @@ export default function Place() {
   }
 
   async function close() {
-    if (!signer || !session?.onchain) return;
+    if (!signer || !session?.onchain || pending) return;
     setBusy(true);
     try {
       push({ level: "info", text: "waiting for your wallet to sweep the balance, then returning the key cell…" });
-      const { keyTx, sweepTx, keyError } = await closeSession(signer, session, deployment, session.onchain);
-      if (sweepTx) push({ level: "ok", text: "unspent balance swept back to you", hash: sweepTx });
-      if (keyTx) push({ level: "ok", text: "key cell returned to you", hash: keyTx });
-      if (keyError) {
-        // Keep the key: the key cell is still under it. Close again to retry.
-        push({ level: "err", text: `key cell not returned: ${keyError}` });
-        return;
-      }
+      const { forget, lines } = describeClose(
+        await closeSession(signer, session, deployment, session.onchain),
+        "unspent balance swept back to you",
+      );
+      lines.forEach(push);
+      if (!forget) return;
       await store.clear(session);
       setSession(undefined);
       setCells(undefined);
@@ -344,8 +375,8 @@ export default function Place() {
             </Prompt>
             <p className="hint">
               # 200 CKB into the session (153 stay as the cell&apos;s own storage, 47 are spendable: 470 pixels)
-              plus a 62 CKB key cell for fees. Everything unspent comes back when you close. Needs ~263 testnet
-              CKB: <a href="https://faucet.nervos.org/">faucet</a>.
+              plus a ~62–64 CKB key cell for fees (sized to your wallet&apos;s lock). Everything unspent comes back
+              when you close. Needs ~265 testnet CKB: <a href="https://faucet.nervos.org/">faucet</a>.
             </p>
             <button disabled={!signer || busy || !BOARD_READY} onClick={openPainting}>
               {!BOARD_READY
@@ -505,8 +536,8 @@ export default function Place() {
               # returns the key cell and the unspent balance to your wallet. One signature
               {isOwner ? "." : " — connect the wallet that opened it first."}
             </p>
-            <button className="danger" disabled={!isOwner || busy} onClick={close}>
-              close session
+            <button className="danger" disabled={!isOwner || busy || Boolean(pending)} onClick={close}>
+              {pending ? "waiting for the last transaction…" : "close session"}
             </button>
           </section>
         )}

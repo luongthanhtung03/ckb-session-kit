@@ -17,7 +17,23 @@ import {
 } from "ckb-session-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import deploymentJson from "../../../deployment/testnet.json";
-import { ckb, describeFailure, explorerAddr, explorerTx, Footer, Log, Nav, short, type LogEntry } from "../shared";
+import {
+  ckb,
+  claimWithRetry,
+  describeClose,
+  describeFailure,
+  explorerAddr,
+  explorerTx,
+  Footer,
+  FUNDING_UNSURE,
+  Log,
+  Nav,
+  neverSent,
+  openKept,
+  paymentState,
+  short,
+  type LogEntry,
+} from "../shared";
 import { Prompt, Terminal } from "../Terminal";
 import { CREATOR, memoLabel, PAY_AHEAD, PRICE_PER_MINUTE, TRACK_MINUTES } from "./config";
 import { Player, type PlayerStatus } from "./synth";
@@ -37,10 +53,10 @@ const BUDGET = CELL_RESERVE + BigInt(TRACK_MINUTES) * PRICE_PER_MINUTE;
 const PAID_KEY = "ckb-session-kit:listen:paid";
 /**
  * `track:minute` → its payment, the session key that paid (only that key can
- * claim it), and the score once the server has released it. Released minutes
- * stay playable after the session is closed.
+ * claim it), when it was sent, and the score once the server has released it.
+ * Released minutes stay playable after the session is closed.
  */
-type Entry = { tx: string; key: string; segment?: Segment };
+type Entry = { tx: string; key: string; at?: number; segment?: Segment };
 type Paid = Record<string, Entry>;
 const slot = (track: string, minute: number) => `${track}:${minute}`;
 const titleOf = (track: string) => TRACKS.find((t) => t.id === track)?.title ?? track;
@@ -96,6 +112,13 @@ export default function PayPerMinute() {
   const player = useRef<Player | undefined>(undefined);
   const paidRef = useRef<Paid>({});
   const paying = useRef(false);
+  const sessionRef = useRef<Session | undefined>(undefined);
+  const stopped = useRef(false);
+  /** Sets the records at once, so an async step right after sees them. */
+  const keepPaid = (next: Paid) => {
+    paidRef.current = next;
+    setPaid(next);
+  };
 
   const push = (e: Omit<LogEntry, "at">) => setLog((l) => [{ at: new Date(), ...e }, ...l]);
 
@@ -109,10 +132,14 @@ export default function PayPerMinute() {
   useEffect(() => {
     paidRef.current = paid;
   }, [paid]);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   useEffect(() => {
+    stopped.current = false;
     const stored = loadPaid();
-    setPaid(stored);
+    keepPaid(stored);
     store
       .load()
       .then((s) => {
@@ -120,10 +147,18 @@ export default function PayPerMinute() {
         if (!s) return;
         push({ level: "info", text: "restored listening session from IndexedDB" });
         // A payment sent before the reload: wait for it, then claim it.
-        const unclaimed = Object.values(stored).filter((e) => !e.segment && e.key === s.publicKey);
+        const unclaimed = Object.values(stored)
+          .filter((e) => !e.segment && e.key === s.publicKey)
+          .sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
         if (unclaimed.length) setPending(unclaimed[unclaimed.length - 1].tx);
       })
+      .catch((e) => push(describeFailure(e)))
       .finally(() => setLoading(false));
+    // Another tab's payments and releases.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === PAID_KEY) keepPaid(loadPaid());
+    };
+    window.addEventListener("storage", onStorage);
     const t = setInterval(() => setNow(new Date()), 1000);
     const p = setInterval(() => {
       if (!player.current) return;
@@ -131,6 +166,8 @@ export default function PayPerMinute() {
       setLevels(player.current.levels(24));
     }, 250);
     return () => {
+      stopped.current = true;
+      window.removeEventListener("storage", onStorage);
       clearInterval(t);
       clearInterval(p);
       player.current?.dispose();
@@ -165,28 +202,29 @@ export default function PayPerMinute() {
   }, [refresh]);
 
   // Each payment spends the session cell the previous one created, so the next
-  // minute is paid only once the last payment is committed.
+  // minute is paid only once the last payment is committed. A payment that will
+  // never commit (rejected, or unknown to the node for minutes) is forgotten.
   useEffect(() => {
     if (!pending) return;
+    const since = Object.values(paidRef.current).find((e) => e.tx === pending)?.at ?? Date.now();
+    let done = false;
     const t = setInterval(async () => {
-      let state: string | undefined;
-      try {
-        state = (await client.getTransaction(pending))?.status;
-      } catch {
-        return; // RPC hiccup: ask again
-      }
+      const state = await paymentState(client, pending, since);
+      if (state === "waiting" || done) return;
+      done = true;
+      setPending((p) => (p === pending ? undefined : p));
       if (state === "committed") {
-        setPending(undefined);
         push({ level: "info", text: `confirmed ${short(pending)}` });
-        refresh();
-      } else if (state === "rejected") {
-        setPending(undefined);
-        setPaid((p) => dropPaid(p, pending));
-        stop(`payment ${short(pending)} was rejected by the network; nothing was paid`);
-        refresh();
+      } else {
+        keepPaid(dropPaid(paidRef.current, pending));
+        stop(`${short(pending)} never committed; nothing was paid`);
       }
+      refresh();
     }, 3000);
-    return () => clearInterval(t);
+    return () => {
+      done = true;
+      clearInterval(t);
+    };
   }, [client, pending, refresh, stop]);
 
   // Paid but not yet released: once the payment is committed, prove to the
@@ -199,16 +237,30 @@ export default function PayPerMinute() {
       const [track, m] = id.split(":");
       const minute = Number(m);
       claiming.current.add(id);
+      const since = paid[id].at ?? Date.now();
       (async () => {
         try {
           const proof = await signAccess(session, tx as ccc.Hex, paymentMemo(memoLabel(track, minute)));
-          const res = await fetch("/api/segment", { method: "POST", body: JSON.stringify({ track, minute, proof }) });
-          const data = await res.json();
-          if (!res.ok) {
-            stop(`server refused minute ${minute + 1} of “${titleOf(track)}”: ${data.error}`);
+          // A 503 or a lost connection is retried and does not stop playback: the minute waits for it.
+          const r = await claimWithRetry<{ segment: Segment }>(
+            "/api/segment",
+            JSON.stringify({ track, minute, proof }),
+            async () => {
+              if (stopped.current || sessionRef.current?.publicKey !== session.publicKey) return false;
+              if (paidRef.current[id]?.tx !== tx) return false; // dropped or replaced meanwhile
+              if ((await paymentState(client, tx, since)) !== "dropped") return true;
+              keepPaid(dropPaid(paidRef.current, tx));
+              stop(`the payment for minute ${minute + 1} never committed; nothing was paid`);
+              return false;
+            },
+            (why) => push({ level: "info", text: `minute ${minute + 1}: ${why}` }),
+          );
+          if (!r) return;
+          if (!r.ok) {
+            stop(`server refused minute ${minute + 1} of “${titleOf(track)}”: ${r.error}`);
             return;
           }
-          setPaid((p) => recordPaid(p, id, { tx, key, segment: data.segment }));
+          keepPaid(recordPaid(paidRef.current, id, { tx, key, at: paid[id].at, segment: r.data.segment }));
           push({ level: "ok", text: `server checked the payment on-chain and released minute ${minute + 1} of “${titleOf(track)}”` });
         } catch (e) {
           stop(describeFailure(e).text);
@@ -217,7 +269,7 @@ export default function PayPerMinute() {
         }
       })();
     }
-  }, [session, paid, pending, retry, stop]);
+  }, [session, paid, pending, retry, stop, client]);
 
   // The meter: while the player wants a minute it does not have, pay for it;
   // PAY_AHEAD seconds before a minute ends, pay for the next one.
@@ -244,26 +296,48 @@ export default function PayPerMinute() {
       stop("session expired: close it to get the unspent CKB back");
       return;
     }
+    // Another tab may have paid already: re-read what is recorded before paying.
+    const fresh = { ...paidRef.current, ...loadPaid() };
+    const known = new Set(Object.values(paidRef.current).map((e) => e.tx));
+    const elsewhere = Object.values(fresh).find((e) => !e.segment && e.key === session.publicKey && !known.has(e.tx));
+    const there = fresh[slot(track, minute)];
+    if (elsewhere || (there && (there.segment || there.key === session.publicKey))) {
+      keepPaid(fresh);
+      if (elsewhere) setPending(elsewhere.tx);
+      push({ level: "info", text: "another tab just paid from this session; waiting for that payment" });
+      return;
+    }
     const binding = session.onchain;
     const memo = paymentMemo(memoLabel(track, minute));
+    const id = slot(track, minute);
     paying.current = true;
     (async () => {
+      let sent = undefined as string | undefined; // set in a callback: not narrowed
       try {
         const hash = await spendInSession(session, client, deployment, binding, {
           to: CREATOR,
           amount: PRICE_PER_MINUTE,
           topUp: true,
           memo,
+          // Recorded before it is sent, and pending first so the claim waits for it to commit.
+          beforeSend: async (h) => {
+            sent = h;
+            keepPaid(recordPaid(paidRef.current, id, { tx: h, key: session.publicKey, at: Date.now() }));
+            setPending(h);
+          },
         });
-        // Pending first, so the claim waits for the payment to commit.
-        setPending(hash);
-        setPaid((p) => recordPaid(p, slot(track, minute), { tx: hash, key: session.publicKey }));
         push({
           level: "ok",
           text: `paid ${ckb(PRICE_PER_MINUTE)} for minute ${minute + 1} of “${titleOf(track)}” · session key only, no wallet popup`,
           hash,
         });
       } catch (e) {
+        // Forget the record only if the node never took the payment.
+        if (sent && (await neverSent(client, sent))) {
+          const gone = sent;
+          keepPaid(dropPaid(paidRef.current, gone));
+          setPending((p) => (p === gone ? undefined : p));
+        }
         stop(`payment for minute ${minute + 1} failed, playback paused · ${describeFailure(e).text}`);
       } finally {
         paying.current = false;
@@ -308,22 +382,16 @@ export default function PayPerMinute() {
         scope: { maxPerTx: MAX_PER_TX, recipients: [CREATOR] },
       });
       push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
-      let saved = false;
-      try {
-        // Saved before the funds are sent: a key that exists nowhere would lose them.
-        const { txHash, binding } = await openSession(signer, draft, deployment, {
-          budget: BUDGET,
-          beforeSend: async (b) => {
-            await store.save({ ...draft, onchain: b });
-            saved = true;
-          },
-        });
-        setSession({ ...draft, onchain: binding });
-        setPending(txHash);
-        push({ level: "ok", text: "listening session opened · it can only pay the creator", hash: txHash });
-      } catch (e) {
-        if (saved) await store.clear(draft); // never funded
-        throw e;
+      // Saved before the funds are sent: a key that exists nowhere would lose them.
+      const opened = await openKept(client, store, draft, (beforeSend) =>
+        openSession(signer, draft, deployment, { budget: BUDGET, beforeSend }),
+      );
+      setSession(opened.session);
+      setPending(opened.txHash);
+      if (opened.error) {
+        push({ level: "err", text: `${describeFailure(opened.error).text} · ${FUNDING_UNSURE}`, hash: opened.txHash });
+      } else {
+        push({ level: "ok", text: "listening session opened · it can only pay the creator", hash: opened.txHash });
       }
     } catch (e) {
       push(describeFailure(e));
@@ -333,28 +401,29 @@ export default function PayPerMinute() {
   }
 
   async function close(forfeit = false) {
-    if (!signer || !session?.onchain) return;
+    if (!signer || !session?.onchain || pending) return;
     setBusy(true);
     try {
       if (paying.current) {
         push({ level: "err", text: "a payment is being sent; close once it is on its way" });
         return;
       }
-      if (!forfeit && (pending || mine.some((e) => !e.segment))) {
+      const unreleased = Object.values({ ...paidRef.current, ...loadPaid() }).some(
+        (e) => !e.segment && e.key === session.publicKey,
+      );
+      if (!forfeit && unreleased) {
         // Only this session's key can claim its payments; closing would forfeit them.
         setBlocked(true);
         push({ level: "err", text: "a minute you paid for is not released yet; close once it is" });
         return;
       }
       push({ level: "info", text: "waiting for your wallet to sweep the balance, then returning the key cell…" });
-      const { keyTx, sweepTx, keyError } = await closeSession(signer, session, deployment, session.onchain);
-      if (sweepTx) push({ level: "ok", text: "unspent balance swept back to you", hash: sweepTx });
-      if (keyTx) push({ level: "ok", text: "key cell returned to you", hash: keyTx });
-      if (keyError) {
-        // Keep the key: the key cell is still under it. Close again to retry.
-        push({ level: "err", text: `key cell not returned: ${keyError}` });
-        return;
-      }
+      const { forget, lines } = describeClose(
+        await closeSession(signer, session, deployment, session.onchain),
+        "unspent balance swept back to you",
+      );
+      lines.forEach(push);
+      if (!forget) return;
       await store.clear(session);
       setBlocked(false);
       setSession(undefined);
@@ -435,9 +504,9 @@ export default function PayPerMinute() {
             </Prompt>
             <p className="hint">
               # {ccc.fixedPointToString(BUDGET)} CKB into the session (153 stay as the cell&apos;s own storage,{" "}
-              {ccc.fixedPointToString(BUDGET - CELL_RESERVE)} pay for {TRACK_MINUTES} minutes) plus a 62 CKB key cell
-              for fees. Everything unspent comes back when you close. Needs ~
-              {ccc.fixedPointToString(BUDGET + 63n * CKB)} testnet CKB: <a href="https://faucet.nervos.org/">faucet</a>.
+              {ccc.fixedPointToString(BUDGET - CELL_RESERVE)} pay for {TRACK_MINUTES} minutes) plus a ~62–64 CKB key
+              cell for fees (sized to your wallet&apos;s lock). Everything unspent comes back when you close. Needs ~
+              {ccc.fixedPointToString(BUDGET + 65n * CKB)} testnet CKB: <a href="https://faucet.nervos.org/">faucet</a>.
             </p>
             <button disabled={!signer || busy} onClick={openListening}>
               {!signer ? "connect a wallet first" : busy ? "waiting for wallet…" : "open session (1 signature) ⏎"}
@@ -559,11 +628,11 @@ export default function PayPerMinute() {
               released.
             </p>
             <div className="row">
-              <button className="danger" disabled={!isOwner || busy} onClick={() => close()}>
-                close session
+              <button className="danger" disabled={!isOwner || busy || Boolean(pending)} onClick={() => close()}>
+                {pending ? "waiting for the last transaction…" : "close session"}
               </button>
               {blocked && (
-                <button className="link" disabled={!isOwner || busy} onClick={() => close(true)}>
+                <button className="link" disabled={!isOwner || busy || Boolean(pending)} onClick={() => close(true)}>
                   close anyway, forfeit the unreleased minute
                 </button>
               )}

@@ -18,7 +18,22 @@ import {
 } from "ckb-session-kit";
 import { useCallback, useEffect, useRef, useState } from "react";
 import deploymentJson from "../../deployment/testnet.json";
-import { ckb, describeFailure, explorerAddr, explorerTx, Footer, Log, Nav, short, type LogEntry } from "./shared";
+import {
+  ckb,
+  describeClose,
+  describeFailure,
+  explorerAddr,
+  explorerTx,
+  Footer,
+  FUNDING_UNSURE,
+  Log,
+  Nav,
+  neverSent,
+  openKept,
+  paymentState,
+  short,
+  type LogEntry,
+} from "./shared";
 import { Prompt, Terminal } from "./Terminal";
 
 const deployment = deploymentJson as SessionLockDeployment;
@@ -37,6 +52,7 @@ export default function SessionDemo() {
   const [log, setLog] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(new Date());
+  const [closing, setClosing] = useState(false);
   const restored = useRef(false);
 
   const push = (e: Omit<LogEntry, "at">) => setLog((l) => [{ at: new Date(), ...e }, ...l]);
@@ -51,6 +67,7 @@ export default function SessionDemo() {
           push({ level: "info", text: "restored session from IndexedDB" });
         }
       })
+      .catch((e) => push(describeFailure(e)))
       .finally(() => setLoading(false));
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
@@ -80,17 +97,27 @@ export default function SessionDemo() {
     return () => clearInterval(t);
   }, [refresh]);
 
-  // Clear the "waiting" line once the last transaction is committed.
+  // Clear the "waiting" line once the last transaction is committed, or will never be.
   useEffect(() => {
     if (!pending) return;
+    const since = Date.now();
+    let done = false;
     const t = setInterval(async () => {
-      if ((await client.getTransaction(pending))?.status === "committed") {
-        setPending(undefined);
-        push({ level: "info", text: `confirmed ${short(pending)}` });
-        refresh();
-      }
+      const state = await paymentState(client, pending, since);
+      if (state === "waiting" || done) return;
+      done = true;
+      setPending(undefined);
+      push(
+        state === "committed"
+          ? { level: "info", text: `confirmed ${short(pending)}` }
+          : { level: "err", text: `${short(pending)} never committed; nothing was spent` },
+      );
+      refresh();
     }, 5000);
-    return () => clearInterval(t);
+    return () => {
+      done = true;
+      clearInterval(t);
+    };
   }, [client, pending, refresh]);
 
   const isOwner = Boolean(
@@ -150,24 +177,17 @@ export default function SessionDemo() {
               if (!signer) return;
               try {
                 push({ level: "info", text: "waiting for your wallet to sign the funding transaction…" });
-                let saved = false;
-                try {
-                  // Saved before the funds are sent: a key that exists nowhere would lose them.
-                  const { txHash, binding } = await openSession(signer, draft, deployment, {
-                    ...opts,
-                    beforeSend: async (b) => {
-                      await store.save({ ...draft, onchain: b });
-                      saved = true;
-                    },
-                  });
-                  setSession({ ...draft, onchain: binding });
-                  setPending(txHash);
-                  push({ level: "ok", text: "session opened · key saved in this browser only", hash: txHash });
-                } catch (e) {
-                  if (saved) await store.clear(draft); // never funded
-                  throw e;
+                // Saved before the funds are sent: a key that exists nowhere would lose them.
+                const opened = await openKept(signer.client, store, draft, (beforeSend) =>
+                  openSession(signer, draft, deployment, { ...opts, beforeSend }),
+                );
+                setSession(opened.session);
+                setPending(opened.txHash);
+                if (opened.error) {
+                  push({ level: "err", text: `${describeFailure(opened.error).text} · ${FUNDING_UNSURE}`, hash: opened.txHash });
+                } else {
+                  push({ level: "ok", text: "session opened · key saved in this browser only", hash: opened.txHash });
                 }
-                return;
               } catch (e) {
                 push(describeFailure(e));
               }
@@ -262,11 +282,23 @@ export default function SessionDemo() {
             <SendForm
               session={session}
               onSend={async (to, amount) => {
+                let sent = undefined as string | undefined; // set in a callback: not narrowed
                 try {
-                  const hash = await spendInSession(session, client, deployment, session.onchain!, { to, amount });
-                  setPending(hash);
+                  const hash = await spendInSession(session, client, deployment, session.onchain!, {
+                    to,
+                    amount,
+                    // Pending before it is sent, so close waits for it.
+                    beforeSend: async (h) => {
+                      sent = h;
+                      setPending(h);
+                    },
+                  });
                   push({ level: "ok", text: `paid ${ckb(amount)} · signed by the session key, no wallet popup`, hash });
                 } catch (e) {
+                  if (sent && (await neverSent(client, sent))) {
+                    const gone = sent;
+                    setPending((p) => (p === gone ? undefined : p));
+                  }
                   push(describeFailure(e));
                 }
                 refresh();
@@ -282,29 +314,30 @@ export default function SessionDemo() {
               </p>
               <button
                 className="danger"
-                disabled={!isOwner}
+                disabled={!isOwner || closing || Boolean(pending)}
                 onClick={async () => {
-                  if (!signer) return;
+                  if (!signer || closing || pending) return;
+                  setClosing(true);
                   try {
                     push({ level: "info", text: "waiting for your wallet to sweep the session, then returning the key cell…" });
-                    const { keyTx, sweepTx, keyError } = await closeSession(signer, session, deployment, session.onchain!);
-                    if (sweepTx) push({ level: "ok", text: "session swept back to the owner", hash: sweepTx });
-                    if (keyTx) push({ level: "ok", text: "key cell returned to the owner", hash: keyTx });
-                    if (keyError) {
-                      // Keep the key: the key cell is still under it. Close again to retry.
-                      push({ level: "err", text: `key cell not returned: ${keyError}` });
-                      return;
-                    }
+                    const { forget, lines } = describeClose(
+                      await closeSession(signer, session, deployment, session.onchain!),
+                      "session swept back to the owner",
+                    );
+                    lines.forEach(push);
+                    if (!forget) return;
                     await store.clear(session);
                     setSession(undefined);
                     setCells(undefined);
                     setPending(undefined);
                   } catch (e) {
                     push(describeFailure(e));
+                  } finally {
+                    setClosing(false);
                   }
                 }}
               >
-                close session
+                {closing ? "waiting for wallet…" : pending ? "waiting for the last transaction…" : "close session"}
               </button>
             </section>
           </>
@@ -401,7 +434,7 @@ function OpenForm({
           <input placeholder="ckt1…" value={recipient} onChange={(e) => setRecipient(e.target.value)} spellCheck={false} />
         </div>
       </label>
-      <p className="hint"># the wallet also funds a 62 CKB key cell that pays the session&apos;s fees; it comes back on close, but not on a recovery.</p>
+      <p className="hint"># the wallet also funds a ~62–64 CKB key cell (sized to its lock) that pays the session&apos;s fees; it comes back on close, but not on a recovery.</p>
       {error && <p className="bad">error: {error}</p>}
       <button type="submit" disabled={!signer || busy}>
         {!signer ? "connect a wallet first" : busy ? "waiting for wallet…" : "open session (1 signature) ⏎"}

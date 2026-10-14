@@ -116,10 +116,25 @@ describe("the segment route's gating", () => {
   });
 
   it("answers 400 for a missing or malformed proof", async () => {
-    const { client } = await setup();
+    const { client, claim } = await setup();
     expect(await release(client, null)).toEqual({ status: 400, body: { error: "bad request" } });
     expect(await release(client, { track: "tide", minute: 3 })).toEqual({ status: 400, body: { error: "malformed proof" } });
-    expect((await release(client, { track: "tide", minute: 3, proof: { memo: 7 } })).status).not.toBe(200);
+    expect(await release(client, { track: "tide", minute: 3, proof: { memo: 7 } })).toEqual({
+      status: 400,
+      body: { error: "malformed proof" },
+    });
+    const { proof } = await claim("tide", 3);
+    expect((await release(client, { track: "tide", minute: 3, proof: { ...proof, signature: "0x12" } })).status).toBe(400);
+  });
+
+  it("answers 503 with retry, not 400, when the chain cannot be reached", async () => {
+    const { client, claim } = await setup();
+    client.getTransaction = (async () => {
+      throw new Error("request timed out");
+    }) as never;
+    const r = await release(client, await claim("tide", 3));
+    expect(r.status).toBe(503);
+    expect(r.body).toMatchObject({ retry: true });
   });
 });
 
