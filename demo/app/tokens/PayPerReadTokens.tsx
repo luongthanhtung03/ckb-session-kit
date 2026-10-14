@@ -299,8 +299,8 @@ export default function PayPerReadTokens() {
           The same reading room, paid in an <strong>xUDT token</strong> instead of CKB. Your wallet signs{" "}
           <strong>once</strong> to put {SESSION_UNITS.toString()} tokens in a session; each article then costs{" "}
           {PRICE_UNITS.toString()}, paid by a key in this browser with <strong>no popup</strong>. The network
-          enforces the limits: only this creator, at most {MAX_UNITS_PER_TX.toString()} tokens per payment, and
-          not one shannon of the session&apos;s CKB.
+          enforces the limits: only this creator, at most {MAX_UNITS_PER_TX.toString()} tokens and 1 CKB per
+          payment (the token pages pay no CKB; the session needs a CKB limit above zero).
         </p>
         <p className="note">
           # the demo token is free: its issuer is an{" "}
