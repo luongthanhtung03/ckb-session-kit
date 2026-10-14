@@ -13,7 +13,7 @@
 //! session key. This is the pattern sUDT's owner mode uses, and it keeps this
 //! script free of cryptography.
 //!
-//! Args (80 or 112 bytes):
+//! Args (80 or 112 bytes; a token session, 128 or 160):
 //!
 //! | bytes  | field               | meaning                                          |
 //! |--------|---------------------|--------------------------------------------------|
@@ -22,6 +22,15 @@
 //! | 64..72 | max_per_tx (u64 LE) | most shannons one session spend may move out     |
 //! | 72..80 | min_interval (u64)  | blocks each session-locked input must have aged  |
 //! | 80..112| recipient_lock_hash | optional: the only lock session spends may pay   |
+//!
+//! A token session (xUDT, RFC 0052) puts the token between the CKB limits and
+//! the recipient:
+//!
+//! | bytes   | field                    | meaning                                     |
+//! |---------|--------------------------|---------------------------------------------|
+//! | 80..112 | token_type_hash          | the one type script this session may hold   |
+//! | 112..128| max_per_tx_token (u128)  | most token units one session spend may move |
+//! | 128..160| recipient_lock_hash      | optional, as above                          |
 //!
 //! Session-mode rules:
 //!
@@ -46,6 +55,22 @@
 //!    would let the key move the tokens at zero outflow; and a change cell given a
 //!    type the key controls could later refuse every spend, the owner's sweep too,
 //!    freezing the whole balance in one transaction.
+//!
+//! In a token session, rule 5 becomes: a cell may carry no type, or exactly
+//! `token_type_hash`. A cell's token amount is the u128 LE in its first 16 data
+//! bytes if its type is the token, and 0 otherwise. It is never read from an
+//! untyped cell, or the key could make the change "hold" more than came in. Then:
+//!
+//! 6. **Token outflow.** Tokens in this group's inputs minus tokens in the change
+//!    must not exceed `max_per_tx_token`. A token input with under 16 data bytes
+//!    is refused; token change must have exactly 16 (no xUDT extension data).
+//! 7. **Key cell gets no tokens.** With a recipient set, outputs under the key
+//!    lock may hold no more tokens than inputs under it brought in (rule 4 for
+//!    tokens), and every other output must be untyped or the token, so the
+//!    recipient is paid in the token, not in a cell the key could freeze.
+//!
+//! The xUDT script still runs and keeps the token's total in check; this lock
+//! only bounds how much leaves the session.
 //!
 //! What it cannot do: enforce an expiry time. A CKB script can prove time has
 //! passed (`since` is a lower bound) but never that it has not. Expiry is
@@ -92,6 +117,8 @@ enum Error {
     TooManyChangeCells = 16,
     KeyCellGrew = 17,
     TypedCell = 18,
+    TokenData = 19,
+    TokenOutflowExceeded = 20,
 }
 
 impl From<SysError> for Error {
@@ -105,18 +132,28 @@ impl From<SysError> for Error {
     }
 }
 
+struct Token {
+    type_hash: [u8; 32],
+    max_per_tx: u128,
+}
+
 struct Args {
     owner_lock_hash: [u8; 32],
     session_lock_hash: [u8; 32],
     max_per_tx: u64,
     min_interval: u64,
+    token: Option<Token>,
     recipient_lock_hash: Option<[u8; 32]>,
 }
 
 fn parse_args(raw: &[u8]) -> Result<Args, Error> {
-    if raw.len() != 80 && raw.len() != 112 {
-        return Err(Error::BadArgs);
-    }
+    let (token, recipient_at) = match raw.len() {
+        80 => (false, None),
+        112 => (false, Some(80)),
+        128 => (true, None),
+        160 => (true, Some(128)),
+        _ => return Err(Error::BadArgs),
+    };
     let hash = |at: usize| -> [u8; 32] { raw[at..at + 32].try_into().unwrap() };
     let u64_at = |at: usize| u64::from_le_bytes(raw[at..at + 8].try_into().unwrap());
     Ok(Args {
@@ -124,7 +161,11 @@ fn parse_args(raw: &[u8]) -> Result<Args, Error> {
         session_lock_hash: hash(32),
         max_per_tx: u64_at(64),
         min_interval: u64_at(72),
-        recipient_lock_hash: (raw.len() == 112).then(|| hash(80)),
+        token: token.then(|| Token {
+            type_hash: hash(80),
+            max_per_tx: u128::from_le_bytes(raw[112..128].try_into().unwrap()),
+        }),
+        recipient_lock_hash: recipient_at.map(hash),
     })
 }
 
@@ -168,6 +209,35 @@ fn has_type(index: usize, source: Source) -> Result<bool, SysError> {
     }
 }
 
+/// What a cell is to a token session.
+enum Held {
+    Untyped,
+    /// Typed with the session's token: its amount (None if under 16 data bytes) and data length.
+    Token { amount: Option<u128>, len: usize },
+    /// Any other type script.
+    Other,
+}
+
+fn held(token: &Token, index: usize, source: Source) -> Result<Held, SysError> {
+    let mut hash = [0u8; 32];
+    match syscalls::load_cell_by_field(&mut hash, 0, index, source, CellField::TypeHash) {
+        Ok(_) => {}
+        Err(SysError::ItemMissing) => return Ok(Held::Untyped),
+        Err(e) => return Err(e),
+    }
+    if hash != token.type_hash {
+        return Ok(Held::Other);
+    }
+    let mut data = [0u8; 16];
+    let len = match syscalls::load_cell_data(&mut data, 0, index, source) {
+        Ok(n) => n,
+        Err(SysError::LengthNotEnough(n)) => n,
+        Err(e) => return Err(e),
+    };
+    let amount = (len >= 16).then(|| u128::from_le_bytes(data));
+    Ok(Held::Token { amount, len })
+}
+
 fn since(index: usize, source: Source) -> Result<u64, SysError> {
     let mut buf = [0u8; 8];
     syscalls::load_input_by_field(&mut buf, 0, index, source, InputField::Since)?;
@@ -203,7 +273,7 @@ fn program_entry() -> i8 {
 }
 
 fn run() -> Result<(), Error> {
-    // A Script with 112-byte args is 185 bytes; anything that does not fit is not ours.
+    // A Script with 160-byte args is 213 bytes; anything that does not fit is not ours.
     let mut script = [0u8; 256];
     let len = match syscalls::load_script(&mut script, 0) {
         Ok(n) => n,
@@ -239,10 +309,26 @@ fn run() -> Result<(), Error> {
 
     // Session mode from here on.
 
-    each(
-        |i| has_type(i, Source::GroupInput),
-        |_, typed| if typed { Err(Error::TypedCell) } else { Ok(()) },
-    )?;
+    // Tokens entering from this group (rule 6); with no token, rule 5 refuses any type.
+    let mut token_in: u128 = 0;
+    match &args.token {
+        None => each(
+            |i| has_type(i, Source::GroupInput),
+            |_, typed| if typed { Err(Error::TypedCell) } else { Ok(()) },
+        )?,
+        Some(token) => each(
+            |i| held(token, i, Source::GroupInput),
+            |_, cell| match cell {
+                Held::Untyped => Ok(()),
+                Held::Token { amount: Some(a), .. } => {
+                    token_in = token_in.checked_add(a).ok_or(Error::CapacityOverflow)?;
+                    Ok(())
+                }
+                Held::Token { amount: None, .. } => Err(Error::TokenData),
+                Held::Other => Err(Error::TypedCell),
+            },
+        )?,
+    }
 
     if args.min_interval > 0 {
         each(
@@ -271,6 +357,8 @@ fn run() -> Result<(), Error> {
     let mut change: u64 = 0;
     let mut change_cells = 0;
     let mut key_out: u64 = 0;
+    let mut token_change: u128 = 0;
+    let mut key_token_out: u128 = 0;
     each(
         |i| lock_hash(i, Source::Output),
         |i, lock| {
@@ -279,8 +367,16 @@ fn run() -> Result<(), Error> {
                 if change_cells > 1 {
                     return Err(Error::TooManyChangeCells);
                 }
-                if has_type(i, Source::Output)? {
-                    return Err(Error::TypedCell);
+                match &args.token {
+                    None if has_type(i, Source::Output)? => return Err(Error::TypedCell),
+                    None => {}
+                    Some(token) => match held(token, i, Source::Output)? {
+                        Held::Untyped => {}
+                        // Exactly the amount: no xUDT extension data in the change.
+                        Held::Token { amount: Some(a), len: 16 } => token_change = a,
+                        Held::Token { .. } => return Err(Error::TokenData),
+                        Held::Other => return Err(Error::TypedCell),
+                    },
                 }
                 change = change
                     .checked_add(capacity(i, Source::Output)?)
@@ -290,8 +386,22 @@ fn run() -> Result<(), Error> {
                     key_out = key_out
                         .checked_add(capacity(i, Source::Output)?)
                         .ok_or(Error::CapacityOverflow)?;
+                    if let Some(token) = &args.token {
+                        match held(token, i, Source::Output)? {
+                            Held::Token { amount: Some(a), .. } => {
+                                key_token_out = key_token_out.checked_add(a).ok_or(Error::CapacityOverflow)?;
+                            }
+                            Held::Token { amount: None, .. } => return Err(Error::TokenData),
+                            Held::Untyped | Held::Other => {}
+                        }
+                    }
                 } else if lock != recipient && lock != args.owner_lock_hash {
                     return Err(Error::RecipientNotAllowed);
+                } else if let Some(token) = &args.token {
+                    // Paid in the token, not in a cell typed by a script the key controls.
+                    if let Held::Other = held(token, i, Source::Output)? {
+                        return Err(Error::TypedCell);
+                    }
                 }
             }
             Ok(())
@@ -303,6 +413,32 @@ fn run() -> Result<(), Error> {
     // Topping the cell up (change > spent) is an outflow of zero.
     if spent.saturating_sub(change) > args.max_per_tx {
         return Err(Error::OutflowExceeded);
+    }
+
+    if let Some(token) = &args.token {
+        if args.recipient_lock_hash.is_some() {
+            // Tokens the key's own cells brought in, read only now, in session mode.
+            // A malformed key-locked input counts as 0, which can only make this stricter.
+            let mut key_token_in: u128 = 0;
+            each(
+                |i| lock_hash(i, Source::Input),
+                |i, lock| {
+                    if lock == args.session_lock_hash {
+                        if let Held::Token { amount: Some(a), .. } = held(token, i, Source::Input)? {
+                            key_token_in = key_token_in.checked_add(a).ok_or(Error::CapacityOverflow)?;
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+            if key_token_out > key_token_in {
+                return Err(Error::KeyCellGrew);
+            }
+        }
+        // As with capacity, a top-up (change > in) is an outflow of zero.
+        if token_in.saturating_sub(token_change) > token.max_per_tx {
+            return Err(Error::TokenOutflowExceeded);
+        }
     }
     Ok(())
 }
