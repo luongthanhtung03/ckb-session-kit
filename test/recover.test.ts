@@ -2,6 +2,7 @@ import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionLockScript, TESTNET_DEPLOYMENT as d } from "../src/lock.js";
 import { assertSigningLock, openSession, recoverSessions, SessionBalanceError } from "../src/onchain.js";
+import { sessionAddress } from "../src/transfer.js";
 import { createSession } from "../src/session.js";
 
 const CKB = 100_000_000n;
@@ -76,6 +77,22 @@ describe("assertSigningLock", () => {
     await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x00" + "11".repeat(20) + "00"), client)).resolves.toBeUndefined();
   });
 
+  it("accepts JoyID and an Ethereum-signing Omnilock (the demo's wallets)", async () => {
+    await expect(assertSigningLock(await known(ccc.KnownScript.JoyId, "0x0001" + "11".repeat(20)), client)).resolves.toBeUndefined();
+    await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x01" + "11".repeat(20) + "00"), client)).resolves.toBeUndefined();
+  });
+
+  // Code review, 14 Oct: an allowlist, not a blocklist.
+  it("refuses an Omnilock with an administrator or a delegated auth, and any unknown lock", async () => {
+    await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x00" + "11".repeat(20) + "01" + "22".repeat(32)), client)).rejects.toThrow(/administrator/);
+    for (const auth of ["fc", "fd", "fe"]) {
+      await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x" + auth + "11".repeat(20) + "00"), client)).rejects.toThrow(/does not verify/);
+    }
+    await expect(assertSigningLock(await known(ccc.KnownScript.AlwaysSuccess, "0x"), client)).rejects.toThrow(/not one known/);
+    const unknown = ccc.Script.from({ codeHash: h("ab"), hashType: "data1", args: "0x" });
+    await expect(assertSigningLock(unknown, client)).rejects.toThrow(/not one known/);
+  });
+
   it("refuses anyone-can-pay, and Omnilock in anyone-can-pay mode", async () => {
     await expect(assertSigningLock(await known(ccc.KnownScript.AnyoneCanPay, "0x" + "11".repeat(20)), client)).rejects.toThrow(/anyone-can-pay/);
     await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x00" + "11".repeat(20) + "02" + "0000"), client)).rejects.toThrow(/anyone-can-pay/);
@@ -89,5 +106,14 @@ describe("openSession", () => {
     await expect(openSession(owner, s, d, { budget: 200n * CKB, feeBudget: 61n * CKB })).rejects.toBeInstanceOf(
       SessionBalanceError,
     );
+  });
+
+  // Code review, 14 Oct: a recipient equal to the key's own lock would let the key pay itself, then anyone.
+  it("refuses a recipient that is the session key itself", async () => {
+    const client = new ccc.ClientPublicTestnet();
+    const owner = new ccc.SignerCkbPrivateKey(client, "0x" + "42".repeat(32));
+    const s = createSession({ expiresAt: new Date(Date.now() + 60_000), scope: { maxPerTx: 5n * CKB } });
+    s.policy.scope.recipients = [await sessionAddress(s, client)];
+    await expect(openSession(owner, s, d, { budget: 200n * CKB })).rejects.toThrow(/session key itself/);
   });
 });

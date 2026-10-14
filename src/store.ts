@@ -38,6 +38,7 @@ interface StoredSession {
     ownerLock: { codeHash: string; hashType: string; args: string };
     minInterval: string;
     recipientLockHash?: string;
+    token?: { type: { codeHash: string; hashType: string; args: string }; maxPerTx: string };
   };
 }
 
@@ -54,6 +55,9 @@ export function serializeSession(s: Session): string {
         ownerLock: s.onchain.ownerLock,
         minInterval: s.onchain.minInterval.toString(),
         ...(s.onchain.recipientLockHash && { recipientLockHash: s.onchain.recipientLockHash }),
+        ...(s.onchain.token && {
+          token: { type: s.onchain.token.type, maxPerTx: s.onchain.token.maxPerTx.toString() },
+        }),
       },
     }),
   };
@@ -82,6 +86,16 @@ export function deserializeSession(json: string): Session {
         },
         minInterval: BigInt(d.onchain.minInterval),
         ...(d.onchain.recipientLockHash && { recipientLockHash: d.onchain.recipientLockHash as ccc.Hex }),
+        ...(d.onchain.token && {
+          token: {
+            type: {
+              codeHash: d.onchain.token.type.codeHash as ccc.Hex,
+              hashType: d.onchain.token.type.hashType as ccc.HashType,
+              args: d.onchain.token.type.args as ccc.Hex,
+            },
+            maxPerTx: BigInt(d.onchain.token.maxPerTx),
+          },
+        }),
       },
     }),
   };

@@ -27,6 +27,8 @@ export interface Session {
     ownerLock: { codeHash: ccc.Hex; hashType: ccc.HashType; args: ccc.Hex };
     minInterval: bigint;
     recipientLockHash?: ccc.Hex;
+    /** A token session: the xUDT type its cells hold, and the most units one spend may move. */
+    token?: { type: { codeHash: ccc.Hex; hashType: ccc.HashType; args: ccc.Hex }; maxPerTx: bigint };
   };
 }
 

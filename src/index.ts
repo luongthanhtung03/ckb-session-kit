@@ -15,6 +15,7 @@ export {
 } from "./lock.js";
 export type { SessionLockDeployment, SessionLockParams } from "./lock.js";
 export {
+  assertPlainXudt,
   assertSigningLock,
   closeSession,
   findOwnedSessionCells,
@@ -26,6 +27,7 @@ export {
   SessionBalanceError,
   sessionLockOf,
   spendInSession,
+  tokenAmount,
 } from "./onchain.js";
 export type { OnChainBinding, SessionCells } from "./onchain.js";
 export { paymentMemo, signAccess, verifyAccess } from "./paywall.js";

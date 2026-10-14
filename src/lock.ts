@@ -5,6 +5,9 @@ import { ccc } from "@ckb-ccc/core";
  *
  * Args layout, 80 or 112 bytes:
  * owner_lock_hash 32 | session_lock_hash 32 | max_per_tx u64 LE | min_interval u64 LE | [recipient_lock_hash 32]
+ *
+ * A token session (128 or 160 bytes) puts the token before the recipient:
+ * ... | min_interval | token_type_hash 32 | max_per_tx_token u128 LE | [recipient_lock_hash 32]
  */
 export interface SessionLockParams {
   /** Lock hash whose presence in a transaction's inputs grants owner mode. */
@@ -17,6 +20,8 @@ export interface SessionLockParams {
   minInterval?: bigint;
   /** If set, the only lock session-mode spends may pay (besides change, key cell, owner). */
   recipientLockHash?: ccc.HexLike;
+  /** A token session: the one xUDT type its cells may hold, and the most units one spend may move. */
+  token?: { typeHash: ccc.HexLike; maxPerTx: bigint };
 }
 
 /** Where the session lock code lives on a network. */
@@ -79,6 +84,13 @@ function u64le(v: bigint): Uint8Array {
   return b;
 }
 
+const U128_MAX = (1n << 128n) - 1n;
+
+function u128le(v: bigint): Uint8Array {
+  if (v < 0n || v > U128_MAX) throw new RangeError(`not a u128: ${v}`);
+  return ccc.numLeToBytes(v, 16);
+}
+
 function hash32(h: ccc.HexLike, name: string): Uint8Array {
   const b = ccc.bytesFrom(h);
   if (b.length !== 32) throw new RangeError(`${name} must be 32 bytes`);
@@ -92,6 +104,7 @@ export function sessionLockArgs(p: SessionLockParams): ccc.Hex {
       hash32(p.sessionLockHash, "sessionLockHash"),
       u64le(p.maxPerTx),
       u64le(p.minInterval ?? 0n),
+      ...(p.token === undefined ? [] : [hash32(p.token.typeHash, "token.typeHash"), u128le(p.token.maxPerTx)]),
       ...(p.recipientLockHash === undefined ? [] : [hash32(p.recipientLockHash, "recipientLockHash")]),
     ),
   );

@@ -41,13 +41,25 @@ sent: save the session there, so funds never sit under a key that exists
 nowhere. Set `session.onchain = binding` afterwards. A session cell occupies
 121 CKB (153 with a recipient), which stays locked as the cell itself.
 
-### `spendInSession(session, client, deployment, binding, { to, amount, topUp?, memo? }) → txHash`
+`opts.token: { type, amount, maxPerTx }` opens a token session: the session
+cell also holds `amount` units of the xUDT `type` (taken from the owner's
+cells, any surplus returned), and one spend may move at most `maxPerTx` units,
+enforced by the lock. Only plain xUDT is accepted (`assertPlainXudt`). A token
+session cell occupies 250 CKB (282 with a recipient).
+
+### `spendInSession(session, client, deployment, binding, { to, amount | token, topUp?, memo? }) → txHash`
 The session key pays, no wallet involved. Checks the scope first (`ScopeError`),
 then the network checks it again in the lock. A plain payment creates a cell, so
 it is at least 61 CKB; `topUp: true` pays any amount into an existing
 anyone-can-pay cell of `to`. `memo` goes into the key cell's witness, which the
 key signs: see `verifyAccess`. Throws `SessionBalanceError` when the balance,
 the change or the key cell would fall below what a cell needs.
+
+In a token session, `{ to, token }` pays `token` units instead of shannons:
+with `topUp: true` into the recipient's anyone-can-pay token cell (no CKB
+leaves the session), otherwise in a new token cell whose capacity (about 142
+CKB) must fit in `maxPerTx`. Tokens always stay in the change; a CKB payment
+never burns them.
 
 ### `closeSession(owner, session, deployment, binding) → { sweepTx?, keyTx?, keyError? }`
 The owner sweeps the session cells (one signature), then the session key returns
@@ -62,17 +74,29 @@ recovered without their key.
 
 ### `findSessionCells(session, client, deployment, binding) → SessionCells`
 The live session cells and key cells of one session, with their totals
-(`balance`, `feeBalance`).
+(`balance`, `feeBalance`, and `tokenBalance` in a token session).
 
 ### `findOwnedSessionCells(owner, deployments) → Cell[]`
-Every live, well-formed, type-free session cell whose args start with the
-owner's lock hash, found without any session key. `deployments` is one
+Every live, well-formed session cell whose args start with the owner's lock
+hash, found without any session key. Typed cells are kept only in token
+sessions, and only when they hold that session's token with well-formed data:
+anything else could make the sweep fail. Sweeps return tokens to the owner. `deployments` is one
 deployment or a list.
 
 ### `assertSigningLock(lock, client)`
-Throws `SessionPolicyError` for an owner lock that unlocks without a signature
-(anyone-can-pay, Omnilock in anyone-can-pay mode): the session lock trusts that
-an input under the owner's lock means the owner signed. `openSession` calls it.
+Throws `SessionPolicyError` unless the owner lock is known to sign the whole
+transaction: secp256k1 (single or multisig), JoyID, Nostr, PW lock, or Omnilock
+with a signature auth flag and no administrator or anyone-can-pay mode. The
+session lock trusts that an input under the owner's lock means the owner
+signed. `openSession` calls it; it also refuses a recipient equal to the
+session key's own lock.
+
+### `assertPlainXudt(type, client)`
+Throws `SessionPolicyError` unless `type` is this network's xUDT with every
+args flag clear: no extension scripts, no other owner (minting) modes. `openSession` calls it for `opts.token`.
+
+### `tokenAmount(data) → bigint`
+The xUDT amount in a cell's data: u128 little-endian in the first 16 bytes.
 
 ### `onchainRecipient(session) → string | undefined`
 The recipient the lock will enforce: `scope.recipients[0]`. More than one
@@ -82,7 +106,8 @@ recipient cannot be enforced on-chain and throws `SessionPolicyError`.
 The lock scripts of the key cell and of the session cells.
 
 ### Types: `OnChainBinding`, `SessionCells`
-`OnChainBinding` is `{ ownerLock, minInterval, recipientLockHash? }`.
+`OnChainBinding` is `{ ownerLock, minInterval, recipientLockHash?, token? }`,
+where `token` is `{ type, maxPerTx }`.
 
 ### `SessionBalanceError`
 Not enough in the session, its change, or its key cell, or a budget below what a
@@ -102,13 +127,15 @@ under an earlier version keep its rules until swept; recover with
 ### `sessionLockScript(deployment, params)`, `sessionLockArgs(params)`, `sessionLockCellDep(deployment)`
 Build the lock script, its 80- or 112-byte args
 (`owner_lock_hash | session_lock_hash | max_per_tx | min_interval | recipient?`),
-and its cell dep.
+and its cell dep. With `params.token: { typeHash, maxPerTx }`, the args are 128
+or 160 bytes: `token_type_hash | max_per_tx_token (u128)` before the recipient.
 
 ### `relativeBlocksSince(blocks)`
 The relative block-number `since` the rate limit requires (RFC 0017).
 
 ### `SESSION_LOCK_ERRORS`, `sessionLockErrorFrom(message)`
-The lock's error codes (10 bad args … 18 type script in session mode) and a
+The lock's error codes (10 bad args … 18 type script in session mode, 19
+malformed token data, 20 token outflow over its limit) and a
 parser that pulls the code out of a node's rejection message.
 
 ### Types: `SessionLockDeployment`, `SessionLockParams`

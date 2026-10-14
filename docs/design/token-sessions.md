@@ -1,6 +1,6 @@
 # Design: token sessions
 
-Status: **draft for review. No code until this is reviewed.** The session lock
+Status: **implemented (14 Oct 2026), code reviewed; see the end.** The session lock
 holds funds and its deployed code is immutable, so the rules are written down,
 attacked on paper, and only then built.
 
@@ -150,3 +150,33 @@ by type. Changes:
   binaries for integration (top-up, owner sweep).
 
 Full review: E:\REMOTE\ckb\drafts\token-sessions-review.md (local).
+
+## Code review, 14 Oct 2026 (implementation)
+
+An adversarial pass over the implemented lock ran 29 attack transactions in
+CKB-VM, with the real xUDT binary where it mattered. Nothing critical or high:
+a leaked key cannot move more than `max_per_tx` shannons or `max_per_tx_token`
+units per transaction, cannot pay anyone but the recipient or the owner when a
+recipient is set, and cannot make the owner's sweep fail. Fixed before deploying:
+
+- **Owner lock allowlist (M1).** `assertSigningLock` now accepts only locks
+  known to sign the whole transaction (secp256k1, JoyID, Nostr, PW lock, and
+  Omnilock with a signature auth flag and no administrator or anyone-can-pay
+  mode); it was a blocklist. The owner must never sign an open transaction
+  with that lock.
+- **Typed payments in plain sessions (L1).** With a recipient set, payments in a
+  plain session must now be untyped too, as in token sessions.
+- **No failure before the owner-mode return (I3).** The key-cell capacity sum
+  read before it saturates instead of failing on overflow.
+- **xUDT flags (I2).** `assertPlainXudt` refuses every flag, including the ones
+  that widen who may mint.
+- **Recipient = key (I4).** `openSession` refuses it.
+
+Accepted as designed: a leaked key can burn up to `max_per_tx_token` per spend
+(xUDT allows outputs below inputs), as it can spend `max_per_tx` on fees; a key
+that is also the token's issuer can mint back what it sends (a token the key
+can mint is worth little to the owner anyway). Open, library only: a cell
+planted under the session lock can make a rate-limited spend fail (error 14)
+until `spendInSession` learns to skip cells younger than `min_interval`.
+
+Full report: drafts/token-lock-code-review.md (local).

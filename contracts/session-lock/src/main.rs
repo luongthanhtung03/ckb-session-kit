@@ -46,7 +46,9 @@
 //!    number of session cells is fixed by the owner.
 //! 4. **Recipient.** If a recipient is set, every output must be locked by this
 //!    lock (change), the session key lock (its key cell), the owner lock, or the
-//!    recipient. Nothing else. Outputs under the session key lock may hold no
+//!    recipient. Nothing else, and those payments carry no type script (in a
+//!    token session, none but the token), so the key cannot pay in a cell it
+//!    could later freeze. Outputs under the session key lock may hold no
 //!    more than inputs under it brought in: the key cell can pay the fee but not
 //!    grow, or the key could move `max_per_tx` into it each spend and then pay
 //!    anyone from there, past the recipient rule.
@@ -66,8 +68,7 @@
 //!    is refused; token change must have exactly 16 (no xUDT extension data).
 //! 7. **Key cell gets no tokens.** With a recipient set, outputs under the key
 //!    lock may hold no more tokens than inputs under it brought in (rule 4 for
-//!    tokens), and every other output must be untyped or the token, so the
-//!    recipient is paid in the token, not in a cell the key could freeze.
+//!    tokens).
 //!
 //! The xUDT script still runs and keeps the token's total in check; this lock
 //! only bounds how much leaves the session.
@@ -292,9 +293,8 @@ fn run() -> Result<(), Error> {
             if lock == args.session_lock_hash {
                 session_present = true;
                 if args.recipient_lock_hash.is_some() {
-                    key_in = key_in
-                        .checked_add(capacity(i, Source::Input)?)
-                        .ok_or(Error::CapacityOverflow)?;
+                    // Saturating: this runs before the owner-mode return, which nothing may fail.
+                    key_in = key_in.saturating_add(capacity(i, Source::Input)?);
                 }
             }
             Ok(())
@@ -397,9 +397,13 @@ fn run() -> Result<(), Error> {
                     }
                 } else if lock != recipient && lock != args.owner_lock_hash {
                     return Err(Error::RecipientNotAllowed);
-                } else if let Some(token) = &args.token {
-                    // Paid in the token, not in a cell typed by a script the key controls.
-                    if let Held::Other = held(token, i, Source::Output)? {
+                } else {
+                    // Paid plainly or in the token, never in a cell typed by a script the key controls.
+                    let foreign = match &args.token {
+                        None => has_type(i, Source::Output)?,
+                        Some(token) => matches!(held(token, i, Source::Output)?, Held::Other),
+                    };
+                    if foreign {
                         return Err(Error::TypedCell);
                     }
                 }

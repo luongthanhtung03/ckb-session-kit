@@ -286,6 +286,24 @@ describe.skipIf(skip)("session lock", () => {
       ]);
     });
 
+    // Code review, 14 Oct: a payment in a cell typed by a script the key controls
+    // could be frozen after it lands.
+    it("rejects paying the recipient in a typed cell", async () => {
+      await fails(E.TYPED_CELL, scoped, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
+        { lock: "recipient", capacity: 100n * CKB, typed: true },
+        { lock: "session", capacity: 400n * CKB },
+        KEY_CELL,
+      ]);
+    });
+
+    // Code review, 14 Oct: nothing read before the owner-mode return may fail.
+    it("owner mode ignores key cells whose capacities overflow a u64 together", async () => {
+      const huge: Cell = { lock: "key", capacity: (1n << 63n) + 1n };
+      await ok(scoped, [{ lock: "session", capacity: 500n * CKB }, huge, huge, { lock: "owner", capacity: 61n * CKB }], [
+        { lock: "owner", capacity: 561n * CKB },
+      ]);
+    });
+
     it("rejects a new key-locked cell funded from the session", async () => {
       await fails(E.KEY_CELL_GREW, scoped, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
         { lock: "key", capacity: 100n * CKB },
