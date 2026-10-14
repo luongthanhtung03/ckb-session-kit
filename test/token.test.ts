@@ -9,6 +9,7 @@ import { sessionLockArgs, sessionLockScript, TESTNET_DEPLOYMENT as d } from "../
 import {
   assertPlainXudt,
   keyLockOf,
+  matureCells,
   recoverSessions,
   SessionBalanceError,
   sessionLockOf,
@@ -103,7 +104,7 @@ describe("spendInSession in a token session", () => {
     });
 
   /** A session holding `tokens` in one cell of `capacity`, and a chain that serves it. */
-  async function setup(opts: { tokens: bigint; capacity: bigint; recipient?: boolean }) {
+  async function setup(opts: { tokens: bigint; capacity: bigint; recipient?: boolean; minInterval?: bigint }) {
     const type = await xudtOf(h("33"));
     const acp = await client.getKnownScript(ccc.KnownScript.AnyoneCanPay);
     const recipientLock = ccc.Script.from({ codeHash: acp.codeHash, hashType: acp.hashType, args: "0x" + "44".repeat(20) });
@@ -114,7 +115,7 @@ describe("spendInSession in a token session", () => {
     });
     const binding: OnChainBinding = {
       ownerLock: { codeHash: ownerLock.codeHash, hashType: ownerLock.hashType, args: ownerLock.args },
-      minInterval: 0n,
+      minInterval: opts.minInterval ?? 0n,
       ...(opts.recipient && { recipientLockHash: recipientLock.hash() }),
       token: { type: { codeHash: type.codeHash, hashType: type.hashType, args: type.args }, maxPerTx: 10n * T },
     };
@@ -135,7 +136,7 @@ describe("spendInSession in a token session", () => {
       sent.push(ccc.Transaction.from(tx));
       return h("ee");
     });
-    return { session, binding, recipient, lock, keyLock, type, sent };
+    return { session, binding, recipient, lock, keyLock, type, sent, cells };
   }
 
   it("tops up the recipient's token cell, keeping the rest of the tokens and all the CKB", async () => {
@@ -180,6 +181,36 @@ describe("spendInSession in a token session", () => {
     await expect(spendInSession(session, client, d, binding, { to: recipient, token: 1n * T })).rejects.toThrow(
       /over maxPerTx/,
     );
+  });
+
+  // Code review, 14 Oct (L2): anyone can plant a fresh cell under the session lock;
+  // picking it would make a rate-limited spend fail on chain.
+  it("with a rate limit, spends only cells old enough and skips a freshly planted one", async () => {
+    const { session, binding, recipient, lock, type, sent, cells } = await setup({
+      tokens: 100n * T,
+      capacity: 300n * CKB,
+      recipient: true,
+      minInterval: 10n,
+    });
+    const planted = cellOf(lock, 300n * CKB, type, amount(1n));
+    cells.unshift(planted);
+    vi.spyOn(client, "getTip").mockResolvedValue(1000n);
+    vi.spyOn(client, "getTransaction").mockImplementation(async (hash: ccc.HexLike) =>
+      ({ blockNumber: ccc.hexFrom(hash) === planted.outPoint.txHash ? 995n : 900n }) as never,
+    );
+    await spendInSession(session, client, d, binding, { to: recipient, token: 3n * T, topUp: true });
+    const [tx] = sent;
+    expect(tx.inputs.some((i) => i.previousOutput.eq(planted.outPoint))).toBe(false);
+    expect(tx.inputs[0].since).toBe((1n << 63n) | 10n);
+  });
+
+  it("with a rate limit and no cell old enough, says so instead of sending a doomed spend", async () => {
+    const { session, binding, recipient } = await setup({ tokens: 100n * T, capacity: 300n * CKB, recipient: true, minInterval: 10n });
+    vi.spyOn(client, "getTip").mockResolvedValue(1000n);
+    vi.spyOn(client, "getTransaction").mockResolvedValue({ blockNumber: 995n } as never);
+    await expect(
+      spendInSession(session, client, d, binding, { to: recipient, token: 3n * T, topUp: true }),
+    ).rejects.toThrow(/rate limited/);
   });
 
   it("refuses more tokens than the session holds", async () => {
@@ -245,5 +276,21 @@ describe("recoverSessions with token sessions", () => {
     expect(tx.outputs[0].lock.eq(ownerLock)).toBe(true);
     expect(tx.outputs[0].type?.eq(token)).toBe(true);
     expect(tx.outputsData[0]).toBe(amount(100n));
+  });
+});
+
+describe("matureCells", () => {
+  it("keeps cells at least `blocks` blocks below the tip, and drops unknown ones", async () => {
+    const lock = ccc.Script.from({ codeHash: h("aa"), hashType: "type", args: "0x" });
+    const at = (i: number) =>
+      ccc.Cell.from({ outPoint: { txHash: h("0" + i), index: 0 }, cellOutput: { lock, capacity: 61n * CKB }, outputData: "0x" });
+    const born: Record<string, bigint | undefined> = { [h("01")]: 990n, [h("02")]: 991n, [h("03")]: undefined };
+    vi.spyOn(client, "getTip").mockResolvedValue(1000n);
+    vi.spyOn(client, "getTransaction").mockImplementation(async (hash: ccc.HexLike) => {
+      const b = born[ccc.hexFrom(hash)];
+      return (b === undefined ? undefined : { blockNumber: b }) as never;
+    });
+    const kept = await matureCells(client, [at(1), at(2), at(3)], 10n);
+    expect(kept.map((c) => c.outPoint.txHash)).toEqual([h("01")]);
   });
 });

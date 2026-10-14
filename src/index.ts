@@ -21,6 +21,7 @@ export {
   findOwnedSessionCells,
   findSessionCells,
   keyLockOf,
+  matureCells,
   onchainRecipient,
   openSession,
   recoverSessions,

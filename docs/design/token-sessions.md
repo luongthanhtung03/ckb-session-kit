@@ -175,8 +175,11 @@ recipient is set, and cannot make the owner's sweep fail. Fixed before deploying
 Accepted as designed: a leaked key can burn up to `max_per_tx_token` per spend
 (xUDT allows outputs below inputs), as it can spend `max_per_tx` on fees; a key
 that is also the token's issuer can mint back what it sends (a token the key
-can mint is worth little to the owner anyway). Open, library only: a cell
-planted under the session lock can make a rate-limited spend fail (error 14)
-until `spendInSession` learns to skip cells younger than `min_interval`.
+can mint is worth little to the owner anyway).
+
+- **Planted fresh cells (L2), library.** Anyone can create a cell under the
+  session lock; picked into a rate-limited spend, it made the spend fail
+  (error 14). `spendInSession` now spends only cells at least `min_interval`
+  blocks old (`matureCells`).
 
 Full report: drafts/token-lock-code-review.md (local).

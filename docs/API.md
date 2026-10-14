@@ -95,6 +95,12 @@ session key's own lock.
 Throws `SessionPolicyError` unless `type` is this network's xUDT with every
 args flag clear: no extension scripts, no other owner (minting) modes. `openSession` calls it for `opts.token`.
 
+### `matureCells(client, cells, blocks) → Cell[]`
+The cells created at least `blocks` blocks before the tip. `spendInSession`
+uses it in a rate-limited session, so a fresh cell (its own last change, or one
+a stranger planted under the session lock) is never picked into a spend the
+lock would refuse.
+
 ### `tokenAmount(data) → bigint`
 The xUDT amount in a cell's data: u128 little-endian in the first 16 bytes.
 

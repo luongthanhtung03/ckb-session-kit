@@ -382,11 +382,19 @@ export async function spendInSession(
     }
   }
 
+  // With a rate limit, only cells at least `minInterval` blocks old can be spent.
+  // Anyone can create a cell under this lock; a fresh one picked here would make
+  // the whole spend fail (code review, 14 Oct).
+  const usable = binding.minInterval > 0n ? await matureCells(client, state.sessionCells, binding.minInterval) : state.sessionCells;
+  if (state.sessionCells.length && !usable.length) {
+    throw new SessionBalanceError(`rate limited: no session cell is ${binding.minInterval} blocks old yet`);
+  }
+
   // Take session cells until they cover both the shannons and the tokens.
   const taken: ccc.Cell[] = [];
   let ckbIn = 0n;
   let tokenIn = 0n;
-  for (const cell of state.sessionCells) {
+  for (const cell of usable) {
     if (ckbIn >= ckbOut && tokenIn >= tokenOut) break;
     if (ckbIn >= ckbOut && !cell.cellOutput.type) continue; // only tokens still needed
     taken.push(cell);
@@ -425,6 +433,16 @@ export async function spendInSession(
     throw new SessionBalanceError("the key cell cannot cover another fee; top it up");
   }
   return sessionSigner(session, client).sendTransaction(tx);
+}
+
+/** The cells created at least `blocks` blocks before the tip: those a relative `since` of `blocks` can spend. */
+export async function matureCells(client: ccc.Client, cells: ccc.Cell[], blocks: bigint): Promise<ccc.Cell[]> {
+  const tip = await client.getTip();
+  const born = await Promise.all(cells.map(async (c) => (await client.getTransaction(c.outPoint.txHash))?.blockNumber));
+  return cells.filter((_, i) => {
+    const b = born[i];
+    return b !== undefined && b !== null && tip - ccc.numFrom(b) >= blocks;
+  });
 }
 
 /**

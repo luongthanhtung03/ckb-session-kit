@@ -211,6 +211,31 @@ each released by the server; minute 2 claimed with minute 0's payment: refused
 → [swept](https://testnet.explorer.nervos.org/transaction/0x2f091ff6430b62d157743450cf18cc9d5f52d91852012cc348ff377f79dab8e0)
 and [key cell back](https://testnet.explorer.nervos.org/transaction/0x5024c47cd6eacb822bc6c9392270bc6b4389110a353b0139475aafdbddb8cf2e).
 
+## Token sessions (xUDT)
+
+A session can hold a token as well as CKB: a stablecoin, game credits, a
+creator's token. The owner signs once; the session key pays in the token with
+no wallet, and the lock caps the units per spend the way it caps shannons, with
+the same recipient and rate-limit rules. Payments top up the recipient's
+anyone-can-pay token cell, so no CKB leaves the session. Closing or recovering
+returns the tokens as tokens.
+
+```ts
+const { binding } = await openSession(wallet, session, TESTNET_DEPLOYMENT, {
+  budget: 300n * CKB,
+  token: { type: xudtType, amount: 100n, maxPerTx: 10n },
+});
+await spendInSession(session, client, TESTNET_DEPLOYMENT, binding, { to: creator, token: 3n, topUp: true });
+```
+
+Design, threats and both reviews: [`docs/design/token-sessions.md`](docs/design/token-sessions.md).
+`npm run smoke:token` runs it on testnet. Run on 14 Oct 2026, with a test xUDT:
+[session opened, 100 units](https://testnet.explorer.nervos.org/transaction/0x7dac7740cf9be29cf900085e98f43cb3557e2c956b9946a2d20ddc3dec49105d)
+→ [3 units](https://testnet.explorer.nervos.org/transaction/0xa8d1d98f8fd5b22cab9fd989b58a39995171e7099b1df5df46292c6ca8f94a88)
+→ [3 units](https://testnet.explorer.nervos.org/transaction/0xba27bcc564c00cdf2b8b3d3badc30091a29f17fbc4ce71bbb84117af6cb7b19d),
+no wallet; 11 units in a 10-unit session: rejected by the network (code 20)
+→ [94 units swept back](https://testnet.explorer.nervos.org/transaction/0x798c65c8ab49de39eb5aeb084c386f6ec1e1803e12636129ba73ace24b710a5d).
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in
@@ -287,11 +312,11 @@ and its change must stay above that.
 
 ### Enforced by the real network
 
-Deployed on testnet: code hash `0x1cb77242…1590cd` (`data2`, [deploy tx](https://testnet.explorer.nervos.org/transaction/0x37cfe04f64fd4dbec3803a972a51b7080f9ca1a3042535e97b7a756d0e03b071)),
+Deployed on testnet: code hash `0xab419466…4c08ce` (`data2`, [deploy tx](https://testnet.explorer.nervos.org/transaction/0xf3098bdb9a7bb1c500990be0f1159b7e66f507fef6b7a4f904046024284877f2)),
 see [`deployment/testnet.json`](deployment/testnet.json). The code is immutable.
-The first deployment (8 Oct, before errors 16–18) is kept in
-`TESTNET_LEGACY_DEPLOYMENTS`, so `recoverSessions` still sweeps sessions opened
-under it.
+Earlier deployments (8 Oct, before errors 16–18; 13 Oct, before token sessions)
+are kept in `TESTNET_LEGACY_DEPLOYMENTS`, so `recoverSessions` still sweeps
+sessions opened under them.
 
 `npm run smoke:lock` runs every rule against public testnet. Run on 13 Oct 2026:
 
