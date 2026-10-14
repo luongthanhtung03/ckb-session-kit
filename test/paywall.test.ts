@@ -149,3 +149,72 @@ describe("verifyAccess", () => {
     expect(r).toEqual({ ok: false, reason: "payment is pending, not committed" });
   });
 });
+
+describe("verifyAccess with a token price", () => {
+  const xudt = (args: string) => ccc.Script.from({ codeHash: "0x" + "ee".repeat(32), hashType: "data1", args });
+  const TOKEN = xudt("0x" + "aa".repeat(32));
+  const units = (v: bigint) => ccc.hexFrom(ccc.numLeToBytes(v, 16));
+
+  /** A token payment as spendInSession builds it with topUp: the creator's token cell gains `paid` units. */
+  async function setupToken(paid: bigint, paidIn: ccc.Script = TOKEN) {
+    const client = new ccc.ClientPublicTestnet();
+    const payer = newSession();
+    const keyLock = (await new ccc.SignerCkbPrivateKey(client, payer.privateKey).getAddressObjSecp256k1()).script;
+    const creator = ccc.Script.from({ codeHash: "0x" + "cc".repeat(32), hashType: "type", args: "0x01" });
+    const session = ccc.Script.from({ codeHash: "0x" + "dd".repeat(32), hashType: "data2", args: "0x02" });
+    const prev = (i: number) => ccc.OutPoint.from({ txHash: "0x" + "01".repeat(32), index: i });
+    const inputs = [
+      { cellOutput: { lock: session, type: paidIn, capacity: 300n * CKB }, outputData: units(100n) },
+      { cellOutput: { lock: creator, type: paidIn, capacity: 142n * CKB }, outputData: units(7n) },
+      { cellOutput: { lock: keyLock, capacity: 100n * CKB }, outputData: "0x" },
+    ];
+    const tx = ccc.Transaction.from({
+      inputs: inputs.map((_, i) => ({ previousOutput: prev(i) })),
+      outputs: [
+        { lock: creator, type: paidIn, capacity: 142n * CKB },
+        { lock: session, type: paidIn, capacity: 300n * CKB },
+        { lock: keyLock, capacity: 100n * CKB - 1000n },
+      ],
+      outputsData: [units(7n + paid), units(100n - paid), "0x"],
+    });
+    tx.setWitnessArgsAt(2, { inputType: MEMO, lock: "0x" + "00".repeat(65) });
+    client.getTransaction = (async () => ({ transaction: tx, status: "committed" })) as never;
+    client.getCell = (async (op: ccc.OutPointLike) => {
+      const i = Number(ccc.OutPoint.from(op).index);
+      return ccc.Cell.from({ outPoint: prev(i), ...inputs[i] });
+    }) as never;
+    return { client, proof: await signAccess(payer, TX_HASH, MEMO), creator };
+  }
+
+  it("accepts a payment of enough units of the token", async () => {
+    const { client, proof, creator } = await setupToken(3n);
+    expect(await verifyAccess(client, proof, { to: creator, minAmount: 3n, memo: MEMO, token: TOKEN })).toEqual({
+      ok: true,
+      paid: 3n,
+    });
+  });
+
+  it("rejects too few units", async () => {
+    const { client, proof, creator } = await setupToken(2n);
+    const r = await verifyAccess(client, proof, { to: creator, minAmount: 3n, memo: MEMO, token: TOKEN });
+    expect(r).toEqual({ ok: false, reason: "paid 2 units, below the price" });
+  });
+
+  it("counts only the token asked for, not one with the same code and other args", async () => {
+    const { client, proof, creator } = await setupToken(50n, xudt("0x" + "bb".repeat(32)));
+    const r = await verifyAccess(client, proof, { to: creator, minAmount: 3n, memo: MEMO, token: TOKEN });
+    expect(r).toEqual({ ok: false, reason: "paid 0 units, below the price" });
+  });
+
+  it("does not count CKB toward a token price", async () => {
+    const { client, payer, creator } = await setup({ paid: 1000n * CKB });
+    const r = await verifyAccess(client, await signAccess(payer, TX_HASH, MEMO), { to: creator, minAmount: 1n, memo: MEMO, token: TOKEN });
+    expect(r).toEqual({ ok: false, reason: "paid 0 units, below the price" });
+  });
+
+  it("does not count tokens toward a CKB price", async () => {
+    const { client, proof, creator } = await setupToken(90n);
+    const r = await verifyAccess(client, proof, { to: creator, minAmount: 1n * CKB, memo: MEMO });
+    expect(r.ok).toBe(false);
+  });
+});

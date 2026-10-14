@@ -154,10 +154,13 @@ A memo for `spendInSession`, e.g. `paymentMemo("read:article-1")`.
 ### `signAccess(session, txHash, memo) → AccessProof`
 The payer proves that the key which paid `txHash` is asking.
 
-### `verifyAccess(client, proof, { to, minAmount, memo }) → AccessCheck`
+### `verifyAccess(client, proof, { to, minAmount, memo, token? }) → AccessCheck`
 The server's check, with no database: the request is signed by the key that
 paid; the payment is committed, carries exactly this memo and no other, and the
-recipient gained at least `minAmount`. One payment buys one claim.
+recipient gained at least `minAmount`. One payment buys one claim. With
+`token` (an xUDT type script) the price is in that token's units: only cells of
+exactly that type under `to` count, and CKB counts for nothing (nor tokens
+toward a CKB price).
 
 ### Types: `AccessProof`, `AccessCheck`
 

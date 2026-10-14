@@ -236,6 +236,20 @@ Design, threats and both reviews: [`docs/design/token-sessions.md`](docs/design/
 no wallet; 11 units in a 10-unit session: rejected by the network (code 20)
 → [94 units swept back](https://testnet.explorer.nervos.org/transaction/0x798c65c8ab49de39eb5aeb084c386f6ec1e1803e12636129ba73ace24b710a5d).
 
+**Try it in the browser:** [ckb-session-kit.vercel.app/tokens](https://ckb-session-kit.vercel.app/tokens):
+pay-per-read again, 2 tokens per article. The demo token is free to mint from the
+page: its issuer is an anyone-can-pay cell nobody holds the key to, and xUDT lets
+whoever spends an issuer cell mint, so anyone can (it is worth nothing). The
+server releases an article after `verifyAccess(…, { token })` finds, on-chain,
+that this key paid 2 units of this token for it. `npm run setup:token` creates
+the issuer cells; `npm run smoke:read-tokens` runs the page's flow on testnet.
+Run on 14 Oct 2026:
+[minted 20 units with only the minter's key](https://testnet.explorer.nervos.org/transaction/0x37e5005a74ee503a86813907c6aef1d02e930c9575c271751d6fafed9cdeef75)
+→ [session opened](https://testnet.explorer.nervos.org/transaction/0x366d40dad9c8be024af28e93aa4b65e8f0a7ad9903ff923eb5c192d49c99c678)
+→ [2 units for an article](https://testnet.explorer.nervos.org/transaction/0x9a16f6601309af1deec985c55a7537195047c28630d0cae719e8e8afc3d01dee),
+released by the demo's server route; at a 3-unit price the same payment is refused
+→ [18 units back](https://testnet.explorer.nervos.org/transaction/0x3688288b9c49c771b85a38a80806f9fefead39b936caea92ecb97e6d4a3aa2ee).
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in
@@ -260,15 +274,16 @@ Rust. A cell under it can be spent two ways:
     which makes the per-cell rate limit a per-session one for sessions opened
     with `openSession`. (Anyone can add cells under a session lock, but only
     with their own money: it never multiplies what the owner put in);
-  - **no type scripts** — the session cells spent and their change carry no type
-    script. The limits count capacity only: a token in a session cell would move
-    at zero outflow, and a change cell given a type the key controls could later
-    refuse every spend, the owner's sweep included, freezing the whole balance.
+  - **no type scripts** — in a plain session, the session cells spent and their
+    change carry no type script: a change cell given a type the key controls could
+    later refuse every spend, the owner's sweep included, freezing the whole
+    balance. A token session allows exactly one type, its own xUDT, and caps the
+    units that leave per spend (`max_per_tx_token`) the way it caps shannons.
 
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
-cryptography: **5.2 KB, no allocator, no C, 14,881 cycles per run** — about 0.9% of
-a session spend. 33 tests run it in the real CKB-VM, most asserting a specific
+cryptography: **7.6 KB, no allocator, no C, 15,651 cycles per run** — about 0.9% of
+a session spend (29,031 on a token spend, 1.7%). 57 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has
@@ -318,23 +333,25 @@ Earlier deployments (8 Oct, before errors 16–18; 13 Oct, before token sessions
 are kept in `TESTNET_LEGACY_DEPLOYMENTS`, so `recoverSessions` still sweeps
 sessions opened under them.
 
-`npm run smoke:lock` runs every rule against public testnet. Run on 13 Oct 2026:
+`npm run smoke:lock` runs every rule against public testnet. Run on 14 Oct 2026, on the current lock:
 
 | Step | Network said |
 |---|---|
-| Owner funds three session cells and a key cell | [accepted](https://testnet.explorer.nervos.org/transaction/0xaab24e5d27e428dc00b1dd27452352abff5cb805b0029123f7c3162136c75179) |
-| Session key spends exactly `max_per_tx` (100 CKB), no owner signature | [accepted](https://testnet.explorer.nervos.org/transaction/0xaf37efbf23c9ce950520d9c65f5ec5b14dd8d84525444c05fa83a13b95f499e3) |
+| Owner funds three session cells and a key cell | [accepted](https://testnet.explorer.nervos.org/transaction/0x12a553c12e733a50f18db09edf8112031c9e39b1949e1f11699a67e3e30ba350) |
+| Session key spends exactly `max_per_tx` (100 CKB), no owner signature | [accepted](https://testnet.explorer.nervos.org/transaction/0xe2fced3a5d73059465f0b9400acdf0cba3fc27e441b82d1faebcbe44b1b20a8b) |
 | Session key spends 100 CKB + 1 shannon | **rejected**, error 12 (outflow exceeds max_per_tx) |
 | Rate-limited cell spent with no `since` | **rejected**, error 14 (rate limited) |
-| Same cell with `since` = 3 relative blocks | [accepted once mature](https://testnet.explorer.nervos.org/transaction/0x8d49466d8c1bc271c0923168dfc5783a99f04ebd2f1025e6b86e70209ea5f88f) |
+| Same cell with `since` = 3 relative blocks | [accepted once mature](https://testnet.explorer.nervos.org/transaction/0xe53e4ada7f76d847b7e1883115c9b31851d8962e195cc2eb1fdaeb53e6b07653) |
 | Change split into two cells | **rejected**, error 16 (too many change cells) |
 | Recipient-scoped cell, 50 CKB moved into the key cell | **rejected**, error 17 (key cell may not grow) |
 | Change given a type script (a valid Type ID) | **rejected**, error 18 (no type scripts) |
-| Owner sweeps everything back | [accepted](https://testnet.explorer.nervos.org/transaction/0xe8ebad7a3b9eff8c67e9757567674047b43c0ad04ec01604f84f5090f8bbd38b) |
+| Owner sweeps everything back | [accepted](https://testnet.explorer.nervos.org/transaction/0x8019404b3708050660b921201ec534cc7f20ef68fa1e836012d33f531066bae5) |
 
 Cycles, measured with [ckb-cycle-tools](https://github.com/luongthanhtung03/ckb-cycle-tools)
-on the accepted session spend: the session lock 14,881, the key cell's
-secp256k1 lock 1,658,440, matching the node's 1,673,321 exactly.
+on the accepted session spend: the session lock 15,651, the key cell's
+secp256k1 lock 1,652,327, matching the node's 1,667,978 exactly. On a token
+payment from the /tokens page's flow: the session lock 29,031, xUDT 18,795, the
+creator's anyone-can-pay lock 34,106, the key 1,642,571 (1,724,503 in all).
 
 ### v0.1 browser flow, verified on public testnet
 

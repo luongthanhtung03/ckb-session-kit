@@ -37,10 +37,12 @@
     "smoke:pay-per-read": "tsx scripts/testnet-pay-per-read.ts",
     "setup:creator": "tsx scripts/setup-creator.ts",
     "setup:board": "tsx scripts/setup-board.ts",
+    "setup:token": "tsx scripts/setup-token.ts",
     "smoke:recover": "tsx scripts/testnet-recover.ts",
     "smoke:place": "tsx scripts/testnet-place.ts",
     "smoke:listen": "tsx --tsconfig examples/tsconfig.json scripts/testnet-listen.ts",
     "smoke:token": "tsx scripts/testnet-token.ts",
+    "smoke:read-tokens": "tsx scripts/testnet-read-tokens.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"
   },

@@ -5,9 +5,10 @@ import { useMemo } from "react";
 import PayPerMinute from "./listen/PayPerMinute";
 import Place from "./place/Place";
 import PayPerRead from "./read/PayPerRead";
+import PayPerReadTokens from "./tokens/PayPerReadTokens";
 import SessionDemo from "./SessionDemo";
 
-export type PageName = "wallet" | "read" | "place" | "listen";
+export type PageName = "wallet" | "read" | "tokens" | "place" | "listen";
 
 /** Wallet connection for the session owner: CCC's standard picker, on testnet. */
 export default function Root({ page }: { page: PageName }) {
@@ -16,6 +17,8 @@ export default function Root({ page }: { page: PageName }) {
     <ccc.Provider defaultClient={client} name="ckb-session-kit" icon="/icon.svg">
       {page === "read" ? (
         <PayPerRead />
+      ) : page === "tokens" ? (
+        <PayPerReadTokens />
       ) : page === "place" ? (
         <Place />
       ) : page === "listen" ? (
