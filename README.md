@@ -53,6 +53,9 @@ are then signed by a key held only in the browser, with **no wallet popup**, and
 network enforces the limits. The wallet signs **once more** to close the session and
 take everything back.
 
+New here? [`docs/WALKTHROUGH.md`](docs/WALKTHROUGH.md) tours every demo page on
+testnet in about fifteen minutes, with one wallet.
+
 ```ts
 import { createSession, openSession, spendInSession, closeSession, TESTNET_DEPLOYMENT as deployment } from "ckb-session-kit";
 
@@ -364,6 +367,36 @@ that an over-limit spend is refused. Run on 8 Oct 2026:
 | Fund the session (300 CKB) | [0x2acf…c45f](https://testnet.explorer.nervos.org/transaction/0x2acff2323c07cb36dd9d58343df83277cdab68725541020acbff4dc968d0c45f) |
 | Spend 100 CKB, signed by the session key | [0x52a1…da50](https://testnet.explorer.nervos.org/transaction/0x52a1b3ba45a28614c30ddc52f0795c164141abbebd1558e6c69fb0ac45fada50) |
 | Spend 150 CKB (limit 100) | refused before signing |
+
+## Limits
+
+What this does not do, in one place. Each is stated where it applies above.
+
+- **Testnet only, not audited.** The lock has had community and adversarial
+  reviews, each finding fixed with a regression test, but no external audit.
+  Do not put mainnet funds behind it.
+- **Expiry is not on-chain.** A CKB script cannot prove that time has *not*
+  passed, so `expiresAt` is checked in the browser. A leaked key stays valid
+  until the owner sweeps; the session's balance is the most it can lose.
+- **The rate limit is per cell.** `openSession` makes one cell and the lock
+  forbids splitting, but anyone adding more cells under the same session lock
+  gives the key more cells to spend from (with their own money, never the owner's).
+- **The key cell is not recoverable without the key.** `recoverSessions` sweeps
+  every session cell with the wallet alone; the 62–64 CKB key cell needs the
+  lost key.
+- **An owner sweep can be raced.** A key holder can replace a pending sweep by
+  paying a higher fee. Sweep early and sweep again.
+- **Paid access is checked at zero confirmations.** `verifyAccess` accepts a
+  payment once it is committed in a block; a reorg could undo it after the
+  content was released. Fine for articles and pixels, not for anything costly.
+- **An access proof does not expire.** It is a bearer token for one article:
+  whoever holds the signed proof can fetch that article again. It cannot be
+  used for another article or by another payment.
+- **Owner locks must need a signature.** An anyone-can-pay owner lock would give
+  anyone owner mode; `openSession` refuses one.
+- **Sessions are not cheap to open.** A session cell occupies 121 CKB (153 with a
+  recipient), returned on close; small payments go to anyone-can-pay cells
+  because a new cell needs 61 CKB.
 
 ## Why it is a separate repository
 
