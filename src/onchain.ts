@@ -60,7 +60,7 @@ const FEE_MARGIN = 1n * 100_000_000n;
  * owner's lock (63 CKB for JoyID or Omnilock, whose args are 22 bytes), and never
  * below a key cell's own 61 CKB.
  */
-function keyCellFloor(ownerLock: ccc.ScriptLike): bigint {
+export function keyCellFloor(ownerLock: ccc.ScriptLike): bigint {
   const ownerCell = ccc.CellOutput.from({ lock: ownerLock }, "0x").capacity;
   return ownerCell > KEY_CELL_MIN ? ownerCell : KEY_CELL_MIN;
 }
@@ -71,7 +71,7 @@ function keyCellFloor(ownerLock: ccc.ScriptLike): bigint {
  * against it first. If the send throws but the node did take the transaction (a
  * timeout on the reply, say), the hash is returned all the same.
  */
-async function signAndSend(
+export async function signAndSend(
   signer: ccc.Signer,
   tx: ccc.Transaction,
   beforeSend?: (txHash: ccc.Hex) => Promise<void>,
@@ -129,7 +129,7 @@ export async function sessionLockOf(
 }
 
 /** Plain cells under `lock`; with `token`, also cells holding exactly that token. */
-async function collect(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
+export async function collect(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
   for await (const cell of client.findCellsByLock(lock, null, true)) {
     if ((!cell.cellOutput.type && cell.outputData === "0x") || (token && plainTokenCell(cell, token))) cells.push(cell);
@@ -632,7 +632,7 @@ function sweepable(cell: ccc.Cell): boolean {
  * Spends `cells` in owner mode: everything returns to the owner. Tokens go back
  * in one cell per token type (xUDT would let a sweep burn them otherwise).
  */
-async function ownerSweep(
+export async function ownerSweep(
   owner: ccc.Signer,
   deployments: SessionLockDeployment | SessionLockDeployment[],
   cells: ccc.Cell[],

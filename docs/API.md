@@ -179,6 +179,51 @@ toward a CKB price).
 
 ### Types: `AccessProof`, `AccessCheck`
 
+## Subscriptions
+
+The same session lock with the roles moved (docs/design/subscriptions.md): the
+subscriber is the owner, the creator's charger key is the session key, the price
+is `max_per_tx`, the period is `min_interval`, the payout address is the
+recipient. The network lets the charger take at most the price, at most once per
+period, only to the payout address; the subscriber can take everything back
+alone at any time. No change to the deployed lock.
+
+### `openSubscription(subscriber, deployment, { charger, payTo, price, periodBlocks, budget, beforeSend? }) → { txHash, subscription }`
+The subscriber funds one cell; one signature, no key cell. Refuses terms the lock
+would not enforce as meant: a price or period of 0, `payTo` equal to the charger
+(every charge would fail with error 17), the subscriber as charger or payout, and
+a price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
+of 153 CKB plus n prices pays n periods exactly.
+
+### `chargeSubscription(charger, deployment, subscription, { payTo, topUp?, beforeSend? }) → txHash`
+The charger key takes one price, with the period as the inputs' relative `since`,
+and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee
+comes from one of the charger's own plain cells. Throws `SessionBalanceError`
+before a full period (saying how many blocks are left) and once what is left
+cannot cover a price plus a cell.
+
+### `cancelSubscription(subscriber, deployment, subscription) → { txHash?, refunded, nothingFound? }`
+Owner-mode sweep of everything left; no creator involved, no wait.
+`recoverSessions` also finds and sweeps subscriptions.
+
+### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance? }) → SubscriptionCheck`
+The creator's check of a subscription it was told about, from the chain alone:
+the cell is live, under this deployment, untyped, 112-byte args with exactly these
+terms, and holds at least `minBalance` (default: one price plus the cell's size).
+
+### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, nextChargeIn }`
+`nextChargeIn` is the number of blocks until a cell is a full period old (0 = it can be charged now).
+
+### `subscriptionLock(deployment, subscription)`
+The session-lock script of a subscription.
+
+### `blocksForSeconds(client, seconds, sample?) → bigint`
+About how many blocks `seconds` is, from the average block time of the last
+`sample` (1000) blocks. An estimate; round up.
+
+### Types: `Subscription`, `SubscriptionCheck`
+`Subscription` holds the five terms as lock hashes and numbers, and no private key.
+
 ## A shared pixel board (CKB Place)
 
 A board is an anyone-can-pay address. Each placement is a session payment that

@@ -31,6 +31,16 @@ export {
   tokenAmount,
 } from "./onchain.js";
 export type { OnChainBinding, SessionCells } from "./onchain.js";
+export {
+  blocksForSeconds,
+  cancelSubscription,
+  chargeSubscription,
+  findSubscriptionCells,
+  openSubscription,
+  subscriptionLock,
+  verifySubscription,
+} from "./subscription.js";
+export type { Subscription, SubscriptionCheck } from "./subscription.js";
 export { paymentMemo, signAccess, verifyAccess } from "./paywall.js";
 export type { AccessCheck, AccessProof } from "./paywall.js";
 export {
