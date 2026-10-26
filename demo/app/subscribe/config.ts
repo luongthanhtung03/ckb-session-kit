@@ -13,3 +13,7 @@ export const PRICE = 2n * CKB;
 export const PERIOD_BLOCKS = 60n;
 /** The cell's own 153 CKB plus five more periods. */
 export const BUDGET = 163n * CKB;
+
+/** Paid in the demo token instead (mint it on /tokens): 2 units a period, 10 units in the cell. */
+export const TOKEN_PRICE = 2n;
+export const TOKEN_UNITS = 10n;

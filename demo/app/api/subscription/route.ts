@@ -2,7 +2,7 @@ import { ccc } from "@ckb-ccc/core";
 import { subscriptionStatus, type SessionLockDeployment } from "ckb-session-kit";
 import deploymentJson from "../../../../deployment/testnet.json";
 import { NOTES } from "../../subscribe/notes";
-import { isAccount, isHash, termsFor } from "../../subscribe/terms";
+import { isAccount, isAsset, isHash, termsFor } from "../../subscribe/terms";
 
 const client = new ccc.ClientPublicTestnet();
 const deployment = deploymentJson as SessionLockDeployment;
@@ -14,18 +14,18 @@ const deployment = deploymentJson as SessionLockDeployment;
  * says the rest. Bad shape 400; not a paid-up subscription 402; chain unreachable 503.
  */
 export async function POST(request: Request) {
-  let subscriber: unknown, openTx: unknown, account: unknown;
+  let subscriber: unknown, openTx: unknown, account: unknown, asset: unknown;
   try {
-    ({ subscriber, openTx, account } = await request.json());
+    ({ subscriber, openTx, account, asset = "ckb" } = await request.json());
   } catch {
     return Response.json({ error: "bad request" }, { status: 400 });
   }
-  if (!isHash(subscriber) || !isHash(openTx) || !isAccount(account)) {
+  if (!isHash(subscriber) || !isHash(openTx) || !isAccount(account) || !isAsset(asset)) {
     return Response.json({ error: "bad request" }, { status: 400 });
   }
   let r: Awaited<ReturnType<typeof subscriptionStatus>>;
   try {
-    const terms = await termsFor(client, subscriber.toLowerCase() as ccc.Hex);
+    const terms = await termsFor(client, subscriber.toLowerCase() as ccc.Hex, asset);
     r = await subscriptionStatus(client, deployment, terms, { openTx, account });
   } catch {
     return Response.json({ error: "could not reach the chain", retry: true }, { status: 503 });
@@ -38,6 +38,7 @@ export async function POST(request: Request) {
       tip: s.tip.toString(),
       active: s.active,
       balance: s.balance.toString(),
+      ...(s.tokenBalance !== undefined && { tokenBalance: s.tokenBalance.toString() }),
       chargesLeft: s.chargesLeft.toString(),
       nextChargeIn: s.nextChargeIn?.toString(),
     },
