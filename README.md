@@ -297,6 +297,28 @@ A charge costs the session lock 20,999 cycles.
 **Try it in the browser:** [ckb-session-kit.vercel.app/subscribe](https://ckb-session-kit.vercel.app/subscribe):
 2 CKB per 60 blocks; members' notes the server releases only while you are paid up.
 
+## Which wallets can own a session
+
+The owner signs to open, close and recover, so the owner's wallet must work. `npm
+run matrix:wallets` runs the session and subscription flows on testnet with each
+kind of owner lock the demo's wallet picker gives, signing the way that wallet
+signs (EIP-191 for Ethereum wallets, Bitcoin message signing, and so on). Run on
+26-27 Oct 2026:
+
+| Owner wallet | session opened | paid 1 CKB | session swept | key cell back | subscribed | cancelled |
+|---|---|---|---|---|---|---|
+| CKB default lock (secp256k1): Neuron, CKB CLI, most libraries | [0x5e14b73f…](https://testnet.explorer.nervos.org/transaction/0x5e14b73f596c0938d228f117bfcae5788ae1c043f93ba6c97b73041febe2a7a4) | [0xd89e75ff…](https://testnet.explorer.nervos.org/transaction/0xd89e75ffc99be568127dda64b35f09966c0a6e9f6c3b805b2e2d85cc099260f9) | [0xd9336db9…](https://testnet.explorer.nervos.org/transaction/0xd9336db92d25b50f4f42cb715c8b1f84bca40c30d3cff9638108bd6021ad61f4) | [0x881ca37f…](https://testnet.explorer.nervos.org/transaction/0x881ca37f01bfe087da0e1eda74e712f2ac1e9d18b126867099c20a7a2fc42a87) | [0x2b0274df…](https://testnet.explorer.nervos.org/transaction/0x2b0274df681c435ab40a685110906dfe7e78658b5cb87eac885823da3329dad7) | [0x9aeff7dc…](https://testnet.explorer.nervos.org/transaction/0x9aeff7dc0518e8b4a12228cfe60768bd0a02481c474e38b5bb61733a1284f634) |
+| Omnilock, Ethereum auth (0x12): MetaMask, OKX (EVM) | [0xae66203d…](https://testnet.explorer.nervos.org/transaction/0xae66203d64e7000d200992280e0bfbff7ffd08b83a18b22686fa01e7663230f1) | [0x3b0211b0…](https://testnet.explorer.nervos.org/transaction/0x3b0211b0c260c9cd0a009276271c9cb5007fcd4d566ab4eac161280a8e4c0206) | [0xe5bc64e9…](https://testnet.explorer.nervos.org/transaction/0xe5bc64e9980482c5eeeb832a204fa9142006b64badc97f6f845f328ecc0f1170) | [0xf795b033…](https://testnet.explorer.nervos.org/transaction/0xf795b0331fbee0e850f238c89f3728b4f7e22fcaacf66ee0e2cfc7344c9f83fd) | [0x6f5b5666…](https://testnet.explorer.nervos.org/transaction/0x6f5b5666593c7d4c63a69c0afcec90a1440dc1ad3c1570001cc8c059621c889c) | [0x9e963bbf…](https://testnet.explorer.nervos.org/transaction/0x9e963bbfdf38eebc238f7b4c77290fc9228e8f6fdaba70ee039c73a7821517e3) |
+| Omnilock, Bitcoin auth: UniSat, OKX (BTC) | [0x9a1beefc…](https://testnet.explorer.nervos.org/transaction/0x9a1beefc1fbc7d6a3d0eee5ef14a4b9c37c60f26794ff9716ee8ea8da9235f3d) | [0xe5db9f8b…](https://testnet.explorer.nervos.org/transaction/0xe5db9f8bf28be2a1e5859037643ba2b84cb38150b143c8113479002e7ff21e11) | [0x5f7f4d69…](https://testnet.explorer.nervos.org/transaction/0x5f7f4d69404be44a09bc0d35e40890e85e1c16ab70fefb20926ae516c4f4056f) | [0x44a0e09d…](https://testnet.explorer.nervos.org/transaction/0x44a0e09da81c6df8377971c08e08131c88fd22e307a511f6077f63d02a9ae86e) | [0xf44697da…](https://testnet.explorer.nervos.org/transaction/0xf44697da2f0c19d62370113d89b5e767735338eadab5ec236c2946831842c2a3) | [0x38141883…](https://testnet.explorer.nervos.org/transaction/0x3814188336d6a345a525a0eb9805d35202072c2567c4f1bae3b50a2a1fdb0be9) |
+| Omnilock, Dogecoin auth | [0xbd693312…](https://testnet.explorer.nervos.org/transaction/0xbd6933129c74bae2a9ed16467ea422c093e8869f901a871994cc41838667bbb5) | [0x1f7069e9…](https://testnet.explorer.nervos.org/transaction/0x1f7069e9fb0e078dccaa291be51c24bc86d6245b2925446a917d09b68f18dbf2) | [0x356fb5f1…](https://testnet.explorer.nervos.org/transaction/0x356fb5f179bb2aee0d396b1933840eb6c96b693907d68deaf78970934a2cd260) | [0x093d5331…](https://testnet.explorer.nervos.org/transaction/0x093d533118f9f671928f87a710eb0079275246ad552ab39c8e131e60c5df9c1d) | [0x6d8c67d7…](https://testnet.explorer.nervos.org/transaction/0x6d8c67d776d499b099649bcbc24d7647d42ec488c6f95e30a8c5177764980c42) | [0x0e98ab80…](https://testnet.explorer.nervos.org/transaction/0x0e98ab80f1b09993fcb78bf7ed835f1212c8c00f79c57483a4c242eabfdb88ec) |
+| Nostr lock: NIP-07 extensions | [0x24e6503a…](https://testnet.explorer.nervos.org/transaction/0x24e6503a5e0113bef6b506434cf202e2fa6e10d47723e301d290bdcadcf4a079) | [0x297eaa51…](https://testnet.explorer.nervos.org/transaction/0x297eaa51014e9a4a6cdfa889527ac32e381aebe21d2cfa2b21078a849fb79989) | [0x05dfbc09…](https://testnet.explorer.nervos.org/transaction/0x05dfbc0979d09a784d4943d49ecbfcb6a5d718c01a620816b4cdb0bc4f57e62f) | [0xd9139c2e…](https://testnet.explorer.nervos.org/transaction/0xd9139c2ee919c133c3d107b0e5a60789e48553ba38f33024d90af10a7c9ce601) | [0x832c08a3…](https://testnet.explorer.nervos.org/transaction/0x832c08a309464e20ce3441034d1aebcdade51721f21bc14bbc11b7237ed7484b) | [0xf6cfb847…](https://testnet.explorer.nervos.org/transaction/0xf6cfb8478fd6f53bab2b192f6ebfd7b498522299d122b91205a759b43e97778f) |
+
+The first run refused the MetaMask row: the check that refuses owner locks which
+verify no signature did not know Omnilock's auth flag 0x12, the one CCC gives
+Ethereum wallets. Fixed, with a test built from the lock CCC derives for an
+Ethereum account. **JoyID** signs with a passkey and cannot be scripted; it was
+tested by hand in the demo (10 Oct).
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in
