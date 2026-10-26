@@ -81,7 +81,21 @@ an article is released only to the key that paid for **that** article.
 The lock caps token units per spend (error 20) the same way it caps shannons,
 and allows exactly one type script on session cells: this session's token.
 
-## 5. Lost device — recover
+## 5. Subscriptions — `/subscribe`
+
+[ckb-session-kit.vercel.app/subscribe](https://ckb-session-kit.vercel.app/subscribe)
+
+1. **subscribe (1 signature)**: the opening pays the first period (2 CKB) and puts
+   163 CKB in a cell you own, under the session lock with the creator's charger
+   key as the session key. The members' notes appear: the server checked on-chain
+   that this subscription is paid up and bound to this browser's account id.
+2. Watch **paid through**: about 60 blocks later the period ends; the page asks
+   the creator's server to charge the next one, and a 2 CKB charge appears in the
+   log with no wallet popup. (Needs `CHARGER_KEY` in the deployment.)
+3. **cancel subscription**: one signature sweeps everything left back to you; the
+   creator is not asked. The notes lock again.
+
+## 6. Lost device — recover
 
 On the [home page](https://ckb-session-kit.vercel.app/), **recover**
 (`session recover --owner wallet`) finds every session
@@ -90,7 +104,7 @@ signature. To try it: open a session, clear the site's storage (the key is
 gone), reload, recover. Only the key cell (the fee budget, ~62 CKB) cannot come
 back, since only the lost key can spend it.
 
-## 6. Measure what you just did — ckb-cycle-tools
+## 7. Measure what you just did — ckb-cycle-tools
 
 [ckb-cycle-tools.vercel.app](https://ckb-cycle-tools.vercel.app/)
 
