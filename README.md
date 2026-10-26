@@ -4,7 +4,7 @@ Browser-held self-custody sessions for CKB applications.
 
 **Live demo:** [ckb-session-kit.vercel.app](https://ckb-session-kit.vercel.app/) — connect a wallet, sign once to open a session, pay with no popups while the network enforces the limits, sign once to close (CKB testnet).
 
-**Status: early development.** Built in the open during my CKBuilder programme.
+**Status: v1.0, on CKB testnet (not audited, no mainnet deployment).** Built in the open during my CKBuilder programme.
 
 | When | Milestone |
 |---|---|
