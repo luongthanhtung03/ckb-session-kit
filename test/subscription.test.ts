@@ -4,6 +4,7 @@ import { TESTNET_DEPLOYMENT as d, TESTNET_LEGACY_DEPLOYMENTS } from "../src/lock
 import { SessionBalanceError } from "../src/onchain.js";
 import { SessionPolicyError } from "../src/session.js";
 import {
+  cancelSubscription,
   chargeSubscription,
   subscriptionMemo,
   subscriptionStatus,
@@ -367,5 +368,344 @@ describe("subscriptionStatus (a server with no database)", () => {
   it("gives no paid period for a cell the subscriber re-created to reset its age (review H2)", async () => {
     const { status } = await setup({ liveCreatedBy: "recreate" });
     expect(await status()).toMatchObject({ ok: true, status: { paidThroughBlock: undefined, active: false } });
+  });
+});
+
+// Token subscriptions (docs/design/subscriptions.md, "Token subscriptions"): the
+// 160-byte layout with max_per_tx 0; price in token units, paid into payTo's
+// anyone-can-pay cell of the token.
+describe("token subscriptions", () => {
+  const T = 1_000_000n; // token units
+  const PRICE = 10n * T;
+  const units = (v: bigint) => ccc.hexFrom(ccc.numLeToBytes(v, 16));
+  const xudtOf = async (client: ccc.Client, args: string) =>
+    ccc.Script.from({ ...(await client.getKnownScript(ccc.KnownScript.XUdt)), args });
+
+  async function tokenRoles(client: ccc.Client) {
+    const r = await roles(client);
+    const token = await xudtOf(client, h("33"));
+    const sub: Subscription = {
+      ...r.sub,
+      price: PRICE,
+      token: { type: { codeHash: token.codeHash, hashType: token.hashType, args: token.args } },
+    };
+    const charger = (await r.charger.getRecommendedAddressObj()).toString();
+    const subscriberLock = (await r.subscriber.getRecommendedAddressObj()).script;
+    return { ...r, token, sub, chargerAddr: charger, subscriberLock };
+  }
+  type Roles = Awaited<ReturnType<typeof tokenRoles>>;
+  const tokenCell = (lock: ccc.Script, token: ccc.Script, amount: bigint, capacity = 142n * CKB, data = units(amount)) =>
+    cellOf(lock, capacity, { type: token }, data);
+
+  describe("subscriptionLock", () => {
+    it("is the 160-byte token layout: no CKB may leave, the price is max_per_tx_token", async () => {
+      const { sub, token } = await tokenRoles(fakeClient([]).client);
+      const args = ccc.bytesFrom(subscriptionLock(d, sub).args);
+      expect(args.length).toBe(160);
+      expect(ccc.hexFrom(args.slice(0, 32))).toBe(sub.subscriberLockHash);
+      expect(ccc.hexFrom(args.slice(32, 64))).toBe(sub.chargerLockHash);
+      expect(ccc.numLeFromBytes(args.slice(64, 72))).toBe(0n);
+      expect(ccc.numLeFromBytes(args.slice(72, 80))).toBe(PERIOD);
+      expect(ccc.hexFrom(args.slice(80, 112))).toBe(token.hash());
+      expect(ccc.numLeFromBytes(args.slice(112, 128))).toBe(PRICE);
+      expect(ccc.hexFrom(args.slice(128, 160))).toBe(sub.payToLockHash);
+    });
+  });
+
+  describe("openSubscription", () => {
+    async function open(o: { payTo?: string; tokenArgs?: string; cells?: (r: Roles) => ccc.Cell[] } = {}) {
+      const r = await tokenRoles(fakeClient([]).client);
+      const { client, sent } = fakeClient(o.cells?.(r) ?? []);
+      const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
+      const type = o.tokenArgs ? await xudtOf(client, o.tokenArgs) : r.token;
+      const result = openSubscription(subscriber, d, {
+        charger: r.chargerAddr,
+        payTo: o.payTo ?? r.payTo,
+        price: PRICE,
+        periodBlocks: PERIOD,
+        token: { type, amount: 30n * T },
+        account: "alice",
+      });
+      return { result, sent, r };
+    }
+
+    it("refuses a payTo that is not anyone-can-pay (no CKB may leave to make a new token cell)", async () => {
+      const plain = (await new ccc.SignerCkbPrivateKey(fakeClient([]).client, h("99")).getRecommendedAddressObj()).toString();
+      await expect((await open({ payTo: plain })).result).rejects.toThrow(/anyone-can-pay/);
+    });
+
+    it("refuses an xUDT with flags", async () => {
+      await expect((await open({ tokenArgs: h("33") + "01000000" })).result).rejects.toThrow(SessionPolicyError);
+    });
+
+    it("refuses a payTo that holds no cell of the token", async () => {
+      await expect((await open({ cells: (r) => [cellOf(r.payToLock, 200n * CKB)] })).result).rejects.toThrow(/no cell of this token/);
+    });
+
+    it("still requires a budget for a CKB subscription", async () => {
+      const r = await roles(fakeClient([]).client);
+      const charger = (await r.charger.getRecommendedAddressObj()).toString();
+      await expect(
+        openSubscription(r.subscriber, d, { charger, payTo: r.payTo, price: 10n * CKB, periodBlocks: PERIOD }),
+      ).rejects.toThrow(/budget is required/);
+    });
+
+    it("pays the first price in tokens into payTo's token cell, keeps the rest in the cell, and commits to the account", async () => {
+      let own: ccc.Cell | undefined;
+      let ownTokens: ccc.Cell | undefined;
+      vi.spyOn(ccc.Transaction.prototype, "completeInputsByUdt").mockImplementation(async function (this: ccc.Transaction) {
+        this.inputs.push(ccc.CellInput.from({ previousOutput: ownTokens!.outPoint }));
+        return 1 as never;
+      });
+      vi.spyOn(ccc.Transaction.prototype, "completeInputsByCapacity").mockImplementation(async function (this: ccc.Transaction) {
+        this.inputs.push(ccc.CellInput.from({ previousOutput: own!.outPoint }));
+        return 1 as never;
+      });
+      vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+      const { result, sent, r } = await open({
+        cells: (r) => {
+          own = cellOf(r.subscriberLock, 1000n * CKB);
+          ownTokens = tokenCell(r.subscriberLock, r.token, 100n * T);
+          return [own, ownTokens, cellOf(r.payToLock, 200n * CKB), tokenCell(r.payToLock, r.token, 5n * T)];
+        },
+      });
+      const { subscription } = await result;
+      expect(subscription.token?.type).toEqual({ codeHash: r.token.codeHash, hashType: r.token.hashType, args: r.token.args });
+
+      const tx = sent[0];
+      expect(tx.outputs[0].lock.eq(subscriptionLock(d, r.sub))).toBe(true);
+      expect(tx.outputs[0].type?.eq(r.token)).toBe(true);
+      expect(tx.outputsData[0]).toBe(units(30n * T));
+      expect(tx.outputs[0].capacity).toBe(282n * CKB); // its own size, no more
+      // The payout's token cell: the same CKB, one price more.
+      expect(tx.outputs[1].lock.eq(r.payToLock)).toBe(true);
+      expect(tx.outputs[1].capacity).toBe(142n * CKB);
+      expect(tx.outputsData[1]).toBe(units(15n * T));
+      // Token change back to the subscriber: 100 - 30 - 10.
+      expect(tx.outputs[2].lock.eq(r.subscriberLock)).toBe(true);
+      expect(tx.outputsData[2]).toBe(units(60n * T));
+      expect(tx.getWitnessArgsAt(1)?.inputType).toBe(subscriptionMemo("alice")); // the first input of the subscriber
+    });
+  });
+
+  describe("chargeSubscription", () => {
+    async function charge(subCells: (lock: ccc.Script, token: ccc.Script) => ccc.Cell[]) {
+      vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockImplementation(async function (this: ccc.Transaction) {
+        this.outputs[this.outputs.length - 1].capacity = 100n * CKB - 1000n; // the charger cell, minus a fee
+        return [0, true] as never;
+      });
+      const r = await tokenRoles(fakeClient([]).client);
+      const lock = subscriptionLock(d, r.sub);
+      const payoutCell = tokenCell(r.payToLock, r.token, 5n * T);
+      const { client, sent } = fakeClient([
+        ...subCells(lock, r.token),
+        cellOf(r.payToLock, 200n * CKB), // a plain CKB cell of payTo: not the one to top up
+        payoutCell,
+        cellOf(r.chargerLock, 100n * CKB),
+      ]);
+      const result = chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo });
+      return { result, sent, r, lock, payoutCell };
+    }
+
+    it("takes exactly the price in tokens, keeps every shannon in the change, and tops up payTo's token cell", async () => {
+      const { result, sent, r, lock, payoutCell } = await charge((lock, token) => [tokenCell(lock, token, 30n * T, 282n * CKB)]);
+      await result;
+      const tx = sent[0];
+      expect(tx.inputs[0].since).toBe((1n << 63n) | PERIOD);
+      expect(tx.inputs[1].previousOutput.eq(payoutCell.outPoint)).toBe(true);
+      expect(tx.outputs[0].lock.eq(r.payToLock)).toBe(true);
+      expect(tx.outputs[0].type?.eq(r.token)).toBe(true);
+      expect(tx.outputs[0].capacity).toBe(142n * CKB);
+      expect(tx.outputsData[0]).toBe(units(15n * T));
+      expect(tx.outputs[1].lock.eq(lock)).toBe(true);
+      expect(tx.outputs[1].type?.eq(r.token)).toBe(true);
+      expect(tx.outputs[1].capacity).toBe(282n * CKB); // CKB outflow 0
+      expect(tx.outputsData[1]).toBe(units(20n * T)); // exactly 16 bytes
+      expect(tx.outputs[2].lock.eq(r.chargerLock)).toBe(true);
+    });
+
+    it("merges every mature token cell, and leaves out plain or foreign-typed cells under the lock", async () => {
+      const { result, sent, lock } = await charge((lock, token) => [
+        tokenCell(lock, token, 4n * T, 282n * CKB),
+        tokenCell(lock, token, 8n * T, 300n * CKB, units(8n * T) + "abcd"), // xUDT extension data: still the token
+        cellOf(lock, 500n * CKB),
+        cellOf(lock, 500n * CKB, { type: { codeHash: h("ee"), hashType: "type", args: "0x" } }, units(99n * T)),
+      ]);
+      await result;
+      const tx = sent[0];
+      expect(tx.inputs.filter((i) => i.since === ((1n << 63n) | PERIOD))).toHaveLength(2);
+      const change = tx.outputs.findIndex((o) => o.lock.eq(lock));
+      expect(tx.outputs[change].capacity).toBe(582n * CKB);
+      expect(tx.outputsData[change]).toBe(units(2n * T));
+    });
+
+    it("refuses once the cell holds less than a price in tokens", async () => {
+      const { result } = await charge((lock, token) => [tokenCell(lock, token, PRICE - 1n, 282n * CKB)]);
+      await expect(result).rejects.toThrow(SessionBalanceError);
+    });
+  });
+
+  describe("verifySubscription", () => {
+    /** A token subscription cell, created by a transaction that tops up payTo's token cell by `paid` units. */
+    async function setup(
+      o: {
+        paid?: bigint;
+        paidCkb?: bigint;
+        memo?: ccc.Hex;
+        extra?: (r: Roles) => ccc.CellOutputLike[];
+        cell?: (lock: ccc.Script, token: ccc.Script) => ccc.Cell;
+      } = {},
+    ) {
+      const r = await tokenRoles(fakeClient([]).client);
+      const lock = subscriptionLock(d, r.sub);
+      const cell = o.cell ? o.cell(lock, r.token) : tokenCell(lock, r.token, 30n * T, 282n * CKB);
+      const payIn = tokenCell(r.payToLock, r.token, 5n * T);
+      const own = cellOf(r.subscriberLock, 1000n * CKB);
+      const extra = o.extra?.(r) ?? [];
+      const creating = ccc.Transaction.from({
+        inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: own.outPoint }],
+        outputs: [cell.cellOutput, { lock: r.payToLock, type: r.token, capacity: 142n * CKB + (o.paidCkb ?? 0n) }, ...extra],
+        outputsData: [cell.outputData, units(5n * T + (o.paid ?? PRICE)), ...extra.map(() => units(0n))],
+      });
+      if (o.memo) creating.setWitnessArgsAt(1, { inputType: o.memo });
+      const { client } = fakeClient([cell, payIn, own], 900n, creating);
+      const expected = {
+        charger: r.chargerAddr,
+        payTo: r.payTo,
+        price: PRICE,
+        periodBlocks: PERIOD,
+        token: r.token as ccc.ScriptLike | undefined,
+      };
+      return {
+        check: (e: Partial<typeof expected & { account: string; minBalance: bigint }> = {}) =>
+          verifySubscription(client, d, cell.outPoint, { ...expected, ...e }),
+        r,
+      };
+    }
+
+    it("accepts a token cell with exactly the terms, the first price paid in tokens", async () => {
+      const { check, r } = await setup();
+      expect(await check()).toEqual({
+        ok: true,
+        subscription: r.sub,
+        balance: 282n * CKB,
+        tokenBalance: 30n * T,
+        chargesLeft: 3n,
+        paidThroughBlock: 900n + PERIOD,
+      });
+    });
+
+    it("refuses an opening that paid one unit short, or paid in CKB instead of tokens", async () => {
+      expect(await (await setup({ paid: PRICE - 1n })).check()).toMatchObject({ ok: false, reason: expect.stringMatching(/did not pay/) });
+      expect(await (await setup({ paid: 0n, paidCkb: PRICE })).check()).toMatchObject({
+        ok: false,
+        reason: expect.stringMatching(/did not pay/),
+      });
+    });
+
+    it("refuses one token price paid for two token subscriptions with the same payout address", async () => {
+      const other = (r: Roles) => [{ lock: subscriptionLock(d, { ...r.sub, subscriberLockHash: h("e7") }), type: r.token, capacity: 282n * CKB }];
+      expect(await (await setup({ extra: other })).check()).toMatchObject({ ok: false, reason: expect.stringMatching(/did not pay/) });
+      expect(await (await setup({ extra: other, paid: 2n * PRICE })).check()).toMatchObject({ ok: true });
+    });
+
+    it("accepts the account the subscriber signed for, and refuses any other", async () => {
+      const { check } = await setup({ memo: subscriptionMemo("alice") });
+      expect(await check({ account: "alice" })).toMatchObject({ ok: true });
+      expect(await check({ account: "mallory" })).toMatchObject({ ok: false, reason: expect.stringMatching(/account/) });
+    });
+
+    it("refuses a token cell when no token is expected, and a different token", async () => {
+      const { check } = await setup();
+      expect(await check({ token: undefined })).toMatchObject({ ok: false, reason: expect.stringMatching(/no type/) });
+      const another = await xudtOf(fakeClient([]).client, h("34"));
+      expect(await check({ token: another })).toMatchObject({ ok: false, reason: expect.stringMatching(/typed with the token/) });
+    });
+
+    it("refuses an untyped cell, or a 112-byte cell holding the token, when a token is expected", async () => {
+      const { check } = await setup({ cell: (lock) => cellOf(lock, 500n * CKB) });
+      expect(await check()).toMatchObject({ ok: false, reason: expect.stringMatching(/typed with the token/) });
+      const r = await roles(fakeClient([]).client);
+      const token = await xudtOf(fakeClient([]).client, h("33"));
+      const typed = cellOf(subscriptionLock(d, r.sub), 500n * CKB, { type: token }, units(30n * T));
+      const { client } = fakeClient([typed]);
+      const charger = (await r.charger.getRecommendedAddressObj()).toString();
+      expect(
+        await verifySubscription(client, d, typed.outPoint, { charger, payTo: r.payTo, price: 10n * CKB, periodBlocks: PERIOD, token }),
+      ).toMatchObject({ ok: false, reason: expect.stringMatching(/160 bytes/) });
+    });
+
+    it("refuses a 160-byte cell that lets CKB out (max_per_tx above 0)", async () => {
+      const { check } = await setup({
+        cell: (lock, token) => {
+          const args = ccc.bytesFrom(lock.args);
+          args.set(ccc.numLeToBytes(1n, 8), 64);
+          return tokenCell(ccc.Script.from({ ...lock, args: ccc.hexFrom(args) }), token, 30n * T, 282n * CKB);
+        },
+      });
+      expect(await check()).toMatchObject({ ok: false, reason: expect.stringMatching(/no CKB out/) });
+    });
+
+    it("compares minBalance in token units", async () => {
+      const { check } = await setup();
+      expect(await check({ minBalance: 30n * T })).toMatchObject({ ok: true });
+      expect(await check({ minBalance: 30n * T + 1n })).toMatchObject({ ok: false, reason: expect.stringMatching(/minimum/) });
+    });
+  });
+
+  describe("subscriptionStatus and cancelSubscription", () => {
+    const OPEN = h("0a");
+    async function setup() {
+      const r = await tokenRoles(fakeClient([]).client);
+      const lock = subscriptionLock(d, r.sub);
+      const payIn = tokenCell(r.payToLock, r.token, 5n * T);
+      const own = cellOf(r.subscriberLock, 1000n * CKB);
+      const opening = ccc.Transaction.from({
+        inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: own.outPoint }],
+        outputs: [
+          { lock, type: r.token, capacity: 282n * CKB },
+          { lock: r.payToLock, type: r.token, capacity: 142n * CKB },
+        ],
+        outputsData: [units(30n * T), units(15n * T)],
+      });
+      opening.setWitnessArgsAt(1, { inputType: subscriptionMemo("alice") });
+      const live = ccc.Cell.from({ outPoint: { txHash: OPEN, index: 0 }, cellOutput: opening.outputs[0], outputData: units(30n * T) });
+      const plainUnderLock = cellOf(lock, 500n * CKB); // plain CKB someone sent to the lock: not the subscription's
+      const proof = cellOf(r.subscriberLock, 100n * CKB); // the plain cell a cancel spends to prove ownership
+      const { client, sent } = fakeClient([live, plainUnderLock, payIn, own, proof], 990n, opening);
+      return { client, sent, r, live, proof };
+    }
+
+    it("is active through the opening's block plus one period, counting token units", async () => {
+      const { client, r } = await setup();
+      expect(await subscriptionStatus(client, d, r.sub, { openTx: OPEN, account: "alice" })).toEqual({
+        ok: true,
+        status: {
+          paidThroughBlock: 990n + PERIOD,
+          tip: 1000n,
+          active: true,
+          balance: 282n * CKB,
+          tokenBalance: 30n * T,
+          chargesLeft: 3n,
+          nextChargeIn: 10n,
+        },
+      });
+    });
+
+    it("cancel sweeps the token cell back, tokens as tokens", async () => {
+      vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+      const { client, sent, r, live, proof } = await setup();
+      const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
+      vi.spyOn(subscriber, "findCells").mockImplementation(async function* () {
+        yield proof;
+      });
+      expect(await cancelSubscription(subscriber, d, r.sub)).toMatchObject({ refunded: 282n * CKB, refundedTokens: 30n * T });
+      const tx = sent[0];
+      expect(tx.inputs[0].previousOutput.eq(live.outPoint)).toBe(true);
+      expect(tx.inputs).toHaveLength(2); // the token cell and the owner's proof; not the plain cell
+      expect(tx.outputs[0].lock.eq(r.subscriberLock)).toBe(true);
+      expect(tx.outputs[0].type?.eq(r.token)).toBe(true);
+      expect(tx.outputsData[0]).toBe(units(30n * T));
+    });
   });
 });
