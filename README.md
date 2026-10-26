@@ -294,6 +294,18 @@ A charge costs the session lock 20,999 cycles.
 → a third charge refused: what is left cannot cover a price and a cell
 → [cancelled by the subscriber alone, 153 CKB back](https://testnet.explorer.nervos.org/transaction/0x235c9d2e4fc2205fa552c144890002f611c362402b62ceb1dc8540160c459c4f).
 
+**Paid in a token.** The same flow in an xUDT (a stablecoin, say): pass
+`token: { type, amount }` to `openSubscription`. The lock's per-payment CKB limit
+is 0, so no CKB ever leaves the cell; the price is the per-payment token limit, and
+charges top up the creator's anyone-can-pay token cell. `npm run smoke:subscription-token`
+ran it on 27 Oct 2026 with the demo token:
+[opened, first 2 units paid](https://testnet.explorer.nervos.org/transaction/0xc168cc4f0122a0c84add3449a261dd400defacffc59934d2c906da60d10353ba)
+→ a charge 1 block in: rejected (code 14); a charge moving 1 shannon of CKB too: rejected (code 12)
+→ [charge 1](https://testnet.explorer.nervos.org/transaction/0x7aa3872fec7e32e5b1f4e719d034a0d7310f717aa128642a1bfb2d252efceb6d)
+→ [charge 2](https://testnet.explorer.nervos.org/transaction/0x20ee3154a4db0d375f3f444e48fe9d4e47587abb2df0111c7979c0d03823335c), each 2 units with no CKB out
+→ a third refused: no tokens left
+→ [cancelled by the subscriber alone](https://testnet.explorer.nervos.org/transaction/0x9121f5f3bcd7614a2c191ec99550bf57f56117733cdd670a3e2fb300f9c05f51).
+
 **Try it in the browser:** [ckb-session-kit.vercel.app/subscribe](https://ckb-session-kit.vercel.app/subscribe):
 2 CKB per 60 blocks; members' notes the server releases only while you are paid up.
 
