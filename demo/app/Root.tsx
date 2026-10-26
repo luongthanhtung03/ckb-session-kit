@@ -7,8 +7,9 @@ import Place from "./place/Place";
 import PayPerRead from "./read/PayPerRead";
 import PayPerReadTokens from "./tokens/PayPerReadTokens";
 import SessionDemo from "./SessionDemo";
+import Subscribe from "./subscribe/Subscribe";
 
-export type PageName = "wallet" | "read" | "tokens" | "place" | "listen";
+export type PageName = "wallet" | "read" | "tokens" | "place" | "listen" | "subscribe";
 
 /** Wallet connection for the session owner: CCC's standard picker, on testnet. */
 export default function Root({ page }: { page: PageName }) {
@@ -23,6 +24,8 @@ export default function Root({ page }: { page: PageName }) {
         <Place />
       ) : page === "listen" ? (
         <PayPerMinute />
+      ) : page === "subscribe" ? (
+        <Subscribe />
       ) : (
         <SessionDemo />
       )}

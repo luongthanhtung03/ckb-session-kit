@@ -206,7 +206,7 @@ export function Log({ entries }: { entries: LogEntry[] }) {
 }
 
 /** The pages of the demo. */
-export function Nav({ here }: { here: "wallet" | "read" | "tokens" | "place" | "listen" }) {
+export function Nav({ here }: { here: "wallet" | "read" | "tokens" | "place" | "listen" | "subscribe" }) {
   return (
     <nav className="tabs">
       {here === "wallet" ? <span className="on">./session</span> : <a href="/">./session</a>}
@@ -214,6 +214,7 @@ export function Nav({ here }: { here: "wallet" | "read" | "tokens" | "place" | "
       {here === "tokens" ? <span className="on">./tokens</span> : <a href="/tokens">./tokens</a>}
       {here === "place" ? <span className="on">./place</span> : <a href="/place">./place</a>}
       {here === "listen" ? <span className="on">./pay-per-minute</span> : <a href="/listen">./pay-per-minute</a>}
+      {here === "subscribe" ? <span className="on">./subscribe</span> : <a href="/subscribe">./subscribe</a>}
     </nav>
   );
 }
