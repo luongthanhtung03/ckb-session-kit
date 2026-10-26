@@ -527,7 +527,7 @@ describe("token subscriptions", () => {
     it("merges every mature token cell, and leaves out plain or foreign-typed cells under the lock", async () => {
       const { result, sent, lock } = await charge((lock, token) => [
         tokenCell(lock, token, 4n * T, 282n * CKB),
-        tokenCell(lock, token, 8n * T, 300n * CKB, units(8n * T) + "abcd"), // xUDT extension data: still the token
+        tokenCell(lock, token, 8n * T, 300n * CKB, `${units(8n * T)}abcd`), // xUDT extension data: still the token
         cellOf(lock, 500n * CKB),
         cellOf(lock, 500n * CKB, { type: { codeHash: h("ee"), hashType: "type", args: "0x" } }, units(99n * T)),
       ]);
