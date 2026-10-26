@@ -112,11 +112,11 @@ export function tokenAmount(data: ccc.HexLike): bigint {
   return ccc.numLeFromBytes(bytes.slice(0, 16));
 }
 
-const tokenData = (amount: bigint, rest: Uint8Array = new Uint8Array()) =>
+export const tokenData = (amount: bigint, rest: Uint8Array = new Uint8Array()) =>
   ccc.hexFrom(ccc.bytesConcat(ccc.numLeToBytes(amount, 16), rest));
 
 /** A cell's data is exactly a 16-byte amount: what the session lock accepts as token change. */
-const plainTokenCell = (cell: ccc.Cell, type: ccc.Script) =>
+export const plainTokenCell = (cell: ccc.Cell, type: ccc.Script) =>
   cell.cellOutput.type?.eq(type) === true && ccc.bytesFrom(cell.outputData).length === 16;
 
 export async function sessionLockOf(
