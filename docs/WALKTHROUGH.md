@@ -94,6 +94,9 @@ and allows exactly one type script on session cells: this session's token.
    log with no wallet popup. (Needs `CHARGER_KEY` in the deployment.)
 3. **cancel subscription**: one signature sweeps everything left back to you; the
    creator is not asked. The notes lock again.
+4. Switch **pay in** to **demo token**, mint 12 tokens from the page, and
+   subscribe again: the price is now 2 tokens a period, and no CKB ever leaves the
+   cell (its CKB limit per payment is 0).
 
 ## 6. Lost device — recover
 
