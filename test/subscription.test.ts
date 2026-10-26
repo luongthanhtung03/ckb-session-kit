@@ -323,7 +323,7 @@ describe("verifySubscription", () => {
 
 describe("subscriptionStatus (a server with no database)", () => {
   const OPEN = h("0a");
-  async function setup(opts: { liveCreatedBy?: "opening" | "recreate"; memo?: string } = {}) {
+  async function setup(opts: { liveCreatedBy?: "opening" | "recreate" | "read" | "charge"; memo?: string } = {}) {
     const { client: c0 } = fakeClient([]);
     const r = await roles(c0);
     const lock = subscriptionLock(d, r.sub);
@@ -343,12 +343,30 @@ describe("subscriptionStatus (a server with no database)", () => {
       outputsData: ["0x"],
     });
     const RECREATE = h("0b");
+    // Someone else's paid read that tops up payTo by a price and also puts a cell under this lock.
+    const stranger = cellOf(ccc.Script.from({ ...r.payToLock, args: "0x" + "66".repeat(20) }), 500n * CKB);
+    const read = ccc.Transaction.from({
+      inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: stranger.outPoint }],
+      outputs: [{ lock, capacity: 173n * CKB }, { lock: r.payToLock, capacity: 210n * CKB }],
+      outputsData: ["0x", "0x"],
+    });
+    const READ = h("0c");
+    // A charge: the charger's own cell is an input.
+    const fee = cellOf(r.chargerLock, 100n * CKB);
+    const charge = ccc.Transaction.from({
+      inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: fee.outPoint }],
+      outputs: [{ lock: r.payToLock, capacity: 210n * CKB }, { lock, capacity: 173n * CKB }],
+      outputsData: ["0x", "0x"],
+    });
+    const CHARGE = h("0d");
+    const created = { recreate: RECREATE, read: READ, charge: CHARGE, opening: OPEN }[opts.liveCreatedBy ?? "opening"];
     const live = ccc.Cell.from({
-      outPoint: { txHash: opts.liveCreatedBy === "recreate" ? RECREATE : OPEN, index: 0 },
+      outPoint: { txHash: created, index: opts.liveCreatedBy === "charge" ? 1 : 0 },
       cellOutput: { lock, capacity: 173n * CKB },
       outputData: "0x",
     });
-    const { client } = fakeClient([live, payIn, own], 990n, (hash) => (hash === RECREATE ? recreate : opening));
+    const txs: Record<string, ccc.Transaction> = { [RECREATE]: recreate, [READ]: read, [CHARGE]: charge };
+    const { client } = fakeClient([live, payIn, own, stranger, fee], 990n, (hash) => txs[hash] ?? opening);
     return { status: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }) };
   }
 
@@ -357,6 +375,18 @@ describe("subscriptionStatus (a server with no database)", () => {
     expect(await status()).toEqual({
       ok: true,
       status: { paidThroughBlock: 990n + PERIOD, tip: 1000n, active: true, balance: 173n * CKB, chargesLeft: 2n, nextChargeIn: 10n },
+    });
+  });
+
+  // Review, 27 Oct: one payment must not count as a paid read and a period at once.
+  it("counts a cell created by another payment to payTo for nothing; a charge renews", async () => {
+    expect(await (await setup({ liveCreatedBy: "read" })).status()).toMatchObject({
+      ok: true,
+      status: { paidThroughBlock: undefined, active: false },
+    });
+    expect(await (await setup({ liveCreatedBy: "charge" })).status()).toMatchObject({
+      ok: true,
+      status: { paidThroughBlock: 990n + PERIOD, active: true },
     });
   });
 
@@ -539,6 +569,19 @@ describe("token subscriptions", () => {
       expect(tx.outputsData[change]).toBe(units(2n * T));
     });
 
+    // Review, 27 Oct: a planted cell of 2^128-1 free tokens would overflow xUDT's input sum and block every charge.
+    it("leaves out a planted cell whose tokens would overflow the sum, and charges from the rest", async () => {
+      const { result, sent, lock } = await charge((lock, token) => [
+        tokenCell(lock, token, 30n * T, 282n * CKB),
+        tokenCell(lock, token, (1n << 128n) - 1n, 142n * CKB),
+      ]);
+      await result;
+      const tx = sent[0];
+      expect(tx.inputs.filter((i) => i.since === ((1n << 63n) | PERIOD))).toHaveLength(1);
+      const change = tx.outputs.findIndex((o) => o.lock.eq(lock));
+      expect(tx.outputsData[change]).toBe(units(20n * T));
+    });
+
     it("refuses once the cell holds less than a price in tokens", async () => {
       const { result } = await charge((lock, token) => [tokenCell(lock, token, PRICE - 1n, 282n * CKB)]);
       await expect(result).rejects.toThrow(SessionBalanceError);
@@ -670,7 +713,7 @@ describe("token subscriptions", () => {
       });
       opening.setWitnessArgsAt(1, { inputType: subscriptionMemo("alice") });
       const live = ccc.Cell.from({ outPoint: { txHash: OPEN, index: 0 }, cellOutput: opening.outputs[0], outputData: units(30n * T) });
-      const plainUnderLock = cellOf(lock, 500n * CKB); // plain CKB someone sent to the lock: not the subscription's
+      const plainUnderLock = cellOf(lock, 500n * CKB); // plain CKB under the lock: a charger can leave the last change untyped
       const proof = cellOf(r.subscriberLock, 100n * CKB); // the plain cell a cancel spends to prove ownership
       const { client, sent } = fakeClient([live, plainUnderLock, payIn, own, proof], 990n, opening);
       return { client, sent, r, live, proof };
@@ -692,17 +735,18 @@ describe("token subscriptions", () => {
       });
     });
 
-    it("cancel sweeps the token cell back, tokens as tokens", async () => {
+    // Review, 27 Oct: an untyped cell under the lock (a charger can make the last change one) is swept too.
+    it("cancel sweeps the token cell back as tokens, and the untyped CKB under the lock with it", async () => {
       vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
       const { client, sent, r, live, proof } = await setup();
       const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
       vi.spyOn(subscriber, "findCells").mockImplementation(async function* () {
         yield proof;
       });
-      expect(await cancelSubscription(subscriber, d, r.sub)).toMatchObject({ refunded: 282n * CKB, refundedTokens: 30n * T });
+      expect(await cancelSubscription(subscriber, d, r.sub)).toMatchObject({ refunded: 782n * CKB, refundedTokens: 30n * T });
       const tx = sent[0];
       expect(tx.inputs[0].previousOutput.eq(live.outPoint)).toBe(true);
-      expect(tx.inputs).toHaveLength(2); // the token cell and the owner's proof; not the plain cell
+      expect(tx.inputs).toHaveLength(3); // the token cell, the untyped cell, the owner's proof
       expect(tx.outputs[0].lock.eq(r.subscriberLock)).toBe(true);
       expect(tx.outputs[0].type?.eq(r.token)).toBe(true);
       expect(tx.outputsData[0]).toBe(units(30n * T));

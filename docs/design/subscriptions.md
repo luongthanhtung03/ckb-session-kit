@@ -193,8 +193,8 @@ the creator decides it was paid. Fixed:
   several subscriptions with the same payout address. The creating transaction
   must now pay the sum of the prices of every subscription cell it creates for
   that address. A creator should still give subscriptions their own payout
-  address (the demo shares one with pay-per-read, which is safe because a read
-  is claimed by a session key's memo, and openings and charges carry none).
+  address. (This said the demo could share one with pay-per-read; the review of
+  27 Oct showed it could not, see below.)
 - A charge merges every mature cell, so extra cells cannot pay extra prices.
 - At most 32 inputs are looked up per check; an input that cannot be looked up
   fails it; typed outputs do not count as payment.
@@ -208,7 +208,7 @@ confirmations, as with paid reads.
 
 ## Token subscriptions (27 Oct 2026)
 
-Status: **built on the same deployed lock; testnet smoke pending.** A
+Status: **built on the same deployed lock; proven on testnet 27 Oct (README).** A
 subscription paid in an xUDT token (a stablecoin, say) instead of CKB. The token
 session layout (docs/design/token-sessions.md) already bounds token units per
 spend, so this is again only a choice of args, not a lock change.
@@ -272,3 +272,29 @@ occupied capacity (282 CKB); that CKB stays in the cell until cancel.
 | Token issuer upgrades or mints the token | Inherent to the token (token-sessions threat 8): only plain xUDT is accepted, and the subscriber trusts the token they pay in |
 | Someone plants token or CKB cells under the subscription lock | Only adds funds; charges take mature token cells only |
 | Subscriber re-creates the cell to reset its age | As for CKB (H2): the creating transaction paid nothing in tokens, so it is refused |
+
+## Review, 27 Oct 2026 (token subscriptions and the demo)
+
+Report kept outside the repository (drafts/review-27oct.md). On-chain the
+claims held: no more than the price in tokens per period, no CKB out, no key
+cell growth. Fixed in the library and the demo:
+
+- **Medium: one payment counted as a paid read and a period.** Any transaction
+  that paid `payTo` and created a cell under the subscription's lock renewed it,
+  and the demo used one address for reads and subscriptions. Now only the proven
+  opening or a charge (a transaction spending a cell of the charger) renews in
+  `subscriptionStatus`, and `verifySubscription` wants the subscriber's or the
+  charger's input in the creating transaction. The demo's subscriptions pay into
+  an address of their own (the creator's key, anyone-can-pay with one more args
+  byte; `npm run setup:subscription-payout`).
+- **Medium: a planted cell of 2^128-1 free tokens blocked charges and the
+  cancel**, since xUDT refuses inputs whose amounts overflow. Charges and the
+  cancel now take only cells whose sum fits; the planter's own tokens stay behind.
+- Low: the cancel also sweeps untyped cells under a token subscription's lock (a
+  charger can leave the last change untyped); the demo's asset switch can no longer
+  let a stale lookup win.
+
+Not changed: the status and charge routes have no rate limit (the demo runs on
+testnet; a real creator would put its own limits in front), and a recoverSessions
+sweep is still one transaction per session, so a planted overflow cell makes that
+session fail in it (cancelSubscription recovers it).

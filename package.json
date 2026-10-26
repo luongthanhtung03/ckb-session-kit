@@ -39,6 +39,7 @@
     "setup:creator": "tsx scripts/setup-creator.ts",
     "setup:board": "tsx scripts/setup-board.ts",
     "setup:token": "tsx scripts/setup-token.ts",
+    "setup:subscription-payout": "tsx scripts/setup-subscription-payout.ts",
     "smoke:recover": "tsx scripts/testnet-recover.ts",
     "smoke:place": "tsx scripts/testnet-place.ts",
     "smoke:listen": "tsx --tsconfig examples/tsconfig.json scripts/testnet-listen.ts",

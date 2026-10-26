@@ -94,13 +94,20 @@ export default function Subscribe() {
       setKept(undefined);
       return;
     }
+    // A switch of asset or wallet while this resolves must not let the old one win (review, 27 Oct).
+    let stale = false;
     signer.getRecommendedAddressObj().then(async (a) => {
       const hash = a.script.hash();
+      const terms = await termsFor(client, hash, asset);
+      if (stale) return;
       setAddress(a.toString());
       setLockHash(hash);
-      setSub(await termsFor(client, hash, asset));
+      setSub(terms);
       setKept(loadKept(hash, asset));
     });
+    return () => {
+      stale = true;
+    };
   }, [signer, client, asset]);
 
   const refresh = useCallback(async () => {
