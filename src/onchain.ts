@@ -176,7 +176,7 @@ export function onchainRecipient(session: Session): string | undefined {
  *
  * - secp256k1-blake160 (single or multisig), JoyID, Nostr, PW lock;
  * - Omnilock with a signature auth flag (0x00-0x07: CKB, Ethereum, EOS, Tron,
- *   Bitcoin, Dogecoin, multisig) and neither administrator (0x01) nor
+ *   Bitcoin, Dogecoin, multisig; 0x12: Ethereum with the message displayed) and neither administrator (0x01) nor
  *   anyone-can-pay (0x02) mode. Auth flags 0xFC-0xFE hand the decision to
  *   another lock or to arbitrary code, and are refused.
  *
@@ -207,7 +207,10 @@ export async function assertSigningLock(lock: ccc.Script, client: ccc.Client): P
     if (omniFlags & 0x01) {
       throw new SessionPolicyError("the owner's Omnilock has an administrator, who could unlock it: it cannot own a session");
     }
-    if ((args[0] ?? 0xff) > 0x07) {
+    const auth = args[0] ?? 0xff;
+    // 0x12 is Ethereum with the message displayed: what CCC gives MetaMask and
+    // OKX (EVM) users. Missing from this list until the wallet matrix (26 Oct).
+    if (auth > 0x07 && auth !== 0x12) {
       throw new SessionPolicyError("the owner's Omnilock does not verify a signature itself: it cannot own a session");
     }
     return;

@@ -82,6 +82,22 @@ describe("assertSigningLock", () => {
     await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x01" + "11".repeat(20) + "00"), client)).resolves.toBeUndefined();
   });
 
+  // Wallet matrix, 26 Oct: CCC gives MetaMask and OKX (EVM) users auth flag 0x12.
+  it("accepts the Omnilock CCC derives for an EVM wallet (auth 0x12)", async () => {
+    const evm = new (class extends ccc.SignerEvm {
+      async connect() {}
+      async isConnected() {
+        return true;
+      }
+      async getEvmAccount() {
+        return ("0x" + "ab".repeat(20)) as ccc.Hex;
+      }
+    })(client);
+    const lock = (await evm.getRecommendedAddressObj()).script;
+    expect(ccc.bytesFrom(lock.args)[0]).toBe(0x12);
+    await expect(assertSigningLock(lock, client)).resolves.toBeUndefined();
+  });
+
   // Code review, 14 Oct: an allowlist, not a blocklist.
   it("refuses an Omnilock with an administrator or a delegated auth, and any unknown lock", async () => {
     await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x00" + "11".repeat(20) + "01" + "22".repeat(32)), client)).rejects.toThrow(/administrator/);
