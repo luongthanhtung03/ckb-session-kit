@@ -254,6 +254,49 @@ Run on 14 Oct 2026:
 released by the demo's server route; at a 3-unit price the same payment is refused
 → [18 units back](https://testnet.explorer.nervos.org/transaction/0x3688288b9c49c771b85a38a80806f9fefead39b936caea92ecb97e6d4a3aa2ee).
 
+## Subscriptions
+
+The same lock with the roles moved: the subscriber owns the cell, the creator's
+server holds the session key. The network lets the creator charge at most the
+price, at most once per period, and only to the creator's address, while the
+subscriber is offline; the subscriber cancels alone at any time. **No change to
+the deployed lock**: the price is `max_per_tx`, the period is `min_interval`,
+the payout address is the recipient.
+
+```ts
+// subscriber: one signature; the first period is paid at once
+const { subscription } = await openSubscription(wallet, TESTNET_DEPLOYMENT, {
+  charger, payTo, price: 10n * CKB, periodBlocks: 10n, budget: 173n * CKB, account,
+});
+// creator's server, once per period, no subscriber involved
+await chargeSubscription(chargerKey, TESTNET_DEPLOYMENT, subscription, { payTo, topUp: true });
+// creator's server, on every request, with no database
+const r = await subscriptionStatus(client, TESTNET_DEPLOYMENT, subscription, { openTx, account });
+// subscriber, any time
+await cancelSubscription(wallet, TESTNET_DEPLOYMENT, subscription);
+```
+
+The design was attacked on paper before any code
+([`docs/design/subscriptions.md`](docs/design/subscriptions.md)). The
+subscriber's money held; the creator's side did not, and the library now covers it:
+- the opening pays the first period, since a new cell cannot be charged for a whole period;
+- access follows payments, not the live cell, so re-creating the cell to reset its age gains nothing;
+- the opening commits to an account id (hashed) under the subscriber's signature, so nobody can present someone else's subscription.
+
+A charge costs the session lock 20,999 cycles.
+
+`npm run smoke:subscription` runs it on testnet. Run on 26 Oct 2026:
+[opened, first period paid](https://testnet.explorer.nervos.org/transaction/0x383242a3bf89ae8007fc8fc4f7ec04420718c2e32590bdbbd445bcf4c4e2a1b9)
+→ the creator's check accepts the terms, the first payment and the account, and refuses another account
+→ a charge 1 block in: rejected by the network (code 14)
+→ [charge 1](https://testnet.explorer.nervos.org/transaction/0xf98e36b2f5ef1bb86875fb0989e32f25f67807bc95e34aa273b497db5eebdb16)
+→ [charge 2](https://testnet.explorer.nervos.org/transaction/0x930beb93436c884f679f691a901eec1db4742fd69cd28e8d63b4eb386de260e0), a period later, charger key only
+→ a third charge refused: what is left cannot cover a price and a cell
+→ [cancelled by the subscriber alone, 153 CKB back](https://testnet.explorer.nervos.org/transaction/0x235c9d2e4fc2205fa552c144890002f611c362402b62ceb1dc8540160c459c4f).
+
+**Try it in the browser:** [ckb-session-kit.vercel.app/subscribe](https://ckb-session-kit.vercel.app/subscribe):
+2 CKB per 60 blocks; members' notes the server releases only while you are paid up.
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in
@@ -394,6 +437,11 @@ What this does not do, in one place. Each is stated where it applies above.
   used for another article or by another payment.
 - **Owner locks must need a signature.** An anyone-can-pay owner lock would give
   anyone owner mode; `openSession` refuses one.
+- **Subscription periods are in blocks, and charges need the creator online.**
+  The lock's rate limit is a block count, so a period is an estimate of time
+  (`blocksForSeconds`). Nothing charges by itself: the creator's server must
+  send each charge, one transaction per subscriber. Cancelling ends access at
+  once, and the current period's price is not refunded.
 - **Sessions are not cheap to open.** A session cell occupies 121 CKB (153 with a
   recipient), returned on close; small payments go to anyone-can-pay cells
   because a new cell needs 61 CKB.
