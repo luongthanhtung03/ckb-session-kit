@@ -69,7 +69,8 @@ async function main(): Promise<void> {
   const funderKey = process.env.FUNDER_KEY;
   const creatorKey = process.env.CREATOR_KEY;
   if (!funderKey || !creatorKey) throw new Error("set FUNDER_KEY and CREATOR_KEY to testnet private keys");
-  const client = new ccc.ClientPublicTestnet();
+  // Over HTTP: the default WebSocket connection has hung mid-run (26 Oct).
+  const client = new ccc.ClientPublicTestnet({ url: process.env.CKB_RPC_URL ?? "https://testnet.ckb.dev/" });
   const subscriber = new ccc.SignerCkbPrivateKey(client, funderKey);
   const charger = new ccc.SignerCkbPrivateKey(client, creatorKey);
   const chargerAddr = await charger.getRecommendedAddressObj();
@@ -81,6 +82,22 @@ async function main(): Promise<void> {
   }
   if ((await balanceOf(client, chargerAddr.script)) < 70n * CKB) {
     await fund(subscriber, chargerAddr.script, 100n * CKB, "a 100 CKB cell for the charger's fees");
+  }
+  // A run cut short leaves its subscription open, and the library refuses a second
+  // one with the same terms: take the old one back first.
+  const subscriberLock = (await subscriber.getRecommendedAddressObj()).script;
+  const leftover = {
+    subscriberLockHash: subscriberLock.hash(),
+    chargerLockHash: chargerAddr.script.hash(),
+    payToLockHash: acp.script.hash(),
+    price: PRICE,
+    periodBlocks: PERIOD,
+  };
+  if ((await findSubscriptionCells(client, deployment, leftover)).cells.length) {
+    const { txHash } = await cancelSubscription(subscriber, deployment, leftover);
+    console.log(`setup: cancel a subscription left open by an earlier run
+  ${explorer(txHash!)}`);
+    await committed(client, txHash!);
   }
   const payoutBefore = await balanceOf(client, acp.script);
 
@@ -147,12 +164,13 @@ async function main(): Promise<void> {
 
 /** Waits until a subscription cell is at least `blocks` old (0 = a full period). */
 async function waitBlocks(client: ccc.Client, sub: Parameters<typeof findSubscriptionCells>[2], blocks: bigint): Promise<void> {
-  for (let i = 0; i < 180; i++) {
+  // Testnet blocks can slow to minutes each (26 Oct): wait up to an hour.
+  for (let i = 0; i < 720; i++) {
     const { nextChargeIn } = await findSubscriptionCells(client, deployment, sub);
     if (nextChargeIn !== undefined && (blocks === 0n ? nextChargeIn === 0n : sub.periodBlocks - nextChargeIn >= blocks)) return;
     await new Promise((r) => setTimeout(r, 5000));
   }
-  throw new Error("the subscription cell did not age in 15 minutes");
+  throw new Error("the subscription cell did not age in an hour");
 }
 
 /**

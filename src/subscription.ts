@@ -15,7 +15,6 @@ import {
   SessionBalanceError,
   signAndSend,
 } from "./onchain.js";
-import { paymentMemo } from "./paywall.js";
 import { SessionPolicyError } from "./session.js";
 
 /**
@@ -75,9 +74,13 @@ async function isAnyoneCanPay(lock: ccc.Script, client: ccc.Client): Promise<boo
   return lock.codeHash === acp.codeHash && lock.hashType === acp.hashType;
 }
 
-/** The memo an opening commits to, binding the subscription to one account at the creator. */
+/**
+ * The memo an opening commits to, binding the subscription to one account at the
+ * creator: a hash, so the account id never appears on-chain and can double as a
+ * secret the subscriber's browser presents to the creator.
+ */
 export function subscriptionMemo(account: string): ccc.Hex {
-  return paymentMemo(`subscribe:${account}`);
+  return ccc.hashCkb(ccc.bytesFrom(`ckb-session-kit subscribe ${account}`, "utf8"));
 }
 
 /**

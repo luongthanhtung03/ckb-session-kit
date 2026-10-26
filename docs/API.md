@@ -202,7 +202,7 @@ of 153 CKB plus n prices pays n more periods. Keep a plain cell in the wallet:
 cancelling needs one.
 
 ### `subscriptionMemo(account) → Hex`
-The memo an opening commits to, binding the subscription to one account at the creator.
+The memo an opening commits to, binding the subscription to one account at the creator: a 32-byte hash, so the account id never appears on-chain.
 
 ### `chargeSubscription(charger, deployment, subscription, { payTo, topUp?, beforeSend? }) → txHash`
 The charger key takes one price, with the period as the inputs' relative `since`,
