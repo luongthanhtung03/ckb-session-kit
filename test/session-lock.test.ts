@@ -731,5 +731,82 @@ describe.skipIf(skip)("session lock", () => {
         );
       });
     });
+
+    // Token subscriptions (docs/design/subscriptions.md, "Token subscriptions"): the
+    // 160-byte layout with max_per_tx 0, so no CKB ever leaves; the price is
+    // max_per_tx_token and the period min_interval. Real xUDT, deployed binary.
+    describe.skipIf(!existsSync(XUDT_BINARY))("token subscription shape, with the real xUDT script", () => {
+      const xudt = { xudt: true };
+      const PERIOD = 20n;
+      const PRICE = 10n * T;
+      const sub: Scope = { maxPerTx: 0n, minInterval: PERIOD, tokenMaxPerTx: PRICE, recipient: true };
+      // 282 CKB: a token subscription cell's own size; 142 CKB: the payout's token cell.
+      const subCell = (amount: bigint, since?: bigint, capacity = 282n * CKB): Cell => ({
+        lock: "session",
+        capacity,
+        token: amount,
+        since,
+      });
+      const payout = (amount: bigint, capacity = 142n * CKB) => tokenCell("recipient", amount, capacity);
+
+      it("accepts a charge of exactly the price after a full period, with no CKB leaving", async () => {
+        await ok(
+          sub,
+          [subCell(100n * T, relativeBlocks(PERIOD)), payout(5n * T), KEY_CELL],
+          [payout(15n * T), subCell(90n * T), KEY_FEE],
+          xudt,
+        );
+      });
+
+      it("rejects a charge before the period has passed", async () => {
+        await fails(
+          E.RATE_LIMITED,
+          sub,
+          [subCell(100n * T, relativeBlocks(PERIOD - 1n)), payout(5n * T), KEY_CELL],
+          [payout(15n * T), subCell(90n * T), KEY_FEE],
+          xudt,
+        );
+      });
+
+      it("rejects one unit over the price", async () => {
+        await fails(
+          E.TOKEN_OUTFLOW_EXCEEDED,
+          sub,
+          [subCell(100n * T, relativeBlocks(PERIOD)), payout(5n * T), KEY_CELL],
+          [payout(15n * T + 1n), subCell(90n * T - 1n), KEY_FEE],
+          xudt,
+        );
+      });
+
+      // A cell above its own size: one under 282 CKB would be refused for its size, not by the lock.
+      it("rejects one shannon of CKB leaving the subscription, even with the price exact", async () => {
+        await fails(
+          E.OUTFLOW_EXCEEDED,
+          sub,
+          [subCell(100n * T, relativeBlocks(PERIOD), 300n * CKB), payout(5n * T), KEY_CELL],
+          [payout(15n * T, 142n * CKB + 1n), subCell(90n * T, undefined, 300n * CKB - 1n), KEY_FEE],
+          xudt,
+        );
+      });
+
+      it("rejects the charge going to anyone but the payout address", async () => {
+        await fails(
+          E.RECIPIENT_NOT_ALLOWED,
+          sub,
+          [subCell(100n * T, relativeBlocks(PERIOD)), tokenCell("stranger", 5n * T, 142n * CKB), KEY_CELL],
+          [tokenCell("stranger", 15n * T, 142n * CKB), subCell(90n * T), KEY_FEE],
+          xudt,
+        );
+      });
+
+      it("lets the subscriber cancel alone, at any time, sweeping the tokens back", async () => {
+        await ok(
+          sub,
+          [subCell(90n * T), { lock: "owner", capacity: 61n * CKB }],
+          [tokenCell("owner", 90n * T, 343n * CKB - 1000n)],
+          xudt,
+        );
+      });
+    });
   });
 });
