@@ -225,6 +225,14 @@ subscriber re-created to reset its age is refused. Returns `paidThroughBlock`
 the creating transaction must carry `subscriptionMemo(account)` under the
 subscriber's signature: check it once, at registration, on the opening's cell.
 
+### `subscriptionStatus(client, deployment, subscription, { openTx, account }) → { ok, status: SubscriptionStatus }`
+For a creator's server with no database: the subscriber sends its lock hash, the
+opening's hash and its account id with every request. The opening must have paid
+the first price into a cell under exactly this subscription's lock and committed
+to `account`; then the live cells give `paidThroughBlock` (only cells created by a
+payment count), `active` (tip within the paid period), `chargesLeft` and
+`nextChargeIn`. Cancelling ends access at once.
+
 ### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, nextChargeIn }`
 `nextChargeIn` is the number of blocks until a cell is a full period old (0 = it can be charged now).
 
@@ -235,7 +243,7 @@ The session-lock script of a subscription.
 About how many blocks `seconds` is, from the average block time of the last
 `sample` (1000) blocks. An estimate; round up.
 
-### Types: `Subscription`, `SubscriptionCheck`
+### Types: `Subscription`, `SubscriptionCheck`, `SubscriptionStatus`
 `Subscription` holds the five terms as lock hashes and numbers, and no private key.
 
 ## A shared pixel board (CKB Place)

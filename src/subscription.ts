@@ -385,28 +385,109 @@ export async function verifySubscription(
     return { ok: false, reason: `holds ${ccc.fixedPointToString(balance)} CKB, under the minimum` };
   }
 
-  const created = await client.getTransaction(cell.outPoint.txHash);
-  if (!created || created.status !== "committed" || created.blockNumber === undefined || created.blockNumber === null) {
-    return { ok: false, reason: "the transaction that created the cell is not committed" };
-  }
-  const inputs = await Promise.all(created.transaction.inputs.map((i) => client.getCell(i.previousOutput)));
-  const sum = (cells: (ccc.CellOutput | undefined)[]) =>
-    cells.reduce((s, c) => (c && c.lock.hash() === sub.payToLockHash ? s + c.capacity : s), 0n);
-  const paid = sum(created.transaction.outputs) - sum(inputs.map((c) => c?.cellOutput));
-  if (paid < sub.price) return { ok: false, reason: "the transaction that created the cell did not pay the price to payTo" };
-  if (expected.account !== undefined) {
-    const memo = subscriptionMemo(expected.account);
-    const signed = inputs.some(
-      (c, i) => c?.cellOutput.lock.hash() === sub.subscriberLockHash && created.transaction.getWitnessArgsAt(i)?.inputType === memo,
-    );
-    if (!signed) return { ok: false, reason: "the opening does not commit to this account" };
+  const created = await paymentOf(client, cell.outPoint.txHash, sub);
+  if (typeof created === "string") return { ok: false, reason: created };
+  if (expected.account !== undefined && !commitsToAccount(created, sub, expected.account)) {
+    return { ok: false, reason: "the opening does not commit to this account" };
   }
   return {
     ok: true,
     subscription: sub,
     balance,
     chargesLeft: balance >= cellSize + sub.price ? (balance - cellSize) / sub.price : 0n,
-    paidThroughBlock: ccc.numFrom(created.blockNumber) + sub.periodBlocks,
+    paidThroughBlock: created.block + sub.periodBlocks,
+  };
+}
+
+interface Payment {
+  tx: ccc.Transaction;
+  block: bigint;
+  inputs: (ccc.Cell | undefined)[];
+}
+
+/**
+ * The committed transaction `txHash`, if it paid `sub`'s payout address at least
+ * one price (outputs to payTo minus inputs from it); otherwise why not.
+ */
+async function paymentOf(client: ccc.Client, txHash: ccc.HexLike, sub: Subscription): Promise<Payment | string> {
+  const created = await client.getTransaction(txHash);
+  if (!created || created.status !== "committed" || created.blockNumber === undefined || created.blockNumber === null) {
+    return "the transaction that created the cell is not committed";
+  }
+  const inputs = await Promise.all(created.transaction.inputs.map((i) => client.getCell(i.previousOutput)));
+  const sum = (cells: (ccc.CellOutput | undefined)[]) =>
+    cells.reduce((s, c) => (c && c.lock.hash() === sub.payToLockHash ? s + c.capacity : s), 0n);
+  const paid = sum(created.transaction.outputs) - sum(inputs.map((c) => c?.cellOutput));
+  if (paid < sub.price) return "the transaction that created the cell did not pay the price to payTo";
+  return { tx: created.transaction, block: ccc.numFrom(created.blockNumber), inputs };
+}
+
+/** Whether `p` carries `subscriptionMemo(account)` in the witness of an input under the subscriber's lock. */
+function commitsToAccount(p: Payment, sub: Subscription, account: string): boolean {
+  const memo = subscriptionMemo(account);
+  return p.inputs.some(
+    (c, i) => c?.cellOutput.lock.hash() === sub.subscriberLockHash && p.tx.getWitnessArgsAt(i)?.inputType === memo,
+  );
+}
+
+export interface SubscriptionStatus {
+  /** The block until which the subscriber has paid, from the newest paying cell; undefined when no cell is left. */
+  paidThroughBlock: bigint | undefined;
+  tip: bigint;
+  /** Whether the tip is within the paid period. */
+  active: boolean;
+  balance: bigint;
+  chargesLeft: bigint;
+  /** Blocks until the creator may charge again (0 = now). */
+  nextChargeIn: bigint | undefined;
+}
+
+/**
+ * Where a subscription stands, for a creator's server that keeps no database:
+ * the subscriber sends the terms' subscriber lock hash, the opening's hash and
+ * its account id on every request. The opening must have paid the first price
+ * into a cell under exactly this subscription's lock and committed to `account`
+ * under the subscriber's signature; then the live cells give the period paid for.
+ * Each must have been created by a payment, so a cell re-created by the
+ * subscriber to reset its age counts for nothing. Cancelling ends access at once.
+ */
+export async function subscriptionStatus(
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  sub: Subscription,
+  proof: { openTx: ccc.HexLike; account: string },
+): Promise<{ ok: true; status: SubscriptionStatus } | { ok: false; reason: string }> {
+  try {
+    assertTerms(sub);
+  } catch (e) {
+    return { ok: false, reason: e instanceof Error ? e.message : String(e) };
+  }
+  const lock = subscriptionLock(deployment, sub);
+  const opening = await paymentOf(client, proof.openTx, sub);
+  if (typeof opening === "string") return { ok: false, reason: `opening: ${opening}` };
+  if (!opening.tx.outputs.some((o) => o.lock.eq(lock))) return { ok: false, reason: "the opening created no cell under this subscription's lock" };
+  if (!commitsToAccount(opening, sub, proof.account)) return { ok: false, reason: "the opening does not commit to this account" };
+
+  const { cells, balance, nextChargeIn } = await findSubscriptionCells(client, deployment, sub);
+  const tip = await client.getTip();
+  let paidThroughBlock: bigint | undefined;
+  for (const c of cells) {
+    const p = await paymentOf(client, c.outPoint.txHash, sub);
+    if (typeof p === "string") continue;
+    const through = p.block + sub.periodBlocks;
+    if (paidThroughBlock === undefined || through > paidThroughBlock) paidThroughBlock = through;
+  }
+  const cellSize = ccc.CellOutput.from({ lock }, "0x").capacity;
+  return {
+    ok: true,
+    status: {
+      paidThroughBlock,
+      tip,
+      active: paidThroughBlock !== undefined && tip <= paidThroughBlock,
+      balance,
+      chargesLeft: balance >= cellSize + sub.price ? (balance - cellSize) / sub.price : 0n,
+      nextChargeIn,
+    },
   };
 }
 

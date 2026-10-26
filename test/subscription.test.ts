@@ -6,6 +6,7 @@ import { SessionPolicyError } from "../src/session.js";
 import {
   chargeSubscription,
   subscriptionMemo,
+  subscriptionStatus,
   openSubscription,
   subscriptionLock,
   verifySubscription,
@@ -17,7 +18,11 @@ const h = (b: string) => ("0x" + b.repeat(32)) as ccc.Hex;
 const PERIOD = 20n;
 
 /** A testnet client whose chain is the given cells; the tip is block 1000, every cell born at `born`. */
-function fakeClient(cells: ccc.Cell[], born = 900n, creating: ccc.Transaction = ccc.Transaction.default()) {
+function fakeClient(
+  cells: ccc.Cell[],
+  born = 900n,
+  creating: ccc.Transaction | ((hash: string) => ccc.Transaction) = ccc.Transaction.default(),
+) {
   const sent: ccc.Transaction[] = [];
   const client = Object.assign(new ccc.ClientPublicTestnet(), {
     async *findCellsByLock(lock: ccc.ScriptLike) {
@@ -26,7 +31,11 @@ function fakeClient(cells: ccc.Cell[], born = 900n, creating: ccc.Transaction = 
     getCellLive: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
     getCell: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
     getTip: async () => 1000n,
-    getTransaction: async () => ({ blockNumber: born, status: "committed", transaction: creating }),
+    getTransaction: async (hash: ccc.HexLike) => ({
+      blockNumber: born,
+      status: "committed",
+      transaction: typeof creating === "function" ? creating(ccc.hexFrom(hash)) : creating,
+    }),
     sendTransaction: async (tx: ccc.Transaction) => {
       sent.push(tx);
       return tx.hash();
@@ -282,5 +291,55 @@ describe("verifySubscription", () => {
   it("refuses an 80-byte session (no payout address) with the same prefix", async () => {
     const { check } = await setup((lock) => cellOf(ccc.Script.from({ ...lock, args: lock.args.slice(0, 2 + 160) }), 500n * CKB));
     expect(await check()).toMatchObject({ ok: false, reason: expect.stringMatching(/112 bytes/) });
+  });
+});
+
+describe("subscriptionStatus (a server with no database)", () => {
+  const OPEN = h("0a");
+  async function setup(opts: { liveCreatedBy?: "opening" | "recreate"; memo?: string } = {}) {
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const lock = subscriptionLock(d, r.sub);
+    const subscriberLock = (await r.subscriber.getRecommendedAddressObj()).script;
+    const payIn = cellOf(r.payToLock, 200n * CKB);
+    const own = cellOf(subscriberLock, 1000n * CKB);
+    const opening = ccc.Transaction.from({
+      inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: own.outPoint }],
+      outputs: [{ lock, capacity: 173n * CKB }, { lock: r.payToLock, capacity: 210n * CKB }],
+      outputsData: ["0x", "0x"],
+    });
+    opening.setWitnessArgsAt(1, { inputType: subscriptionMemo(opts.memo ?? "alice") });
+    // The subscriber re-creates the cell in owner mode: no payment to payTo.
+    const recreate = ccc.Transaction.from({
+      inputs: [{ previousOutput: own.outPoint }],
+      outputs: [{ lock, capacity: 173n * CKB }],
+      outputsData: ["0x"],
+    });
+    const RECREATE = h("0b");
+    const live = ccc.Cell.from({
+      outPoint: { txHash: opts.liveCreatedBy === "recreate" ? RECREATE : OPEN, index: 0 },
+      cellOutput: { lock, capacity: 173n * CKB },
+      outputData: "0x",
+    });
+    const { client } = fakeClient([live, payIn, own], 990n, (hash) => (hash === RECREATE ? recreate : opening));
+    return { status: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }) };
+  }
+
+  it("is active through the opening's block plus one period, with the charges left", async () => {
+    const { status } = await setup();
+    expect(await status()).toEqual({
+      ok: true,
+      status: { paidThroughBlock: 990n + PERIOD, tip: 1000n, active: true, balance: 173n * CKB, chargesLeft: 2n, nextChargeIn: 10n },
+    });
+  });
+
+  it("refuses an account the opening did not commit to", async () => {
+    const { status } = await setup();
+    expect(await status("mallory")).toMatchObject({ ok: false, reason: expect.stringMatching(/account/) });
+  });
+
+  it("gives no paid period for a cell the subscriber re-created to reset its age (review H2)", async () => {
+    const { status } = await setup({ liveCreatedBy: "recreate" });
+    expect(await status()).toMatchObject({ ok: true, status: { paidThroughBlock: undefined, active: false } });
   });
 });

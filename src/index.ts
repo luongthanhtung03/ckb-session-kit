@@ -39,9 +39,10 @@ export {
   openSubscription,
   subscriptionLock,
   subscriptionMemo,
+  subscriptionStatus,
   verifySubscription,
 } from "./subscription.js";
-export type { Subscription, SubscriptionCheck } from "./subscription.js";
+export type { Subscription, SubscriptionCheck, SubscriptionStatus } from "./subscription.js";
 export { paymentMemo, signAccess, verifyAccess } from "./paywall.js";
 export type { AccessCheck, AccessProof } from "./paywall.js";
 export {
