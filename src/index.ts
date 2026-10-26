@@ -38,6 +38,7 @@ export {
   findSubscriptionCells,
   openSubscription,
   subscriptionLock,
+  subscriptionMemo,
   verifySubscription,
 } from "./subscription.js";
 export type { Subscription, SubscriptionCheck } from "./subscription.js";

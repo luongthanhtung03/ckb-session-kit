@@ -1,6 +1,6 @@
 # Design: subscriptions
 
-Status: **draft for review (26 Oct 2026).** No code yet. The finding below is
+Status: **reviewed (26 Oct 2026), library built; see the review section at the end.** The finding below is
 that subscriptions need **no change to the session lock**: the deployed lock
 already enforces everything a subscription needs, once the session key is held
 by the creator instead of the subscriber. That claim is what the review should
@@ -129,7 +129,7 @@ cell (only possible when the whole cell is at most the price). `budget` of
 | Creator charges more than the price | Rule 1 (error 12) |
 | Creator charges twice in one period | Rule 2 (error 14); splitting first is refused by rule 3 (error 16) |
 | Creator pays the charge to a third party | Rule 4 (error 13) |
-| Charger key leaks | The thief can only do what the creator could: pay the creator, at the price, once per period. Rotating the key = subscribers re-open; the creator stops charging old ones |
+| Charger key leaks | The thief can take the price once per period per subscriber, but only to the payout address or as miner fee (outflow counts fees), and keeps that power over every subscriber who has not re-opened under a new key. Rotating = subscribers re-open; cancel stops it at once |
 | Creator freezes the cell with a type script | Rule 5 (error 18) |
 | Creator refuses to let the subscriber leave | Owner mode needs no creator signature |
 | Subscriber cancels right after being served | Inherent to pre-paid service: the creator charges at the start of a period, not the end |
@@ -158,3 +158,27 @@ cell (only possible when the whole cell is at most the price). `budget` of
 4. `smoke:subscription` on testnet: open, charge, early charge refused by the
    node, second charge after the period, cancel. Explorer links in the README.
 5. Demo page `/subscribe`, in the same terminal style.
+
+## Review, 26 Oct 2026 (adversarial pass) — changes adopted
+
+Full report: kept outside the repository (drafts/subscriptions-review.md). The
+claim held for the subscriber's money: at most the price per period, paid only to
+the payout lock, the subscriber or fees; nobody can block a cancel; batching
+subscribers fails with error 13. It did not hold for the creator's revenue. All
+fixes are in the library; the lock is unchanged.
+
+| Finding | Change |
+|---|---|
+| H1 The first period was free: a new cell cannot be charged for a whole period, so open, use, cancel, repeat | The opening pays the first period to `payTo` in the same transaction |
+| H2 In owner mode the subscriber can re-create the cell to reset its age and put charges off forever | `verifySubscription` requires the transaction that created the cell to have paid the price to `payTo` and returns `paidThroughBlock`; access follows payments, not the live cell |
+| H3 Subscription cells are public: anyone could present someone else's | `account` is committed in the opening's witness under the subscriber's signature (`subscriptionMemo`) and checked by `verifySubscription` |
+| H4 Period 0 (no rate limit), 80-byte args (no recipient), price 0, period ≥ 2^56 | Refused at open; the verifier accepts 112-byte args only |
+| M1 Two live cells under one lock are one group: two charges per period | `openSubscription` refuses a live subscription with the same terms. A top-up is cancel and re-open |
+| M2 A charger lock that needs no signature lets anyone trigger charges | `assertSigningLock` on the charger lock too |
+| M3 Key-leak row understated | Threat table corrected |
+| M4 Cancel needs a plain cell in the subscriber's wallet | Documented in the API |
+| M5 Old lock code lacks errors 16-18; in the token layout bytes 80..112 are the token | Open refuses legacy deployments; the verifier pins the current code hash and 112 bytes |
+| L1 With a price of 153 CKB or more, the cell's last 153 can be charged too | Documented |
+| L2 The charger can write data into the change cell, hiding it from the cell collector | Subscription cells are collected with or without data |
+| L3 Races: charge against cancel, the shared fee cell, the shared payout cell | Inherent; a lost race is a retry |
+| L4 The price must fit the payout lock's minimum cell | Checked before signing |

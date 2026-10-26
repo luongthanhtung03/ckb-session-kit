@@ -1,6 +1,7 @@
 import { ccc } from "@ckb-ccc/core";
 import {
   relativeBlocksSince,
+  TESTNET_LEGACY_DEPLOYMENTS,
   sessionLockCellDep,
   sessionLockScript,
   type SessionLockDeployment,
@@ -14,6 +15,7 @@ import {
   SessionBalanceError,
   signAndSend,
 } from "./onchain.js";
+import { paymentMemo } from "./paywall.js";
 import { SessionPolicyError } from "./session.js";
 
 /**
@@ -73,15 +75,40 @@ async function isAnyoneCanPay(lock: ccc.Script, client: ccc.Client): Promise<boo
   return lock.codeHash === acp.codeHash && lock.hashType === acp.hashType;
 }
 
+/** The memo an opening commits to, binding the subscription to one account at the creator. */
+export function subscriptionMemo(account: string): ccc.Hex {
+  return paymentMemo(`subscribe:${account}`);
+}
+
 /**
- * The subscriber opens a subscription: one cell holding `budget` shannons under
- * the session lock. One signature; no key cell (the creator already owns cells
- * under its charger key). `budget` of the cell's own size (153 CKB) plus n prices
- * pays n periods exactly; what is left comes back on cancel.
+ * Plain (untyped) cells under a subscription's lock, with or without data: the
+ * charger may write data into a change cell, and such a cell must still be found,
+ * charged and swept (review L2).
+ */
+async function subscriptionCells(client: ccc.Client, lock: ccc.Script): Promise<ccc.Cell[]> {
+  const cells: ccc.Cell[] = [];
+  for await (const cell of client.findCellsByLock(lock, null, true)) if (!cell.cellOutput.type) cells.push(cell);
+  return cells;
+}
+
+/**
+ * The subscriber opens a subscription, in one transaction and one signature: the
+ * first period's price goes to `payTo` at once (a new cell cannot be charged for a
+ * whole period, so otherwise the first period would be free; review H1), and one
+ * cell holding `budget` shannons goes under the session lock. No key cell: the
+ * creator already owns cells under its charger key. `budget` of the cell's own
+ * size (153 CKB) plus n prices pays n more periods; what is left comes back on
+ * cancel. With a price of 153 CKB or more, the last 153 can be charged too.
+ *
+ * `account` (the subscriber's id at the creator) is committed in the witness of
+ * the subscriber's own input, which the subscriber's signature covers; the
+ * creator checks it with `verifySubscription`, so nobody else can present this
+ * subscription as theirs (review H3).
  *
  * `payTo` should be an anyone-can-pay address with a live cell, so a charge of
  * any size tops it up; otherwise each charge creates a new cell and the price must
- * be at least that cell's size (61 CKB for a plain address).
+ * be at least that cell's size (61 CKB for a plain address). Keep a plain cell in
+ * the wallet: cancelling needs one to prove ownership.
  */
 export async function openSubscription(
   subscriber: ccc.Signer,
@@ -92,15 +119,22 @@ export async function openSubscription(
     price: bigint;
     periodBlocks: bigint;
     budget: bigint;
+    account?: string;
     beforeSend?: (sub: Subscription) => Promise<void>;
   },
 ): Promise<{ txHash: ccc.Hex; subscription: Subscription }> {
   const client = subscriber.client;
+  if (TESTNET_LEGACY_DEPLOYMENTS.some((d) => ccc.hexFrom(d.codeHash) === ccc.hexFrom(deployment.codeHash))) {
+    // The 8 Oct code lacks errors 16-18 (review M5); no new subscription goes under an old lock.
+    throw new SessionPolicyError("this is an old deployment of the session lock: open subscriptions under the current one");
+  }
   const subscriberLock = (await subscriber.getRecommendedAddressObj()).script;
   await assertSigningLock(subscriberLock, client);
   const [chargerLock, payToLock] = await Promise.all(
     [opts.charger, opts.payTo].map(async (a) => (await ccc.Address.fromString(a, client)).script),
   );
+  // A charger lock that signs nothing would let anyone trigger charges (review M2).
+  await assertSigningLock(chargerLock, client);
   const sub: Subscription = {
     subscriberLockHash: subscriberLock.hash(),
     chargerLockHash: chargerLock.hash(),
@@ -109,20 +143,48 @@ export async function openSubscription(
     periodBlocks: opts.periodBlocks,
   };
   assertTerms(sub);
+  const acp = await isAnyoneCanPay(payToLock, client);
   const newCell = ccc.CellOutput.from({ lock: payToLock }, "0x").capacity;
-  if (opts.price < newCell && !(await isAnyoneCanPay(payToLock, client))) {
+  if (opts.price < newCell && !acp) {
     throw new SessionPolicyError(
       `each charge creates a cell for payTo, which needs ${ccc.fixedPointToString(newCell)} CKB: ` +
         "raise the price or use an anyone-can-pay address",
     );
   }
+  const lock = subscriptionLock(deployment, sub);
+  // Two live cells under the same lock are one group with two rate-limited cells:
+  // two charges per period (review M1).
+  if ((await subscriptionCells(client, lock)).length) {
+    throw new SessionPolicyError("a subscription with exactly these terms is already open: cancel it first");
+  }
 
-  const tx = ccc.Transaction.from({ outputs: [{ lock: subscriptionLock(deployment, sub), capacity: opts.budget }] });
+  const tx = ccc.Transaction.from({ outputs: [{ lock, capacity: opts.budget }] });
   // CCC raises an output to its occupied capacity; a budget below that is a mistake.
   if (tx.outputs[0].capacity !== opts.budget) {
     throw new SessionBalanceError(`budget must be at least ${ccc.fixedPointToString(tx.outputs[0].capacity)} CKB`);
   }
+  // The first period, paid now.
+  const target = acp ? (await collect(client, payToLock))[0] : undefined;
+  if (target) {
+    tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
+    tx.addOutput({ lock: payToLock, capacity: target.cellOutput.capacity + opts.price });
+    await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay);
+  } else {
+    tx.addOutput({ lock: payToLock, capacity: opts.price });
+    if (tx.outputs[1].capacity !== opts.price) {
+      throw new SessionBalanceError(`payTo has no cell to top up, and a new one needs ${ccc.fixedPointToString(newCell)} CKB`);
+    }
+  }
   await tx.completeInputsByCapacity(subscriber);
+  if (opts.account !== undefined) {
+    let mine = -1;
+    for (let i = 0; i < tx.inputs.length && mine < 0; i++) {
+      await tx.inputs[i].completeExtraInfos(client);
+      if (tx.inputs[i].cellOutput?.lock.eq(subscriberLock)) mine = i;
+    }
+    if (mine < 0) throw new SessionBalanceError("no input of the subscriber to carry the account memo");
+    tx.setWitnessArgsAt(mine, { inputType: subscriptionMemo(opts.account) });
+  }
   await tx.completeFeeBy(subscriber);
   let funded = sub;
   const txHash = await signAndSend(subscriber, tx, async (hash) => {
@@ -139,7 +201,7 @@ export async function findSubscriptionCells(
   sub: Subscription,
 ): Promise<{ lock: ccc.Script; cells: ccc.Cell[]; balance: bigint; nextChargeIn: bigint | undefined }> {
   const lock = subscriptionLock(deployment, sub);
-  const cells = await collect(client, lock);
+  const cells = await subscriptionCells(client, lock);
   const balance = cells.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   if (!cells.length) return { lock, cells, balance, nextChargeIn: undefined };
   const tip = await client.getTip();
@@ -251,21 +313,40 @@ export async function cancelSubscription(
 }
 
 export type SubscriptionCheck =
-  | { ok: true; subscription: Subscription; balance: bigint }
+  | {
+      ok: true;
+      subscription: Subscription;
+      balance: bigint;
+      /** Charges the cell can still pay. */
+      chargesLeft: bigint;
+      /** The block until which the subscriber has paid: the block that created this cell, plus one period. */
+      paidThroughBlock: bigint;
+    }
   | { ok: false; reason: string };
 
 /**
- * The creator checks a subscription a subscriber says it opened, from the chain
- * alone: the cell at `outPoint` must be live, under this deployment of the session
- * lock, untyped, with exactly these terms, and hold at least `minBalance` (by
- * default one price plus the cell's own size, so at least one charge can happen).
- * Nothing in the request is trusted but the out point.
+ * The creator checks a subscription from the chain alone. Nothing in the request
+ * is trusted but the out point. The cell at `outPoint` must be live, under this
+ * deployment of the session lock (never an older one), untyped and without data,
+ * with 112-byte args holding exactly these terms, and at least `minBalance`.
+ *
+ * And the transaction that created the cell must have paid `payTo` at least one
+ * price: the opening pays the first period, every charge pays one. A cell the
+ * subscriber re-created in owner mode to reset its age paid nothing, and is
+ * refused (review H2). So access is granted up to `paidThroughBlock`; check the
+ * current cell again (`findSubscriptionCells`) once that block has passed.
+ *
+ * With `account`, the creating transaction must also carry `subscriptionMemo(account)`
+ * in the witness of an input under the subscriber's lock, which only the
+ * subscriber's signature covers: someone else's subscription cannot be claimed
+ * (review H3). The memo is in the opening only, so check `account` once, when a
+ * subscription is registered, then keep the subscription by its lock.
  */
 export async function verifySubscription(
   client: ccc.Client,
   deployment: SessionLockDeployment,
   outPoint: ccc.OutPointLike,
-  expected: { charger: string; payTo: string; price: bigint; periodBlocks: bigint; minBalance?: bigint },
+  expected: { charger: string; payTo: string; price: bigint; periodBlocks: bigint; minBalance?: bigint; account?: string },
 ): Promise<SubscriptionCheck> {
   const cell = await client.getCellLive(outPoint, true, false);
   if (!cell) return { ok: false, reason: "no live cell at that out point" };
@@ -295,10 +376,35 @@ export async function verifySubscription(
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
-  const minBalance = expected.minBalance ?? sub.price + ccc.CellOutput.from({ lock }, "0x").capacity;
+  const cellSize = ccc.CellOutput.from({ lock }, "0x").capacity;
   const balance = cell.cellOutput.capacity;
-  if (balance < minBalance) return { ok: false, reason: `holds ${ccc.fixedPointToString(balance)} CKB, under the minimum` };
-  return { ok: true, subscription: sub, balance };
+  if (balance < (expected.minBalance ?? cellSize)) {
+    return { ok: false, reason: `holds ${ccc.fixedPointToString(balance)} CKB, under the minimum` };
+  }
+
+  const created = await client.getTransaction(cell.outPoint.txHash);
+  if (!created || created.status !== "committed" || created.blockNumber === undefined || created.blockNumber === null) {
+    return { ok: false, reason: "the transaction that created the cell is not committed" };
+  }
+  const inputs = await Promise.all(created.transaction.inputs.map((i) => client.getCell(i.previousOutput)));
+  const sum = (cells: (ccc.CellOutput | undefined)[]) =>
+    cells.reduce((s, c) => (c && c.lock.hash() === sub.payToLockHash ? s + c.capacity : s), 0n);
+  const paid = sum(created.transaction.outputs) - sum(inputs.map((c) => c?.cellOutput));
+  if (paid < sub.price) return { ok: false, reason: "the transaction that created the cell did not pay the price to payTo" };
+  if (expected.account !== undefined) {
+    const memo = subscriptionMemo(expected.account);
+    const signed = inputs.some(
+      (c, i) => c?.cellOutput.lock.hash() === sub.subscriberLockHash && created.transaction.getWitnessArgsAt(i)?.inputType === memo,
+    );
+    if (!signed) return { ok: false, reason: "the opening does not commit to this account" };
+  }
+  return {
+    ok: true,
+    subscription: sub,
+    balance,
+    chargesLeft: balance >= cellSize + sub.price ? (balance - cellSize) / sub.price : 0n,
+    paidThroughBlock: ccc.numFrom(created.blockNumber) + sub.periodBlocks,
+  };
 }
 
 /**

@@ -188,12 +188,21 @@ recipient. The network lets the charger take at most the price, at most once per
 period, only to the payout address; the subscriber can take everything back
 alone at any time. No change to the deployed lock.
 
-### `openSubscription(subscriber, deployment, { charger, payTo, price, periodBlocks, budget, beforeSend? }) → { txHash, subscription }`
-The subscriber funds one cell; one signature, no key cell. Refuses terms the lock
-would not enforce as meant: a price or period of 0, `payTo` equal to the charger
-(every charge would fail with error 17), the subscriber as charger or payout, and
-a price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
-of 153 CKB plus n prices pays n periods exactly.
+### `openSubscription(subscriber, deployment, { charger, payTo, price, periodBlocks, budget, account?, beforeSend? }) → { txHash, subscription }`
+One transaction, one subscriber signature: the first period's price goes to
+`payTo` at once (a new cell cannot be charged for a whole period), and one cell of
+`budget` goes under the session lock; no key cell. With `account`,
+`subscriptionMemo(account)` is committed in the witness of the subscriber's own
+input. Refuses terms the lock would not enforce as meant: a price or period of 0,
+`payTo` equal to the charger (every charge would fail with error 17), the
+subscriber as charger or payout, a charger lock that needs no signature, an old
+deployment of the lock, a live subscription with exactly the same terms, and a
+price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
+of 153 CKB plus n prices pays n more periods. Keep a plain cell in the wallet:
+cancelling needs one.
+
+### `subscriptionMemo(account) → Hex`
+The memo an opening commits to, binding the subscription to one account at the creator.
 
 ### `chargeSubscription(charger, deployment, subscription, { payTo, topUp?, beforeSend? }) → txHash`
 The charger key takes one price, with the period as the inputs' relative `since`,
@@ -206,10 +215,15 @@ cannot cover a price plus a cell.
 Owner-mode sweep of everything left; no creator involved, no wait.
 `recoverSessions` also finds and sweeps subscriptions.
 
-### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance? }) → SubscriptionCheck`
-The creator's check of a subscription it was told about, from the chain alone:
-the cell is live, under this deployment, untyped, 112-byte args with exactly these
-terms, and holds at least `minBalance` (default: one price plus the cell's size).
+### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance?, account? }) → SubscriptionCheck`
+The creator's check, from the chain alone: the cell is live, under this
+deployment (never an older one), untyped and without data, 112-byte args with
+exactly these terms, at least `minBalance`; and the transaction that created it
+paid `payTo` at least one price (the opening, or a charge), so a cell the
+subscriber re-created to reset its age is refused. Returns `paidThroughBlock`
+(that transaction's block plus one period) and `chargesLeft`. With `account`,
+the creating transaction must carry `subscriptionMemo(account)` under the
+subscriber's signature: check it once, at registration, on the opening's cell.
 
 ### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, nextChargeIn }`
 `nextChargeIn` is the number of blocks until a cell is a full period old (0 = it can be charged now).
