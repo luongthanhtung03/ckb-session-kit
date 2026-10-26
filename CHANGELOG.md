@@ -28,6 +28,8 @@ links in the README.
   `signAccess`, `verifyAccess` check paid access on-chain, in CKB or tokens, with no
   database. One payment, one claim.
 - CKB Place: a pixel board rebuilt from the chain (`place` exports).
+- Subscriptions on the same lock: the creator charges a fixed price once per period,
+  the subscriber cancels alone; paid in CKB or in a plain xUDT token.
 
 ### Docs and demo
 - `docs/API.md` (a test checks every export is documented), runnable `examples/`,

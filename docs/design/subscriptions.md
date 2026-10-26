@@ -17,8 +17,8 @@ the subscriber can cancel at any moment. On-chain, the network guarantees:
 - every charge goes to the creator's address and nowhere else,
 - the subscriber can take everything back at any time, alone.
 
-Out of scope: subscriptions in tokens (the token session layout makes this a
-small follow-up, after the CKB version is proven); a price that changes over
+Out of scope here: subscriptions in tokens (built later on the same lock; see
+"Token subscriptions" at the end); a price that changes over
 time (cancel and open a new one); calendar periods.
 
 ## The idea: the creator holds the key

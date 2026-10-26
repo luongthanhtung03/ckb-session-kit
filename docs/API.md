@@ -188,7 +188,13 @@ recipient. The network lets the charger take at most the price, at most once per
 period, only to the payout address; the subscriber can take everything back
 alone at any time. No change to the deployed lock.
 
-### `openSubscription(subscriber, deployment, { charger, payTo, price, periodBlocks, budget, account?, beforeSend? }) → { txHash, subscription }`
+A **token subscription** is paid in a plain xUDT token instead (`token` set on the
+`Subscription`): the 160-byte token layout with `max_per_tx` 0, so no CKB ever
+leaves the cell, and the price as `max_per_tx_token`. `price` is always in the
+subscription's asset: shannons, or token units. The payout address must be
+anyone-can-pay and hold a cell of the token; charges top it up.
+
+### `openSubscription(subscriber, deployment, { charger, payTo, price, periodBlocks, budget?, token?, account?, beforeSend? }) → { txHash, subscription }`
 One transaction, one subscriber signature: the first period's price goes to
 `payTo` at once (a new cell cannot be charged for a whole period), and one cell of
 `budget` goes under the session lock; no key cell. With `account`,
@@ -199,7 +205,13 @@ subscriber as charger or payout, a charger lock that needs no signature, an old
 deployment of the lock, a live subscription with exactly the same terms, and a
 price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
 of 153 CKB plus n prices pays n more periods. Keep a plain cell in the wallet:
-cancelling needs one.
+cancelling needs one. `budget` is required without `token`.
+
+With `token: { type, amount }` (a plain xUDT; flags refused), the cell is typed
+with the token and holds `amount` units plus its own size (282 CKB; `budget` may
+add more, which comes back on cancel), and the first price, in units, tops up
+`payTo`'s cell of the token. Refuses a `payTo` that is not anyone-can-pay or holds
+no cell of the token: a charge may move no CKB, so it cannot make a new token cell.
 
 ### `subscriptionMemo(account) → Hex`
 The memo an opening commits to, binding the subscription to one account at the creator: a 32-byte hash, so the account id never appears on-chain.
@@ -209,13 +221,16 @@ The charger key takes one price, with the period as the inputs' relative `since`
 and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee
 comes from one of the charger's own plain cells. Throws `SessionBalanceError`
 before a full period (saying how many blocks are left) and once what is left
-cannot cover a price plus a cell.
+cannot cover a price plus a cell. In a token subscription the price is in units
+and always tops up `payTo`'s token cell; every mature token cell is merged into
+one change that keeps all the CKB and exactly 16 data bytes.
 
-### `cancelSubscription(subscriber, deployment, subscription) → { txHash?, refunded, nothingFound? }`
-Owner-mode sweep of everything left; no creator involved, no wait.
+### `cancelSubscription(subscriber, deployment, subscription) → { txHash?, refunded, refundedTokens?, nothingFound? }`
+Owner-mode sweep of everything left; no creator involved, no wait. Tokens come
+back as one token cell (`refundedTokens`, token subscriptions only).
 `recoverSessions` also finds and sweeps subscriptions.
 
-### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance?, account? }) → SubscriptionCheck`
+### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance?, account?, token? }) → SubscriptionCheck`
 The creator's check, from the chain alone: the cell is live, under this
 deployment (never an older one), untyped and without data, 112-byte args with
 exactly these terms, at least `minBalance`; and the transaction that created it
@@ -224,6 +239,11 @@ subscriber re-created to reset its age is refused. Returns `paidThroughBlock`
 (that transaction's block plus one period) and `chargesLeft`. With `account`,
 the creating transaction must carry `subscriptionMemo(account)` under the
 subscriber's signature: check it once, at registration, on the opening's cell.
+With `token`, the cell must be typed with exactly that token, with 160-byte args
+(`max_per_tx` 0, the token's hash, the price in units); `minBalance` is in units,
+and paid means token units into `payTo`'s cells of the token, covering every token
+subscription the transaction creates for that address. Without `token`, a
+160-byte cell is refused, and the reverse. `tokenBalance` is returned for tokens.
 
 ### `subscriptionStatus(client, deployment, subscription, { openTx, account }) → { ok, status: SubscriptionStatus }`
 For a creator's server with no database: the subscriber sends its lock hash, the
@@ -231,20 +251,24 @@ opening's hash and its account id with every request. The opening must have paid
 the first price into a cell under exactly this subscription's lock and committed
 to `account`; then the live cells give `paidThroughBlock` (only cells created by a
 payment count), `active` (tip within the paid period), `chargesLeft` and
-`nextChargeIn`. Cancelling ends access at once.
+`nextChargeIn`. Cancelling ends access at once. A token subscription counts its
+payments in the token and adds `tokenBalance`; `chargesLeft` is then units / price.
 
-### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, nextChargeIn }`
+### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, tokenBalance, nextChargeIn }`
 `nextChargeIn` is the number of blocks until a cell is a full period old (0 = it can be charged now).
+In a token subscription, only cells typed with the token count; `tokenBalance` is
+their units (0 for CKB), `balance` their shannons.
 
 ### `subscriptionLock(deployment, subscription)`
-The session-lock script of a subscription.
+The session-lock script of a subscription: 112-byte args, or 160 with a token.
 
 ### `blocksForSeconds(client, seconds, sample?) → bigint`
 About how many blocks `seconds` is, from the average block time of the last
 `sample` (1000) blocks. An estimate; round up.
 
 ### Types: `Subscription`, `SubscriptionCheck`, `SubscriptionStatus`
-`Subscription` holds the five terms as lock hashes and numbers, and no private key.
+`Subscription` holds the five terms as lock hashes and numbers, and no private key;
+a token subscription adds `token: { type }`, the plain script (JSON-safe as it is).
 
 ## A shared pixel board (CKB Place)
 
