@@ -182,3 +182,26 @@ fixes are in the library; the lock is unchanged.
 | L2 The charger can write data into the change cell, hiding it from the cell collector | Subscription cells are collected with or without data |
 | L3 Races: charge against cancel, the shared fee cell, the shared payout cell | Inherent; a lost race is a retry |
 | L4 The price must fit the payout lock's minimum cell | Checked before signing |
+
+## Code review, 26 Oct 2026 (implementation)
+
+Report kept outside the repository (drafts/subscriptions-code-review.md). The
+open, charge and cancel transactions were built correctly; the gaps were in how
+the creator decides it was paid. Fixed:
+
+- **High:** a payment counted per transaction, so one price could open or renew
+  several subscriptions with the same payout address. The creating transaction
+  must now pay the sum of the prices of every subscription cell it creates for
+  that address. A creator should still give subscriptions their own payout
+  address (the demo shares one with pay-per-read, which is safe because a read
+  is claimed by a session key's memo, and openings and charges carry none).
+- A charge merges every mature cell, so extra cells cannot pay extra prices.
+- At most 32 inputs are looked up per check; an input that cannot be looked up
+  fails it; typed outputs do not count as payment.
+- Demo: policy refusals answer 409, hashes are normalised, nothing of one
+  wallet stays on screen after switching, no charge request while cancelling,
+  and an opening that never landed can be forgotten.
+
+Not changed: a short lapse of access at each renewal until the creator's charge
+lands (a grace window would let a cancelled subscriber in too), and access at zero
+confirmations, as with paid reads.

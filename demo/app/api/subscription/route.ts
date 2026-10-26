@@ -25,7 +25,8 @@ export async function POST(request: Request) {
   }
   let r: Awaited<ReturnType<typeof subscriptionStatus>>;
   try {
-    r = await subscriptionStatus(client, deployment, await termsFor(client, subscriber), { openTx, account });
+    const terms = await termsFor(client, subscriber.toLowerCase() as ccc.Hex);
+    r = await subscriptionStatus(client, deployment, terms, { openTx, account });
   } catch {
     return Response.json({ error: "could not reach the chain", retry: true }, { status: 503 });
   }

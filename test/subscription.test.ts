@@ -204,6 +204,21 @@ describe("chargeSubscription", () => {
     expect(tx.outputs[2].capacity).toBeLessThan(100n * CKB); // the key cell paid the fee, did not grow
   });
 
+  // Code review, 26 Oct: the rate limit is per cell, so every mature cell goes into one charge.
+  it("merges every mature cell into one change, so two cells cannot pay two prices a period", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockResolvedValue([0, true] as never);
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const lock = subscriptionLock(d, r.sub);
+    const a = cellOf(lock, 300n * CKB);
+    const b = cellOf(lock, 200n * CKB);
+    const { client, sent } = fakeClient([a, b, cellOf(r.payToLock, 200n * CKB), cellOf(r.chargerLock, 100n * CKB)]);
+    await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true });
+    const tx = sent[0];
+    expect(tx.inputs.filter((i) => i.since === ((1n << 63n) | PERIOD))).toHaveLength(2);
+    expect(tx.outputs.filter((o) => o.lock.eq(lock)).map((o) => o.capacity)).toEqual([490n * CKB]);
+  });
+
   it("refuses once what is left cannot cover a price and a cell", async () => {
     const { client: c0 } = fakeClient([]);
     const r = await roles(c0);
@@ -219,7 +234,7 @@ describe("verifySubscription", () => {
    * The cell `mutate` makes, created by a transaction that tops up the payout cell
    * by `paid` and spends a subscriber cell whose witness carries `memo`.
    */
-  async function setup(mutate: (lock: ccc.Script) => ccc.Cell, paid = 10n * CKB, memo?: ccc.Hex) {
+  async function setup(mutate: (lock: ccc.Script) => ccc.Cell, paid = 10n * CKB, memo?: ccc.Hex, extra: ccc.CellOutputLike[] = []) {
     const { client: c0 } = fakeClient([]);
     const r = await roles(c0);
     const cell = mutate(subscriptionLock(d, r.sub));
@@ -228,8 +243,8 @@ describe("verifySubscription", () => {
     const own = cellOf(subscriberLock, 1000n * CKB);
     const creating = ccc.Transaction.from({
       inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: own.outPoint }],
-      outputs: [cell.cellOutput, { lock: r.payToLock, capacity: 200n * CKB + paid }],
-      outputsData: ["0x", "0x"],
+      outputs: [cell.cellOutput, { lock: r.payToLock, capacity: 200n * CKB + paid }, ...extra],
+      outputsData: ["0x", "0x", ...extra.map(() => "0x")],
     });
     if (memo) creating.setWitnessArgsAt(1, { inputType: memo });
     const { client } = fakeClient([cell, payIn, own], 900n, creating);
@@ -257,6 +272,17 @@ describe("verifySubscription", () => {
   it("refuses a cell whose creating transaction did not pay the price to payTo", async () => {
     const { check } = await setup((lock) => cellOf(lock, 500n * CKB), 10n * CKB - 1n);
     expect(await check()).toMatchObject({ ok: false, reason: expect.stringMatching(/did not pay/) });
+  });
+
+  // Code review, 26 Oct: one payment must not open (or renew) several subscriptions.
+  it("refuses one price paid for two subscription cells with the same payout address", async () => {
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const other = subscriptionLock(d, { ...r.sub, subscriberLockHash: h("e7") });
+    const one = await setup((lock) => cellOf(lock, 500n * CKB), 10n * CKB, undefined, [{ lock: other, capacity: 200n * CKB }]);
+    expect(await one.check()).toMatchObject({ ok: false, reason: expect.stringMatching(/did not pay/) });
+    const both = await setup((lock) => cellOf(lock, 500n * CKB), 20n * CKB, undefined, [{ lock: other, capacity: 200n * CKB }]);
+    expect(await both.check()).toMatchObject({ ok: true });
   });
 
   // Review H3: subscription cells are public; the opening must commit to the account.

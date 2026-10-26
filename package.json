@@ -45,6 +45,7 @@
     "smoke:token": "tsx scripts/testnet-token.ts",
     "smoke:read-tokens": "tsx scripts/testnet-read-tokens.ts",
     "smoke:subscription": "tsx scripts/testnet-subscription.ts",
+    "matrix:wallets": "tsx scripts/wallet-matrix.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"
   },

@@ -265,16 +265,10 @@ export async function chargeSubscription(
     }
   }
 
-  // One mature cell that covers the price; several only if none does alone.
-  const mature = await matureCells(client, state.cells, sub.periodBlocks);
-  mature.sort((a, b) => (a.cellOutput.capacity > b.cellOutput.capacity ? -1 : 1));
-  const taken: ccc.Cell[] = [];
-  let ckbIn = 0n;
-  for (const c of mature) {
-    if (ckbIn >= sub.price) break;
-    taken.push(c);
-    ckbIn += c.cellOutput.capacity;
-  }
+  // Every mature cell, merged into one change: the rate limit is per cell, so
+  // leaving one out would let it pay another price in the same period (code review, 26 Oct).
+  const taken = await matureCells(client, state.cells, sub.periodBlocks);
+  const ckbIn = taken.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   const since = relativeBlocksSince(sub.periodBlocks);
   tx.inputs.unshift(...taken.map((c) => ccc.CellInput.from({ previousOutput: c.outPoint, since })));
   const change = ckbIn - sub.price;
@@ -385,7 +379,7 @@ export async function verifySubscription(
     return { ok: false, reason: `holds ${ccc.fixedPointToString(balance)} CKB, under the minimum` };
   }
 
-  const created = await paymentOf(client, cell.outPoint.txHash, sub);
+  const created = await paymentOf(client, deployment, cell.outPoint.txHash, sub);
   if (typeof created === "string") return { ok: false, reason: created };
   if (expected.account !== undefined && !commitsToAccount(created, sub, expected.account)) {
     return { ok: false, reason: "the opening does not commit to this account" };
@@ -405,21 +399,44 @@ interface Payment {
   inputs: (ccc.Cell | undefined)[];
 }
 
+/** The most inputs a creating transaction may have before its inputs are looked up (each is an RPC call). */
+const MAX_PAYMENT_INPUTS = 32;
+
 /**
- * The committed transaction `txHash`, if it paid `sub`'s payout address at least
- * one price (outputs to payTo minus inputs from it); otherwise why not.
+ * The committed transaction `txHash`, if it paid `sub`'s payout address enough;
+ * otherwise why not. Enough is the sum of the prices of every subscription cell
+ * it creates for that payout address, not one price: otherwise one payment could
+ * open or renew many subscriptions at once (code review, 26 Oct). Only untyped
+ * cells count as paid, and an input that cannot be looked up fails the check.
  */
-async function paymentOf(client: ccc.Client, txHash: ccc.HexLike, sub: Subscription): Promise<Payment | string> {
+async function paymentOf(
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  txHash: ccc.HexLike,
+  sub: Subscription,
+): Promise<Payment | string> {
   const created = await client.getTransaction(txHash);
   if (!created || created.status !== "committed" || created.blockNumber === undefined || created.blockNumber === null) {
     return "the transaction that created the cell is not committed";
   }
-  const inputs = await Promise.all(created.transaction.inputs.map((i) => client.getCell(i.previousOutput)));
-  const sum = (cells: (ccc.CellOutput | undefined)[]) =>
-    cells.reduce((s, c) => (c && c.lock.hash() === sub.payToLockHash ? s + c.capacity : s), 0n);
-  const paid = sum(created.transaction.outputs) - sum(inputs.map((c) => c?.cellOutput));
-  if (paid < sub.price) return "the transaction that created the cell did not pay the price to payTo";
-  return { tx: created.transaction, block: ccc.numFrom(created.blockNumber), inputs };
+  const tx = created.transaction;
+  if (tx.inputs.length > MAX_PAYMENT_INPUTS) return `the transaction has over ${MAX_PAYMENT_INPUTS} inputs`;
+  const codeHash = ccc.hexFrom(deployment.codeHash);
+  const hashType = ccc.hashTypeFrom(deployment.hashType);
+  let owed = 0n;
+  for (const o of tx.outputs) {
+    const args = ccc.bytesFrom(o.lock.args);
+    if (o.lock.codeHash !== codeHash || o.lock.hashType !== hashType || args.length !== 112) continue;
+    if (ccc.hexFrom(args.slice(80, 112)) === sub.payToLockHash) owed += ccc.numLeFromBytes(args.slice(64, 72));
+  }
+  if (owed < sub.price) owed = sub.price;
+  const inputs = await Promise.all(tx.inputs.map((i) => client.getCell(i.previousOutput)));
+  if (inputs.some((c) => !c)) return "an input of the transaction could not be looked up";
+  const sum = (cells: ccc.CellOutput[]) =>
+    cells.reduce((s, c) => (!c.type && c.lock.hash() === sub.payToLockHash ? s + c.capacity : s), 0n);
+  const paid = sum(tx.outputs) - sum(inputs.map((c) => c!.cellOutput));
+  if (paid < owed) return "the transaction that created the cell did not pay the price to payTo";
+  return { tx, block: ccc.numFrom(created.blockNumber), inputs };
 }
 
 /** Whether `p` carries `subscriptionMemo(account)` in the witness of an input under the subscriber's lock. */
@@ -463,7 +480,7 @@ export async function subscriptionStatus(
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
   const lock = subscriptionLock(deployment, sub);
-  const opening = await paymentOf(client, proof.openTx, sub);
+  const opening = await paymentOf(client, deployment, proof.openTx, sub);
   if (typeof opening === "string") return { ok: false, reason: `opening: ${opening}` };
   if (!opening.tx.outputs.some((o) => o.lock.eq(lock))) return { ok: false, reason: "the opening created no cell under this subscription's lock" };
   if (!commitsToAccount(opening, sub, proof.account)) return { ok: false, reason: "the opening does not commit to this account" };
@@ -472,7 +489,7 @@ export async function subscriptionStatus(
   const tip = await client.getTip();
   let paidThroughBlock: bigint | undefined;
   for (const c of cells) {
-    const p = await paymentOf(client, c.outPoint.txHash, sub);
+    const p = await paymentOf(client, deployment, c.outPoint.txHash, sub);
     if (typeof p === "string") continue;
     const through = p.block + sub.periodBlocks;
     if (paidThroughBlock === undefined || through > paidThroughBlock) paidThroughBlock = through;

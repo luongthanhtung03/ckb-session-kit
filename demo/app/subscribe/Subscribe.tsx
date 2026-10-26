@@ -72,6 +72,11 @@ export default function Subscribe() {
   const push = (e: Omit<LogEntry, "at">) => setLog((l) => [{ at: new Date(), ...e }, ...l]);
 
   useEffect(() => {
+    // Another wallet, or none: nothing of the last one's stays on screen.
+    setStatus(undefined);
+    setNotes(undefined);
+    setRefused(undefined);
+    setOnchain(undefined);
     if (!signer) {
       setAddress(undefined);
       setLockHash(undefined);
@@ -123,7 +128,7 @@ export default function Subscribe() {
   // A renewal is due: the period is over and the cell is a period old. A real
   // creator charges on a schedule; here the page asks the creator's server to.
   useEffect(() => {
-    if (!sub || !status || status.active || status.nextChargeIn !== "0" || status.chargesLeft === "0") return;
+    if (!sub || !status || busy || status.active || status.nextChargeIn !== "0" || status.chargesLeft === "0") return;
     if (charging.current) return;
     charging.current = true;
     (async () => {
@@ -143,7 +148,7 @@ export default function Subscribe() {
         setTimeout(() => (charging.current = false), 60_000);
       }
     })();
-  }, [sub, status]);
+  }, [sub, status, busy]);
 
   async function subscribe() {
     if (!signer || !lockHash) return;
@@ -172,6 +177,15 @@ export default function Subscribe() {
     } finally {
       setBusy(false);
     }
+  }
+
+  /** An opening that never landed (sent and lost, or refused): forget it and offer subscribing again. */
+  function forget() {
+    if (!lockHash) return;
+    saveKept(lockHash, undefined);
+    setKept(undefined);
+    setRefused(undefined);
+    push({ level: "info", text: "forgot the opening that never landed; nothing was paid" });
   }
 
   async function cancel() {
@@ -280,7 +294,17 @@ export default function Subscribe() {
                     serve it here. You can still cancel.
                   </span>
                 ) : refused ? (
-                  <span className="bad">○ {refused}</span>
+                  <span className="bad">
+                    ○ {refused}
+                    {!open_ && onchain !== undefined && (
+                      <>
+                        {" "}
+                        <button className="link" onClick={forget}>
+                          the opening never landed: forget it
+                        </button>
+                      </>
+                    )}
+                  </span>
                 ) : (
                   <span className="cursor" />
                 )}
