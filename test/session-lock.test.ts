@@ -67,6 +67,8 @@ interface Options {
   argsOverride?: string;
   /** The token's type script: a stand-in (always success) by default, or the real xUDT binary. */
   xudt?: boolean;
+  /** The recipient field holds the session key's own lock hash (a subscription paying its charger). */
+  recipientIsKey?: boolean;
 }
 
 const XUDT_BINARY = "test/fixtures/xudt_rce";
@@ -107,7 +109,7 @@ function build(scope: Scope, inputs: Cell[], outputs: Cell[], opts: Options = {}
       u64le(scope.maxPerTx) +
       u64le(scope.minInterval ?? 0n) +
       (scope.tokenMaxPerTx !== undefined ? tokenType.hash().slice(2) + u128le(scope.tokenMaxPerTx) : "") +
-      (scope.recipient ? recipient.hash().slice(2) : "");
+      (scope.recipient ? (opts.recipientIsKey ? key : recipient).hash().slice(2) : "");
   const session = ccc.Script.from({ codeHash: sessionCode.codeHash, hashType: sessionCode.hashType, args });
   // Same code, different scope: a different script group the test must not confuse.
   const otherSession = ccc.Script.from({ ...session, args: args.slice(0, -2) + (args.endsWith("ff") ? "00" : "ff") });
@@ -437,6 +439,64 @@ describe.skipIf(skip)("session lock", () => {
       await fails(E.BAD_ARGS, scope100, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [KEY_CELL], {
         argsOverride: args,
       });
+    });
+  });
+
+  // Subscriptions (docs/design/subscriptions.md): the subscriber is the owner, the
+  // creator's charger key is the session key, max_per_tx is the price, min_interval
+  // the period and the recipient the creator's payout address. Same binary, no change.
+  describe("subscription shape", () => {
+    const PERIOD = 20n;
+    const sub: Scope = { maxPerTx: 10n * CKB, minInterval: PERIOD, recipient: true };
+    const cell = (capacity: bigint, since?: bigint): Cell => ({ lock: "session", capacity, since });
+
+    it("accepts one charge of the price after a full period, fee paid by the charger", async () => {
+      await ok(
+        sub,
+        [cell(500n * CKB, relativeBlocks(PERIOD)), { lock: "recipient", capacity: 200n * CKB }, KEY_CELL],
+        [{ lock: "recipient", capacity: 210n * CKB }, cell(490n * CKB), { lock: "key", capacity: 61n * CKB - 1000n }],
+      );
+    });
+
+    it("rejects a second charge before the period has passed", async () => {
+      await fails(
+        E.RATE_LIMITED,
+        sub,
+        [cell(490n * CKB, relativeBlocks(PERIOD - 1n)), KEY_CELL],
+        [{ lock: "recipient", capacity: 10n * CKB }, cell(480n * CKB), KEY_CELL],
+      );
+    });
+
+    it("rejects charging more than the price", async () => {
+      await fails(
+        E.OUTFLOW_EXCEEDED,
+        sub,
+        [cell(500n * CKB, relativeBlocks(PERIOD)), KEY_CELL],
+        [{ lock: "recipient", capacity: 10n * CKB + 1n }, cell(490n * CKB - 1n), KEY_CELL],
+      );
+    });
+
+    it("rejects the charge going anywhere but the payout address", async () => {
+      await fails(
+        E.RECIPIENT_NOT_ALLOWED,
+        sub,
+        [cell(500n * CKB, relativeBlocks(PERIOD)), KEY_CELL],
+        [{ lock: "stranger", capacity: 10n * CKB }, cell(490n * CKB), KEY_CELL],
+      );
+    });
+
+    it("rejects a payout address equal to the charger key: the charge would grow the key cell", async () => {
+      await fails(
+        E.KEY_CELL_GREW,
+        sub,
+        [cell(500n * CKB, relativeBlocks(PERIOD)), KEY_CELL],
+        [cell(490n * CKB), { lock: "key", capacity: 71n * CKB }],
+        { recipientIsKey: true },
+      );
+    });
+
+    it("lets the subscriber cancel alone, at any time, with no wait", async () => {
+      await ok(sub, [cell(490n * CKB), { lock: "owner", capacity: 61n * CKB }], [{ lock: "owner", capacity: 551n * CKB }]);
     });
   });
 
