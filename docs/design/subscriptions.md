@@ -205,3 +205,70 @@ the creator decides it was paid. Fixed:
 Not changed: a short lapse of access at each renewal until the creator's charge
 lands (a grace window would let a cancelled subscriber in too), and access at zero
 confirmations, as with paid reads.
+
+## Token subscriptions (27 Oct 2026)
+
+Status: **built on the same deployed lock; testnet smoke pending.** A
+subscription paid in an xUDT token (a stablecoin, say) instead of CKB. The token
+session layout (docs/design/token-sessions.md) already bounds token units per
+spend, so this is again only a choice of args, not a lock change.
+
+### Args (160 bytes, the token session layout with a recipient)
+
+| Session lock field | Token subscription |
+|---|---|
+| `owner_lock_hash` | the subscriber's wallet |
+| `session_lock_hash` | the creator's charger key |
+| `max_per_tx` (CKB) | **0**: no CKB ever leaves the subscription |
+| `min_interval` | the period, in blocks |
+| `token_type_hash` | the token's xUDT type script (plain: no flags) |
+| `max_per_tx_token` | the **price**, in token units |
+| `recipient_lock_hash` | the creator's payout address |
+
+`Subscription` gains an optional `token: { type }`. `price` is always the unit of
+the subscription's asset: shannons without a token, token units with one. The
+subscription cell is typed with the token and holds `amount` units plus its own
+occupied capacity (282 CKB); that CKB stays in the cell until cancel.
+
+### Rules as applied
+
+- **The payout address must be anyone-can-pay and hold a live cell of the
+  token.** A charge tops that cell up. A new token cell needs about 142 CKB, and
+  `max_per_tx` 0 lets no CKB out of the subscription to pay for it (the charger
+  could pay it from its own key cell, which the lock allows, but a creator paying
+  142 CKB per charge is not a design). `openSubscription` refuses any other payout
+  address, and a payout address with no cell of the token.
+- **Opening** pays the first period in tokens into that cell, in the same
+  transaction (review H1), and commits the account memo as for CKB (H3).
+- **Charging** merges every mature token cell of the subscription into one
+  change cell: typed with the token, exactly 16 data bytes (rule 6 refuses
+  anything else), holding the tokens in minus the price, and exactly the CKB in
+  (outflow 0). The charger pays the fee from its own plain cell.
+- **Verification** accepts 160-byte args only when a token is expected, and
+  112-byte args only when none is; the token type hash, `max_per_tx` 0 and every
+  other term must match. "Paid" is token units to `payTo`: outputs minus inputs,
+  counting only cells under `payTo` typed with exactly that token and with at
+  least 16 data bytes, and it must cover the prices of every token subscription
+  for that payout address and token that the transaction creates. The 32-input
+  cap and fail-closed input lookups are unchanged.
+- **Cells found** for a token subscription are those typed with the token and
+  holding at least 16 data bytes; plain CKB someone sends to the same lock holds
+  no tokens, cannot pay a price, and is left to `recoverSessions`, which sweeps by
+  the args prefix.
+- **Cancel** is the owner sweep, which already returns tokens as one token cell.
+
+### Threats
+
+| Threat | Answer |
+|---|---|
+| Charger takes more than the price in tokens | Rule 6 (error 20) |
+| Charger takes CKB from the subscription (as fee or payment) | `max_per_tx` 0: one shannon of outflow fails with error 12 |
+| Charger charges twice in a period, or splits first | Rules 2 and 3 (errors 14, 16), unchanged |
+| Charger pays the tokens to a third party | Rule 4 (error 13) |
+| Charger parks tokens in its key cell | Rule 7 (error 17) |
+| Charger types the change with a script it controls, or stuffs its data | Rules 5 and 6 (errors 18, 19) |
+| Charger burns up to the price instead of paying it | Accepted (xUDT allows outputs below inputs): the subscriber loses no more than a charge, and the creator is not paid, so the creator's check fails |
+| A payment counted twice: one token payment for two subscriptions, or a CKB payment counted for a token one | Paid is summed per asset; the owed sum covers every subscription output for that payout address and token |
+| Token issuer upgrades or mints the token | Inherent to the token (token-sessions threat 8): only plain xUDT is accepted, and the subscriber trusts the token they pay in |
+| Someone plants token or CKB cells under the subscription lock | Only adds funds; charges take mature token cells only |
+| Subscriber re-creates the cell to reset its age | As for CKB (H2): the creating transaction paid nothing in tokens, so it is refused |
