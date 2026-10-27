@@ -58,7 +58,7 @@
     "ckb-testtool": "^1.0.5",
     "tsx": "^4.23.15",
     "typescript": "~5.8.2",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "@ckb-ccc/core": "^1.23.0"
