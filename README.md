@@ -414,6 +414,23 @@ Earlier deployments (8 Oct, before errors 16–18; 13 Oct, before token sessions
 are kept in `TESTNET_LEGACY_DEPLOYMENTS`, so `recoverSessions` still sweeps
 sessions opened under them.
 
+Verify the deployed lock yourself. The deployed binary was built with rustc
+1.99.0 on the x86_64-pc-windows-gnu host (pinned in
+[`rust-toolchain.toml`](contracts/session-lock/rust-toolchain.toml)), and a
+rebuild there is byte-identical to the code on chain. On Windows, from the
+repository root:
+
+```sh
+rustup toolchain install 1.99.0-x86_64-pc-windows-gnu --profile minimal --target riscv64imac-unknown-none-elf
+(cd contracts/session-lock && cargo +1.99.0-x86_64-pc-windows-gnu build --release --locked)
+npm ci && npm run check:lock-hash
+```
+
+The last command compares the build's data hash with `codeHash` in
+`deployment/testnet.json` and fails on any difference; CI's `lock-hash` job runs
+the same three steps. Another host or rustc builds a working lock with other
+bytes, so its hash will not match.
+
 `npm run smoke:lock` runs every rule against public testnet. Run on 14 Oct 2026, on the current lock:
 
 | Step | Network said |
