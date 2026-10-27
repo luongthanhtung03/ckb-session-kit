@@ -50,10 +50,21 @@ jobs:
       REQUIRE_LOCK_TESTS: "1"
     steps:
       - uses: actions/checkout@v7
-      - run: rustup target add riscv64imac-unknown-none-elf
+      # The pinned toolchain and target from contracts/session-lock/rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain
+        working-directory: contracts/session-lock
+        run: rustup toolchain install
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            contracts/session-lock/target
+          key: session-lock-${{ runner.os }}-${{ hashFiles('contracts/session-lock/rust-toolchain.toml', 'contracts/session-lock/Cargo.lock') }}
       - name: Build the session lock
         working-directory: contracts/session-lock
-        run: cargo build --release
+        run: cargo build --release --locked
       - name: Install ckb-debugger
         run: |
           version=v1.1.1
@@ -70,3 +81,35 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx vitest run test/session-lock.test.ts
+
+  # The deployed session lock, rebuilt from this source: its data hash must equal
+  # the code hash in deployment/testnet.json. Windows, because the deployed binary
+  # was built with rustc 1.99.0 on x86_64-pc-windows-gnu, and rustc and the linker
+  # it ships write host-specific bytes (a Linux build works but differs). No target
+  # cache here: the build starts from nothing, as a verifier's would.
+  lock-hash:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.0-x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install 1.99.0-x86_64-pc-windows-gnu --profile minimal --target riscv64imac-unknown-none-elf
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: lock-hash-${{ runner.os }}-${{ hashFiles('contracts/session-lock/Cargo.lock') }}
+      - name: Build the session lock
+        working-directory: contracts/session-lock
+        run: cargo build --release --locked
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:lock-hash
