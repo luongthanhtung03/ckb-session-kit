@@ -1,0 +1,11 @@
+# The toolchain that built the session lock deployed on testnet
+# (deployment/testnet.json). Another rustc emits different code, so this stays
+# pinned while that deployment is current.
+#
+# Byte-identical to the deployed binary only on the x86_64-pc-windows-gnu host,
+# where it was built: cargo +1.99.0-x86_64-pc-windows-gnu build --release, then
+# npm run check:lock-hash. Other hosts build a working lock with other bytes.
+[toolchain]
+channel = "1.99.0"
+targets = ["riscv64imac-unknown-none-elf"]
+profile = "minimal"
