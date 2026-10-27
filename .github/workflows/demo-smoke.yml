@@ -1,0 +1,41 @@
+name: Demo smoke
+
+# The live demo, checked in a real browser every day, so a dead page shows up here
+# before a reviewer finds it. No wallet: the checks never connect, sign or send.
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Demo URL to check
+        default: https://ckb-session-kit.vercel.app
+  schedule:
+    - cron: "41 5 * * *"
+
+# Nothing here writes to the repository.
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE_URL: ${{ inputs.base_url || 'https://ckb-session-kit.vercel.app' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+          retention-days: 14

@@ -36,3 +36,7 @@ Thumbs.db
 next-env.d.ts
 *.tsbuildinfo
 .vercel/
+
+# playwright output
+e2e/test-results/
+e2e/playwright-report/
