@@ -10,6 +10,10 @@ on:
   schedule:
     - cron: "17 3 * * 1"
 
+# Nothing here writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   test:
     # Windows too: this library must behave the same wherever it is developed.
