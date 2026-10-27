@@ -486,6 +486,52 @@ The session problem has nothing to do with any one application. Anything that wa
 to act repeatedly on a user's behalf in a browser has it, so it should not be buried
 inside one application's source tree.
 
+## Related work
+
+Other CKB projects work on nearby problems. This is what each one does, as
+described in its own public post or repository, and where this kit differs.
+
+- **CKAutomata** ([forum post](https://talk.nervos.org/t/introducing-ckautomata-payment-automation-and-nervos-dao-harvest-on-ckb/10813),
+  [CKBuilder review issue](https://github.com/Nervos-Community-Catalyst/CKBuilder-projects/issues/43)):
+  one-time, scheduled and recurring CKB payments, and Nervos DAO harvest. Each
+  automation is a cell holding its rules, schedule and funds; the user signs once
+  to set it up, and an executor submits each payment when it is due, without
+  being able to change amount, recipient or schedule. The overlap is with
+  subscriptions here: both let a payer sign once and be charged later while
+  offline. The differences: here the subscription is one use of a general
+  session lock, the creator's own server holds the key and pulls each charge,
+  and `subscriptionStatus` lets that server gate content on-chain with no
+  database. This kit does not schedule payments for third-party executors and
+  does nothing with the Nervos DAO.
+- **QuotaCell** ([forum post](https://talk.nervos.org/t/quotacell-let-your-team-spend-without-handing-over-the-treasury/11002),
+  [repository](https://github.com/Ticoworld/QuotaCell)): a shared treasury
+  allowance for a team. Several delegates, each with their own key, a personal
+  limit and a per-payment ceiling, draw from one cumulative allowance that only
+  the owner can renew, enforced by an on-chain policy cell; agent spending is a
+  use it is exploring. The session lock also enforces spend limits on-chain, but
+  for a different shape: one user, one short-lived key generated and held in that
+  user's browser, a fixed recipient and a rate limit, so an app can act without
+  wallet popups. It has no notion of several delegates sharing one allowance.
+- **FiberLatch Access** ([forum post](https://talk.nervos.org/t/dis-fiberlatch-access-open-source-access-control-for-fiber-payments/10414))
+  and Fiber's **Encrypted Data Payment** pattern
+  ([docs](https://www.fiber.world/docs/build/encrypted-data-payment)): access to
+  content paid for over Fiber. FiberLatch issues and verifies signed access
+  receipts once an app has accepted a payment; in the Fiber pattern, the invoice
+  preimage is the key that decrypts the data. Pay-per-read here runs on CKB L1
+  instead: no channel to open, each payment is an ordinary transaction signed by
+  the session key inside the on-chain scope, and the server checks the payment on
+  chain (`verifyAccess`). The trade-off is that every L1 payment waits for a block
+  and pays a fee, where a Fiber payment settles off-chain once a channel is open.
+- **Wallet and login projects**: [JoyID](https://docs.joyid.dev/) (passkey
+  wallet), [Corven Connect](https://corvanide.space/connect/docs/introduction)
+  (Google and passkey sign-in with an embedded CKB wallet) and
+  [CKB KeyWay](https://github.com/officialcmg/ckb-keyway) (email login with a
+  recoverable CKB account, plus Fiber). These create or unlock the user's
+  account. This kit does not: it starts from a wallet the user already has and
+  removes the repeated signing after that, so it can sit on top of any of them.
+  A JoyID owner works today (tested by hand); the other two have not been tested
+  as session owners.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
