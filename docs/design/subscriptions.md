@@ -94,6 +94,10 @@ as `verifyAccess`.
 
 ## Library surface (proposed)
 
+As proposed before the build. The built functions differ (`chargeSubscription`
+takes `payTo`, `budget` is optional with a token, `Subscription` holds no out
+point): [`docs/API.md`](../API.md#subscriptions) is the reference.
+
 ```ts
 openSubscription(subscriber: ccc.Signer, deployment, {
   charger: string;      // the creator's charger key address
