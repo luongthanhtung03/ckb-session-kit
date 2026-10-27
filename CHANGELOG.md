@@ -3,7 +3,7 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
-## 1.0.0 (unreleased)
+## 1.0.0 (2026-10-27)
 
 First stable release. Everything below is on testnet, with a smoke script and explorer
 links in the README.
