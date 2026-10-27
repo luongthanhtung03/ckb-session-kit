@@ -38,6 +38,16 @@ Its first example application is pay-per-read: a reader unlocks articles for
 1 CKB each with no wallet prompt, and the session can only ever pay the creator.
 The problem is not specific to that application.
 
+## Install
+
+```bash
+npm install ckb-session-kit
+```
+
+[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v1.0.0, ESM, Node 20 or later
+and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
+[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
+
 ## Try it
 
 ```bash

@@ -12,7 +12,10 @@
   ],
   "license": "MIT",
   "author": "Luong Thanh Tung (https://github.com/luongthanhtung03)",
-  "repository": "github:luongthanhtung03/ckb-session-kit",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/luongthanhtung03/ckb-session-kit.git"
+  },
   "homepage": "https://github.com/luongthanhtung03/ckb-session-kit#readme",
   "bugs": "https://github.com/luongthanhtung03/ckb-session-kit/issues",
   "type": "module",
