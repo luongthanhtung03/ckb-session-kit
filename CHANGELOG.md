@@ -35,4 +35,4 @@ links in the README.
 - `docs/API.md` (a test checks every export is documented), runnable `examples/`,
   `docs/WALKTHROUGH.md`, a "Limits" section in the README.
 - Demo at ckb-session-kit.vercel.app: pay-per-read (CKB and tokens), CKB Place,
-  pay-per-minute, recovery.
+  pay-per-minute, subscriptions (CKB and tokens), recovery.
