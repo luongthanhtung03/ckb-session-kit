@@ -51,8 +51,30 @@ interface Scope {
   tokenMaxPerTx?: bigint;
 }
 
+/**
+ * Lock names. Besides the cast above:
+ * - "sibling": a second session-lock cell with its own scope (`Options.sibling`).
+ * - "session-data1", "owner-data1", "recipient-data1": the same code and args as
+ *   "session", "owner", "recipient", referenced with hash_type data1 instead of data2.
+ * - "recipient-type": the recipient's code hash and args under hash_type type.
+ * - "recipient-padded": the recipient's code and hash_type with one zero byte appended to its args.
+ */
+type LockName =
+  | "session"
+  | "owner"
+  | "key"
+  | "recipient"
+  | "stranger"
+  | "other-session"
+  | "sibling"
+  | "session-data1"
+  | "owner-data1"
+  | "recipient-data1"
+  | "recipient-type"
+  | "recipient-padded";
+
 interface Cell {
-  lock: "session" | "owner" | "key" | "recipient" | "stranger" | "other-session";
+  lock: LockName;
   capacity: bigint;
   since?: bigint;
   /** A type script on the cell that is not the session's token: one the session key controls. */
@@ -61,6 +83,10 @@ interface Cell {
   token?: bigint;
   /** Raw cell data, overriding the amount encoding. */
   data?: string;
+  /** Typed with the real Nervos DAO type script (deposit data, 8 zero bytes). Its code is not in the tx: run the session group only. */
+  dao?: boolean;
+  /** Typed with a real Type ID type script. Run the session group only. */
+  typeId?: boolean;
 }
 
 interface Options {
@@ -69,7 +95,28 @@ interface Options {
   xudt?: boolean;
   /** The recipient field holds the session key's own lock hash (a subscription paying its charger). */
   recipientIsKey?: boolean;
+  /** The owner field holds the session key's own lock hash (args a malicious app could write). */
+  ownerIsKey?: boolean;
+  /** Scope of the "sibling" session lock; its owner is the real owner unless `owner: "stranger"`. */
+  sibling?: Scope & { owner?: "owner" | "stranger" };
+  /** Witnesses, as given. */
+  witnesses?: string[];
+  /** Cells under these locks added as cell deps (never as inputs). */
+  depLocks?: LockName[];
 }
+
+/** The Nervos DAO type script (RFC 0023), as on mainnet and testnet. */
+const DAO_TYPE = {
+  codeHash: "0x82d76d1b75fe2fd9a27dfbaa65a039221a380d76c926f378d3f81cf3e7e13f2e",
+  hashType: "type",
+  args: "0x",
+} as const;
+/** A Type ID type script (RFC 0022). */
+const TYPE_ID = {
+  codeHash: "0x00000000000000000000000000000000000000000000000000545950455f4944",
+  hashType: "type",
+  args: "0x" + "ab".repeat(32),
+} as const;
 
 const XUDT_BINARY = "test/fixtures/xudt_rce";
 
@@ -101,23 +148,53 @@ function build(scope: Scope, inputs: Cell[], outputs: Cell[], opts: Options = {}
     tokenType = ccc.Script.from({ codeHash: xudt.codeHash, hashType: xudt.hashType, args: stranger.hash() });
   }
 
-  const args =
-    argsOverride ??
+  const argsOf = (sc: Scope, ownerHash: string) =>
     "0x" +
-      owner.hash().slice(2) +
-      key.hash().slice(2) +
-      u64le(scope.maxPerTx) +
-      u64le(scope.minInterval ?? 0n) +
-      (scope.tokenMaxPerTx !== undefined ? tokenType.hash().slice(2) + u128le(scope.tokenMaxPerTx) : "") +
-      (scope.recipient ? (opts.recipientIsKey ? key : recipient).hash().slice(2) : "");
+    ownerHash.slice(2) +
+    key.hash().slice(2) +
+    u64le(sc.maxPerTx) +
+    u64le(sc.minInterval ?? 0n) +
+    (sc.tokenMaxPerTx !== undefined ? tokenType.hash().slice(2) + u128le(sc.tokenMaxPerTx) : "") +
+    (sc.recipient ? (opts.recipientIsKey ? key : recipient).hash().slice(2) : "");
+  const args = argsOverride ?? argsOf(scope, (opts.ownerIsKey ? key : owner).hash());
   const session = ccc.Script.from({ codeHash: sessionCode.codeHash, hashType: sessionCode.hashType, args });
   // Same code, different scope: a different script group the test must not confuse.
   const otherSession = ccc.Script.from({ ...session, args: args.slice(0, -2) + (args.endsWith("ff") ? "00" : "ff") });
+  const sib = opts.sibling;
+  const sibling = ccc.Script.from({
+    ...session,
+    args: sib ? argsOf(sib, (sib.owner === "stranger" ? stranger : owner).hash()) : args.slice(0, -2) + "ee",
+  });
+  const rehash = (s: ccc.Script, hashType: ccc.HashTypeLike, extraArgs = "") =>
+    ccc.Script.from({ codeHash: s.codeHash, hashType, args: s.args + extraArgs });
 
-  const locks = { session, owner, key, recipient, stranger, "other-session": otherSession };
+  const locks: Record<LockName, ccc.Script> = {
+    session,
+    owner,
+    key,
+    recipient,
+    stranger,
+    "other-session": otherSession,
+    sibling,
+    "session-data1": rehash(session, "data1"),
+    "owner-data1": rehash(owner, "data1"),
+    "recipient-data1": rehash(recipient, "data1"),
+    "recipient-type": rehash(recipient, "type"),
+    "recipient-padded": rehash(recipient, recipient.hashType, "00"),
+  };
   const anyType = plain("0x7070");
-  const typeOf = (c: Cell) => (c.typed ? asTt(anyType) : c.token !== undefined ? asTt(tokenType) : undefined);
-  const dataOf = (c: Cell) => ccc.hexFrom(c.data ?? (c.token !== undefined ? "0x" + u128le(c.token) : "0x"));
+  const typeOf = (c: Cell) =>
+    c.dao
+      ? asTt(ccc.Script.from(DAO_TYPE))
+      : c.typeId
+        ? asTt(ccc.Script.from(TYPE_ID))
+        : c.typed
+          ? asTt(anyType)
+          : c.token !== undefined
+            ? asTt(tokenType)
+            : undefined;
+  const dataOf = (c: Cell) =>
+    ccc.hexFrom(c.data ?? (c.dao ? "0x" + "00".repeat(8) : c.token !== undefined ? "0x" + u128le(c.token) : "0x"));
   for (const c of inputs) {
     const input = Resource.createCellInput(resource.mockCell(asTt(locks[c.lock]), typeOf(c), dataOf(c), c.capacity));
     if (c.since !== undefined) input.since = c.since;
@@ -127,8 +204,18 @@ function build(scope: Scope, inputs: Cell[], outputs: Cell[], opts: Options = {}
     tx.outputs.push(Resource.createCellOutput(asTt(locks[c.lock]), typeOf(c), c.capacity));
     tx.outputsData.push(dataOf(c));
   }
+  for (const name of opts.depLocks ?? []) {
+    tx.cellDeps.push(Resource.createCellDep(resource.mockCell(asTt(locks[name]), undefined, "0x", 1000n * CKB), "code"));
+  }
+  if (opts.witnesses) tx.witnesses.push(...opts.witnesses.map((w) => ccc.hexFrom(w)));
+  const hashes = Object.fromEntries(Object.entries(locks).map(([k, v]) => [k, v.hash()])) as Record<LockName, ccc.Hex>;
   // ckb-testtool's `codeHash` filter actually matches the full script hash.
-  return { verifier: Verifier.from(resource, tx), sessionScriptHash: session.hash(), tokenScriptHash: tokenType.hash() };
+  return {
+    verifier: Verifier.from(resource, tx),
+    sessionScriptHash: session.hash(),
+    tokenScriptHash: tokenType.hash(),
+    hashes,
+  };
 }
 
 const ok = async (...a: Parameters<typeof build>) => {
@@ -806,6 +893,281 @@ describe.skipIf(skip)("session lock", () => {
           [tokenCell("owner", 90n * T, 343n * CKB - 1000n)],
           xudt,
         );
+      });
+    });
+  });
+
+  // Week 7: attacks by someone holding a leaked session key, or by a malicious app that
+  // builds the transactions. Each case is listed in docs/SECURITY-EVIDENCE.md,
+  // "Adversarial cases (CKB-VM)", with its outcome.
+  describe("adversarial (leaked key, malicious app)", () => {
+    /** Runs the given lock group only, so scripts whose code is absent here (DAO, Type ID) are not run. */
+    const okGroup = async (group: LockName, ...a: Parameters<typeof build>) => {
+      const { verifier, hashes } = build(...a);
+      return verifier.verifySuccess(false, { codeHash: hashes[group] });
+    };
+    const failsGroup = async (group: LockName, code: number, ...a: Parameters<typeof build>) => {
+      const { verifier, hashes } = build(...a);
+      await verifier.verifyFailure(code, false, { codeHash: hashes[group] });
+    };
+    const scoped: Scope = { ...scope100, recipient: true };
+    const S = (capacity: bigint, since?: bigint): Cell => ({ lock: "session", capacity, since });
+    const PAY: Cell[] = [{ lock: "stranger", capacity: 100n * CKB }, S(400n * CKB), KEY_CELL];
+
+    describe("since tricks against the rate limit", () => {
+      const limited: Scope = { ...scope100, minInterval: 10n };
+
+      it("rejects a relative timestamp since, even with a large value", async () => {
+        await fails(E.RATE_LIMITED, limited, [S(500n * CKB, (1n << 63n) | (1n << 62n) | 1_000_000n), KEY_CELL], PAY);
+      });
+
+      it("rejects metric bits 11 (no such metric)", async () => {
+        await fails(E.RATE_LIMITED, limited, [S(500n * CKB, (0b111n << 61n) | 10n), KEY_CELL], PAY);
+      });
+
+      it("rejects reserved bits set above a too-small value: they do not raise it", async () => {
+        await fails(E.RATE_LIMITED, limited, [S(500n * CKB, relativeBlocks(5n) | (0x1fn << 56n)), KEY_CELL], PAY);
+      });
+
+      // The lock reads the low 56 bits only. Reserved bits must be zero by consensus
+      // (RFC 0017): the node refuses such an input before any script runs.
+      it("ignores reserved bits when the value itself is old enough (the node refuses the since)", async () => {
+        await ok(limited, [S(500n * CKB, relativeBlocks(10n) | (1n << 56n)), KEY_CELL], PAY);
+      });
+
+      it("rejects one young cell merged with a mature one", async () => {
+        await fails(
+          E.RATE_LIMITED,
+          limited,
+          [S(300n * CKB, relativeBlocks(10n)), S(300n * CKB), KEY_CELL],
+          [{ lock: "stranger", capacity: 100n * CKB }, S(500n * CKB), KEY_CELL],
+        );
+      });
+
+      it("rejects a since on the key cell instead of the session cell", async () => {
+        await fails(E.RATE_LIMITED, limited, [S(500n * CKB), { ...KEY_CELL, since: relativeBlocks(10n) }], PAY);
+      });
+
+      // A malicious app could open a session no key can ever spend; the owner still can.
+      it("min_interval of 2^56 or more: session mode can never pass, the owner still sweeps", async () => {
+        const never: Scope = { ...scope100, minInterval: 1n << 56n };
+        await fails(E.RATE_LIMITED, never, [S(500n * CKB, relativeBlocks((1n << 56n) - 1n)), KEY_CELL], PAY);
+        await ok(never, [S(500n * CKB), { lock: "owner", capacity: 61n * CKB }], [{ lock: "owner", capacity: 561n * CKB }]);
+      });
+    });
+
+    describe("several session cells with different scopes in one transaction", () => {
+      // Same owner, same key, ten times the limit.
+      const loose = { sibling: { maxPerTx: 1000n * CKB } };
+
+      it("rejects moving a tight session's balance into a looser sibling session", async () => {
+        await fails(E.OUTFLOW_EXCEEDED, scope100, [S(500n * CKB), KEY_CELL], [{ lock: "sibling", capacity: 500n * CKB }, KEY_CELL], loose);
+      });
+
+      it("rejects paying a sibling session from a recipient-scoped session", async () => {
+        await fails(
+          E.RECIPIENT_NOT_ALLOWED,
+          scoped,
+          [S(500n * CKB), KEY_CELL],
+          [{ lock: "sibling", capacity: 50n * CKB }, S(450n * CKB), KEY_CELL],
+          loose,
+        );
+      });
+
+      it("accepts spending both, each within its own limit", async () => {
+        await ok(
+          scope100,
+          [S(500n * CKB), { lock: "sibling", capacity: 2000n * CKB }, KEY_CELL],
+          [{ lock: "stranger", capacity: 1000n * CKB }, S(400n * CKB), { lock: "sibling", capacity: 1100n * CKB }, KEY_CELL],
+          loose,
+        );
+      });
+
+      it("does not pool limits: the sibling's unused headroom does not cover this session", async () => {
+        await fails(
+          E.OUTFLOW_EXCEEDED,
+          scope100,
+          [S(500n * CKB), { lock: "sibling", capacity: 2000n * CKB }, KEY_CELL],
+          [{ lock: "stranger", capacity: 150n * CKB }, S(350n * CKB), { lock: "sibling", capacity: 2000n * CKB }, KEY_CELL],
+          loose,
+        );
+      });
+
+      it("does not count a sibling's growth as this session's change", async () => {
+        await fails(
+          E.OUTFLOW_EXCEEDED,
+          scope100,
+          [S(500n * CKB), { lock: "sibling", capacity: 500n * CKB }, KEY_CELL],
+          [S(350n * CKB), { lock: "sibling", capacity: 650n * CKB }, KEY_CELL],
+          loose,
+        );
+      });
+
+      // The attacker opens a session of their own (owner: the attacker) under the same code.
+      it("an attacker's own session cell, spent in its owner mode, does not authorise the victim's", async () => {
+        await fails(
+          E.NOT_AUTHORIZED,
+          scope100,
+          [S(500n * CKB), { lock: "sibling", capacity: 100n * CKB }, { lock: "stranger", capacity: 61n * CKB }],
+          [{ lock: "stranger", capacity: 661n * CKB }],
+          { sibling: { maxPerTx: 0n, owner: "stranger" } },
+        );
+      });
+    });
+
+    describe("recipient and owner lookalikes (lock hashes compare the whole script)", () => {
+      it.each([
+        ["the recipient's code and args under hash_type data1", "recipient-data1"],
+        ["the recipient's code hash and args under hash_type type", "recipient-type"],
+        ["the recipient's script with one zero byte of args padding", "recipient-padded"],
+        ["the owner's code and args under hash_type data1", "owner-data1"],
+      ] as const)("rejects paying %s", async (_, lock) => {
+        await fails(E.RECIPIENT_NOT_ALLOWED, scoped, [S(500n * CKB), KEY_CELL], [{ lock, capacity: 100n * CKB }, S(400n * CKB), KEY_CELL]);
+      });
+
+      it("an input under the owner's code and args with another hash_type does not grant owner mode", async () => {
+        await fails(E.NOT_AUTHORIZED, scope100, [S(500n * CKB), { lock: "owner-data1", capacity: 61n * CKB }], [
+          { lock: "stranger", capacity: 561n * CKB },
+        ]);
+      });
+
+      it("the same lookalike next to the key leaves the spend in session mode", async () => {
+        await fails(E.OUTFLOW_EXCEEDED, scope100, [S(500n * CKB), { lock: "owner-data1", capacity: 61n * CKB }, KEY_CELL], [
+          { lock: "stranger", capacity: 561n * CKB },
+          KEY_CELL,
+        ]);
+      });
+
+      it("an owner-locked output grants nothing: returning funds to the owner is still outflow", async () => {
+        await fails(E.OUTFLOW_EXCEEDED, scope100, [S(500n * CKB), KEY_CELL], [{ lock: "owner", capacity: 200n * CKB }, S(300n * CKB), KEY_CELL]);
+      });
+
+      it("an owner-locked cell in cell deps does not grant owner mode", async () => {
+        await fails(E.NOT_AUTHORIZED, scope100, [S(500n * CKB)], [{ lock: "stranger", capacity: 500n * CKB }], { depLocks: ["owner"] });
+      });
+
+      it("an owner-locked cell in cell deps, with the key present, leaves the spend in session mode", async () => {
+        await fails(E.OUTFLOW_EXCEEDED, scope100, [S(500n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 500n * CKB }, KEY_CELL], {
+          depLocks: ["owner", "session"],
+        });
+      });
+
+      // Args a malicious app could write when it builds the opening transaction. The lock
+      // cannot tell; openSession generates the key itself, so its args never do this.
+      it("args whose owner is the key's own lock give the key owner mode (an opening the library never builds)", async () => {
+        await ok(scope100, [S(500n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 561n * CKB }], { ownerIsKey: true });
+      });
+    });
+
+    describe("capacity overflow and zero capacity", () => {
+      it("rejects session inputs whose capacities overflow a u64 together", async () => {
+        await fails(E.CAPACITY_OVERFLOW, scope100, [S(1n << 63n), S(1n << 63n), KEY_CELL], [S(500n * CKB), KEY_CELL]);
+      });
+
+      it("rejects key-locked outputs whose capacities overflow a u64 together (recipient set)", async () => {
+        await fails(E.CAPACITY_OVERFLOW, scoped, [S(500n * CKB), KEY_CELL], [
+          S(500n * CKB),
+          { lock: "key", capacity: 1n << 63n },
+          { lock: "key", capacity: 1n << 63n },
+        ]);
+      });
+
+      it("rejects a zero-capacity payment to a third party (recipient set)", async () => {
+        await fails(E.RECIPIENT_NOT_ALLOWED, scoped, [S(500n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 0n }, S(500n * CKB), KEY_CELL]);
+      });
+
+      it("rejects a zero-capacity second change cell", async () => {
+        await fails(E.TOO_MANY_CHANGE_CELLS, scope100, [S(500n * CKB), KEY_CELL], [S(500n * CKB), S(0n), KEY_CELL]);
+      });
+
+      it("max_per_tx 0: rejects one shannon of outflow", async () => {
+        await fails(E.OUTFLOW_EXCEEDED, { maxPerTx: 0n }, [S(500n * CKB), KEY_CELL], [S(500n * CKB - 1n), KEY_CELL]);
+      });
+
+      it("max_per_tx 0: accepts a spend that moves nothing, fee paid by the key cell", async () => {
+        await ok({ maxPerTx: 0n }, [S(500n * CKB), KEY_CELL], [S(500n * CKB), { lock: "key", capacity: 61n * CKB - 1000n }]);
+      });
+    });
+
+    describe("witnesses and cell deps", () => {
+      const junk = [
+        ccc.hexFrom(ccc.WitnessArgs.from({ lock: "0x" + "01".repeat(65) }).toBytes()),
+        "0xdeadbeef",
+        "0x",
+      ];
+
+      it("ignores witnesses: a forged signature at the session input changes nothing", async () => {
+        await fails(E.OUTFLOW_EXCEEDED, scope100, [S(500n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 101n * CKB }, S(399n * CKB), KEY_CELL], {
+          witnesses: junk,
+        });
+        await fails(E.NOT_AUTHORIZED, scope100, [S(500n * CKB)], [{ lock: "stranger", capacity: 500n * CKB }], { witnesses: junk });
+      });
+
+      it("the same binary under hash_type data1 (VM v1) enforces the same limit", async () => {
+        const v1 = (c: bigint, since?: bigint): Cell => ({ lock: "session-data1", capacity: c, since });
+        await okGroup("session-data1", scope100, [v1(500n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 100n * CKB }, v1(400n * CKB), KEY_CELL]);
+        await failsGroup("session-data1", E.OUTFLOW_EXCEEDED, scope100, [v1(500n * CKB), KEY_CELL], [
+          { lock: "stranger", capacity: 101n * CKB },
+          v1(399n * CKB),
+          KEY_CELL,
+        ]);
+      });
+
+      it("change under the same code and args but hash_type data2 is not change for a data1 session", async () => {
+        await failsGroup("session-data1", E.OUTFLOW_EXCEEDED, scope100, [{ lock: "session-data1", capacity: 500n * CKB }, KEY_CELL], [
+          S(500n * CKB),
+          KEY_CELL,
+        ]);
+      });
+    });
+
+    // The real DAO and Type ID scripts are not in these transactions, so only the
+    // session lock's group runs; every outcome below is the session lock's own.
+    describe("Nervos DAO deposits and Type ID cells", () => {
+      it("rejects change turned into a DAO deposit", async () => {
+        await fails(E.TYPED_CELL, scope100, [S(500n * CKB), KEY_CELL], [{ ...S(500n * CKB), dao: true }, KEY_CELL]);
+      });
+
+      it("rejects paying the recipient in a DAO deposit (recipient set)", async () => {
+        await fails(E.TYPED_CELL, scoped, [S(500n * CKB), KEY_CELL], [{ lock: "recipient", capacity: 100n * CKB, dao: true }, S(400n * CKB), KEY_CELL]);
+      });
+
+      it("rejects returning funds to the owner as a DAO deposit (recipient set)", async () => {
+        await fails(E.TYPED_CELL, scoped, [S(500n * CKB), KEY_CELL], [{ lock: "owner", capacity: 100n * CKB, dao: true }, S(400n * CKB), KEY_CELL]);
+      });
+
+      it("no recipient: a DAO deposit for a third party is a payment like any other, capped by max_per_tx", async () => {
+        await okGroup("session", scope100, [S(500n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 100n * CKB, dao: true }, S(400n * CKB), KEY_CELL]);
+        await fails(E.OUTFLOW_EXCEEDED, scope100, [S(500n * CKB), KEY_CELL], [
+          { lock: "stranger", capacity: 101n * CKB, dao: true },
+          S(399n * CKB),
+          KEY_CELL,
+        ]);
+      });
+
+      it("a session cell deposited in the DAO: the key cannot withdraw it, the owner can", async () => {
+        const deposit: Cell = { ...S(500n * CKB), dao: true };
+        await fails(E.TYPED_CELL, scope100, [deposit, KEY_CELL], [{ lock: "stranger", capacity: 100n * CKB }, S(400n * CKB), KEY_CELL]);
+        await okGroup("session", scope100, [deposit, { lock: "owner", capacity: 61n * CKB }], [{ lock: "owner", capacity: 561n * CKB }]);
+      });
+
+      it("rejects change given a real Type ID type script (the CKB-VM twin of testnet step 8)", async () => {
+        await fails(E.TYPED_CELL, scoped, [S(500n * CKB), KEY_CELL], [{ ...S(500n * CKB), typeId: true }, { lock: "key", capacity: 61n * CKB - 1000n }]);
+      });
+
+      it("rejects paying the recipient in a Type ID cell (recipient set)", async () => {
+        await fails(E.TYPED_CELL, scoped, [S(500n * CKB), KEY_CELL], [{ lock: "recipient", capacity: 100n * CKB, typeId: true }, S(400n * CKB), KEY_CELL]);
+      });
+
+      it("rejects spending a session cell that carries a Type ID", async () => {
+        await fails(E.TYPED_CELL, scope100, [{ ...S(500n * CKB), typeId: true }, KEY_CELL], PAY);
+      });
+    });
+
+    describe("oversized args", () => {
+      // The lock reads its script into a 256-byte buffer; anything larger is refused, not overrun.
+      it.each([204, 1000])("rejects %i-byte args without reading past its buffer", async (n) => {
+        await fails(E.BAD_ARGS, scope100, [S(500n * CKB), KEY_CELL], [KEY_CELL], { argsOverride: "0x" + "00".repeat(n) });
       });
     });
   });

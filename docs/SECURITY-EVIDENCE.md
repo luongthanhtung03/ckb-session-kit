@@ -26,7 +26,7 @@ Labels used below:
 | Record | [`deployment/testnet.json`](../deployment/testnet.json) |
 | Source | [`contracts/session-lock/src/main.rs`](../contracts/session-lock/src/main.rs), last changed in commit `ba1fa58` (14 Oct 2026); deployment recorded in `46c71dc`. The file is unchanged from `ba1fa58` to the commit this report ships in |
 | Build | rustc 1.99.0, host `x86_64-pc-windows-gnu`, pinned in [`rust-toolchain.toml`](../contracts/session-lock/rust-toolchain.toml). sha256 of the binary `b08c5bfc4072440d72ea309f77af1418686ca03446558ba8c112bfe70ed09429` |
-| CKB-VM tests | [`test/session-lock.test.ts`](../test/session-lock.test.ts), 74 tests, all passing on 28 Oct 2026 against the binary above |
+| CKB-VM tests | [`test/session-lock.test.ts`](../test/session-lock.test.ts), 116 tests, all passing on 28 Oct 2026 against the binary above |
 
 Rebuild and compare with the deployed code (Windows, repository root):
 
@@ -323,6 +323,109 @@ On testnet, the recovery run's decoy cell (malformed args) is the one instance
 of error 10's subject on chain: it is live and has never been spent, but no
 transaction spending it was sent, so there is no node rejection for it.
 
+### Adversarial cases (CKB-VM)
+
+Attacks by someone holding a leaked session key, or by a malicious app that
+builds the transactions, beyond the rule-by-rule tests above. All are **CKB-VM
+only**: the deployed binary in ckb-debugger, none sent to testnet. Test names
+are under `adversarial (leaked key, malicious app)` in
+[`test/session-lock.test.ts`](../test/session-lock.test.ts); run them with
+`npx vitest run test/session-lock.test.ts -t "adversarial"`. Added 28 Oct 2026;
+no case found a fault in the lock, and the lock source is unchanged.
+
+In the harness, "sibling" is a second session-lock cell with its own args (same
+code), and the lookalike locks share code hash and args with the real one but
+differ in `hash_type` or args bytes. The DAO and Type ID cases use the real
+type scripts (DAO code hash `0x82d76d1b…3f2e`, `hash_type: type`; Type ID
+`0x…545950455f4944`); their code is not in the mocked transaction, so only the
+session lock's group is run, and every outcome is the session lock's own.
+
+**`since` tricks against the rate limit** (`min_interval` 10)
+
+| Attack | Test | Outcome |
+|---|---|---|
+| Relative timestamp `since` with a large value | "rejects a relative timestamp since, even with a large value" | refused, 14 |
+| Metric bits `11` (no such metric) | "rejects metric bits 11 (no such metric)" | refused, 14 |
+| Reserved bits 56..60 set over a value below the interval | "rejects reserved bits set above a too-small value: they do not raise it" | refused, 14 |
+| Reserved bit set over a value that is old enough | "ignores reserved bits when the value itself is old enough (the node refuses the since)" | accepted by the lock, which reads the low 56 bits; consensus (RFC 0017) requires reserved bits to be zero, so the node refuses the input before scripts run. Not sent to testnet |
+| A young cell merged with a mature one | "rejects one young cell merged with a mature one" | refused, 14 |
+| `since` on the key cell instead of the session cell | "rejects a since on the key cell instead of the session cell" | refused, 14 |
+| Args with `min_interval` of 2^56 or more (malicious app) | "min_interval of 2^56 or more: session mode can never pass, the owner still sweeps" | session spend refused, 14; owner sweep accepted. `openSession` refuses such an interval |
+
+**Several session cells with different scopes in one transaction**
+
+| Attack | Test | Outcome |
+|---|---|---|
+| Move a 100 CKB-limit session's balance into a sibling with a 1,000 CKB limit | "rejects moving a tight session's balance into a looser sibling session" | refused, 12 (the move is outflow) |
+| Same, from a recipient-scoped session | "rejects paying a sibling session from a recipient-scoped session" | refused, 13 |
+| Spend both, each within its own limit | "accepts spending both, each within its own limit" | accepted; each group checks its own scope |
+| Use the sibling's unused headroom to cover this session | "does not pool limits: the sibling's unused headroom does not cover this session" | refused, 12 |
+| Count the sibling's growth as change | "does not count a sibling's growth as this session's change" | refused, 12 |
+| An attacker's own session cell (owner: the attacker), spent in its owner mode next to the victim's | "an attacker's own session cell, spent in its owner mode, does not authorise the victim's" | refused, 11 |
+
+**Recipient and owner lookalikes.** Lock hashes cover code hash, `hash_type`
+and args, so a script that differs in any byte is a different lock.
+
+| Attack | Test | Outcome |
+|---|---|---|
+| Pay the recipient's code and args under `hash_type` data1 | "rejects paying the recipient's code and args under hash_type data1" | refused, 13 |
+| Pay the recipient's code hash and args under `hash_type` type | "rejects paying the recipient's code hash and args under hash_type type" | refused, 13 |
+| Pay the recipient's script with one zero byte of args padding | "rejects paying the recipient's script with one zero byte of args padding" | refused, 13 |
+| Pay the owner's code and args under `hash_type` data1 | "rejects paying the owner's code and args under hash_type data1" | refused, 13 |
+| Input under the owner's code and args with another `hash_type`, no key | "an input under the owner's code and args with another hash_type does not grant owner mode" | refused, 11 |
+| Same lookalike input next to the key | "the same lookalike next to the key leaves the spend in session mode" | refused, 12 |
+| An owner-locked output, no owner input | "an owner-locked output grants nothing: returning funds to the owner is still outflow" | refused, 12 |
+| An owner-locked cell in cell deps, no key | "an owner-locked cell in cell deps does not grant owner mode" | refused, 11 (the lock reads inputs only) |
+| Owner-locked and session-locked cells in cell deps, key present | "an owner-locked cell in cell deps, with the key present, leaves the spend in session mode" | refused, 12 |
+| Args whose owner field is the key's own lock hash (malicious app) | "args whose owner is the key's own lock give the key owner mode (an opening the library never builds)" | accepted: the key has owner mode. The lock cannot tell who the owner is; see section 5 |
+
+**Capacity overflow and zero capacity**
+
+| Attack | Test | Outcome |
+|---|---|---|
+| Session inputs whose capacities overflow a u64 | "rejects session inputs whose capacities overflow a u64 together" | refused, 15 |
+| Key-locked outputs whose capacities overflow a u64 (recipient set) | "rejects key-locked outputs whose capacities overflow a u64 together (recipient set)" | refused, 15 |
+| A zero-capacity payment to a third party (recipient set) | "rejects a zero-capacity payment to a third party (recipient set)" | refused, 13 |
+| A zero-capacity second change cell | "rejects a zero-capacity second change cell" | refused, 16 |
+| `max_per_tx` 0, one shannon out | "max_per_tx 0: rejects one shannon of outflow" | refused, 12 |
+| `max_per_tx` 0, nothing out, fee from the key cell | "max_per_tx 0: accepts a spend that moves nothing, fee paid by the key cell" | accepted |
+
+Capacities this large cannot exist on chain (the total supply is below 2^64
+shannons, and the node checks capacity sums itself); the cases show the lock
+fails closed if they did.
+
+**Witnesses and cell deps**
+
+| Attack | Test | Outcome |
+|---|---|---|
+| A forged 65-byte signature in a `WitnessArgs` at the session input, plus junk witnesses | "ignores witnesses: a forged signature at the session input changes nothing" | refused, 12 over the limit; refused, 11 without the key. The lock reads no witness; signatures are checked by the owner's and key's own locks |
+| The same binary referenced with `hash_type` data1 (CKB-VM version 1) | "the same binary under hash_type data1 (VM v1) enforces the same limit" | at the limit accepted, one shannon over refused, 12 |
+| Change under the same code and args with `hash_type` data2, for a data1 session | "change under the same code and args but hash_type data2 is not change for a data1 session" | refused, 12 |
+| Swap the lock's code dep for other code | no test | The session lock is referenced by data hash (`data2`), so only a cell whose data hashes to the code hash can run as it; the node refuses a transaction whose script code is not in its deps. ckb-debugger stops with an internal error in this case rather than a script code, so it is not a useful test |
+
+**Nervos DAO deposits and Type ID cells**
+
+| Attack | Test | Outcome |
+|---|---|---|
+| Turn the change into a DAO deposit | "rejects change turned into a DAO deposit" | refused, 18 |
+| Pay the recipient in a DAO deposit (recipient set) | "rejects paying the recipient in a DAO deposit (recipient set)" | refused, 18 |
+| Return funds to the owner as a DAO deposit (recipient set) | "rejects returning funds to the owner as a DAO deposit (recipient set)" | refused, 18 |
+| No recipient: a DAO deposit for a third party | "no recipient: a DAO deposit for a third party is a payment like any other, capped by max_per_tx" | accepted at 100 CKB, refused at 100 CKB plus 1 shannon, 12 |
+| A session cell the owner deposited in the DAO | "a session cell deposited in the DAO: the key cannot withdraw it, the owner can" | session spend refused, 18; owner spend accepted |
+| Change given a real Type ID type script | "rejects change given a real Type ID type script (the CKB-VM twin of testnet step 8)" | refused, 18 |
+| Pay the recipient in a Type ID cell (recipient set) | "rejects paying the recipient in a Type ID cell (recipient set)" | refused, 18 |
+| Spend a session cell that carries a Type ID | "rejects spending a session cell that carries a Type ID" | refused, 18 |
+
+A Type ID collision (two live cells with the same Type ID) is refused by
+consensus, and the session lock is referenced by data hash, not by a Type ID, so
+no Type ID collision can change which code runs as it.
+
+**Oversized args**
+
+| Attack | Test | Outcome |
+|---|---|---|
+| 204-byte and 1,000-byte args, past the 256-byte script buffer | "rejects 204-byte args without reading past its buffer"; "rejects 1000-byte args without reading past its buffer" | refused, 10 |
+
 ## 4. Summary
 
 | Rule | Code | Testnet, current | Raw node text logged | CKB-VM |
@@ -336,6 +439,7 @@ transaction spending it was sent, so there is no node rejection for it.
 | No type scripts | 18 | rejected | yes (first 220 characters) | yes |
 | Owner sweep, recovery, cancel | - | accepted (with decoy, keys lost) | - | yes |
 | Args, authorisation, overflow, token data | 10, 11, 15, 19 | not run | - | yes |
+| Adversarial cases (section 3, last part) | 10 to 18 | not run | - | yes, 42 tests |
 | Expiry | - | not enforceable on chain | - | - |
 
 The 8 Oct deployment's lock smoke
@@ -359,6 +463,12 @@ Consistent with the README's [Limits](../README.md#limits):
   paying a higher fee. No testnet run here races a sweep.
 - **The key cell is not recoverable without the key.** Recovery sweeps every
   session cell; the key cell (the fee budget) needs the key.
+- **The app that opens a session chooses its args.** The lock enforces the args
+  it is given and cannot tell whose the owner hash is: args naming the key's own
+  lock as owner give the key owner mode (see the adversarial cases). `openSession`
+  takes the owner from the wallet that signs and the key from the session
+  (a fresh key from `createSession`), so it does not build such args, but a malicious app that builds its own opening transaction could, and
+  the owner's wallet shows only an output under the session lock.
 - **Owner locks must need a signature.** The lock treats any input under the
   owner's lock as the owner's consent; an anyone-can-pay owner lock would give
   anyone owner mode. `openSession` refuses one; the lock itself cannot tell.

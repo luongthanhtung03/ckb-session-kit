@@ -374,7 +374,7 @@ Rust. A cell under it can be spent two ways:
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
 cryptography: **7.6 KB, no allocator, no C, 15,651 cycles per run** — about 0.9% of
-a session spend (29,031 on a token spend, 1.7%). 74 tests run it in the real CKB-VM, most asserting a specific
+a session spend (29,031 on a token spend, 1.7%). 116 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has
