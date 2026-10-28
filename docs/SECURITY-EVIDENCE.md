@@ -204,7 +204,10 @@ Error codes are from `enum Error` in `main.rs`. Each test name is in
   party from a recipient-scoped session. The library refuses such a payment
   before signing (`spendInSession` checks the scope), so the network never sees
   it; that browser-side refusal was shown on testnet only on the 8 Oct
-  deployment (README, pay-per-read run of 9 Oct).
+  deployment (README, pay-per-read run of 9 Oct). A testnet step that sends
+  such a payment by hand, expects error 13 and logs the node's full answer is
+  in the lock smoke behind a flag, not yet run:
+  `FUNDER_KEY=0x... npm run smoke:lock -- --third-party` (step 8b).
 - **Accepted, recipient-scoped, current.** Payments that went only to the
   recipient: token payments
   [`0xa8d1d98f…4a88`](https://testnet.explorer.nervos.org/transaction/0xa8d1d98f8fd5b22cab9fd989b58a39995171e7099b1df5df46292c6ca8f94a88)

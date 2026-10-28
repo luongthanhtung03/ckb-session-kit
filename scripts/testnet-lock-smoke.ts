@@ -11,9 +11,12 @@
  *  6. Session splits its change into two cells       → rejected (16).
  *  7. Recipient-scoped cell, key cell grows           → rejected (17).
  *  8. Change given a type script (a valid Type ID)    → rejected (18).
+ *  8b. (only with --third-party) Recipient-scoped cell pays a third party, within
+ *     max_per_tx → rejected (13). Logs the node's full answer.
  *  9. Owner sweeps everything back                  → accepted, ignoring the scope.
  *
  * Usage: FUNDER_KEY=0x... npm run smoke:lock
+ *        FUNDER_KEY=0x... npm run smoke:lock -- --third-party   (adds step 8b)
  */
 import { ccc } from "@ckb-ccc/core";
 import { readFileSync } from "node:fs";
@@ -30,6 +33,8 @@ import {
 const CKB = 100_000_000n;
 const MAX = 100n * CKB;
 const INTERVAL = 3n;
+/** Step 8b: error 13 on testnet. Off by default; it is one more transaction sent (and refused). */
+const THIRD_PARTY = process.argv.includes("--third-party");
 const explorer = (h: string) => `https://testnet.explorer.nervos.org/transaction/${h}`;
 const deployment = JSON.parse(readFileSync("deployment/testnet.json", "utf8")) as SessionLockDeployment;
 
@@ -194,6 +199,46 @@ async function main(): Promise<void> {
     18,
     "typed change",
   );
+
+  if (THIRD_PARTY) {
+    // The scoped cell's recipient is the owner. A fresh key's lock is a third party:
+    // nobody else holds it, and the key is printed should the network ever accept.
+    const thirdKey = ccc.hexFrom(crypto.getRandomValues(new Uint8Array(32)));
+    const thirdLock = (await new ccc.SignerCkbPrivateKey(client, thirdKey).getRecommendedAddressObj()).script;
+    console.log("8b. recipient-scoped cell (recipient: the owner) pays 100 CKB to a third party");
+    console.log(`  third party lock hash: ${thirdLock.hash()}`);
+    console.log(`  allowed recipient    : ${ownerLock.hash()}`);
+    let thirdHash: ccc.Hex | undefined;
+    try {
+      // Built by hand: spendInSession would refuse this before signing, so the node would never see it.
+      // 100 CKB is exactly max_per_tx, so only the recipient rule can object.
+      thirdHash = await keySpend(
+        [at(setupHash, 3), keyIn],
+        [
+          { lock: thirdLock, capacity: MAX },
+          { lock: scopedLock, capacity: 300n * CKB - MAX },
+          { lock: keyLock, capacity: 0n },
+        ],
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const err = sessionLockErrorFrom(msg);
+      // The full answer, unshortened and on separate lines, before any judgement.
+      console.log("  node, full text:");
+      for (const line of msg.split(/\r?\n/)) console.log(`    ${line}`);
+      const extra = e && typeof e === "object" ? (e as Record<string, unknown>) : {};
+      for (const field of ["code", "data", "outPoint", "source", "errorCode"]) {
+        if (extra[field] !== undefined) console.log(`  rpc ${field}: ${JSON.stringify(extra[field], (_, v) => (typeof v === "bigint" ? v.toString() : v))}`);
+      }
+      if (err?.code !== 13) throw new Error(`third-party payment: expected code 13, node said:\n${msg}`);
+      console.log(`  ✓ rejected by the network: code ${err.code} (${err.meaning})`);
+    }
+    if (thirdHash) {
+      throw new Error(
+        `third-party payment: the network ACCEPTED it (${explorer(thirdHash)}); third party key ${thirdKey}`,
+      );
+    }
+  }
 
   console.log(`9. owner sweeps the three session cells and the key cell back`);
   const sweep = ccc.Transaction.from({
