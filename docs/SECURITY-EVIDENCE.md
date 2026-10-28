@@ -76,7 +76,9 @@ Client request error TransactionFailedToVerify: Verification failed Script(Trans
 and the number after `error code` is the session lock's code. In these runs the
 lock smoke kept the first 220 characters of the node's text, and the token and
 subscription smokes logged only the parsed code. All four scripts now print the
-node's full text, so a new run records it in full.
+node's full text; the lock smoke's 28 Oct run
+([`evidence/2026-10-28-smoke-lock.log`](evidence/2026-10-28-smoke-lock.log))
+has it in full for errors 12, 13, 14, 16, 17 and 18.
 
 ## 3. Rules and evidence
 
@@ -200,14 +202,16 @@ Error codes are from `enum Error` in `main.rs`. Each test name is in
     `rejected by the network: code 17 (the key cell may not grow in a session spend)`,
     node text `... source: Inputs[0].Lock, cause: ValidationFailure: see error code 17 ...`
     ([log](evidence/2026-10-14-smoke-lock.log), step 7).
-- **Status, error 13: CKB-VM only.** No testnet run sends a payment to a third
-  party from a recipient-scoped session. The library refuses such a payment
-  before signing (`spendInSession` checks the scope), so the network never sees
-  it; that browser-side refusal was shown on testnet only on the 8 Oct
-  deployment (README, pay-per-read run of 9 Oct). A testnet step that sends
-  such a payment by hand, expects error 13 and logs the node's full answer is
-  in the lock smoke behind a flag, not yet run:
-  `FUNDER_KEY=0x... npm run smoke:lock -- --third-party` (step 8b).
+- **Rejected on testnet, current (error 13).** 28 Oct 2026: a recipient-scoped
+  cell (recipient: the owner) pays 100 CKB, exactly `max_per_tx`, to a fresh key's
+  lock, so only the recipient rule can object. The transaction is built by hand,
+  because `spendInSession` refuses it before signing. The node's full answer:
+  `TransactionFailedToVerify ... source: Inputs[0].Lock, cause: ValidationFailure: see error code 13 ...`,
+  RPC code -302, `errorCode: 13`
+  ([log](evidence/2026-10-28-smoke-lock.log), step 8b). The same run repeated
+  errors 12, 14, 16, 17 and 18 with the node's full text and swept every cell back:
+  [`0xa3e43a1e…d144`](https://testnet.explorer.nervos.org/transaction/0xa3e43a1e7ef05712dc7d97047027ea14bc73702be1e66e4df6b7d0b1f704d144).
+  Reproduce: `FUNDER_KEY=0x... npm run smoke:lock -- --third-party`.
 - **Accepted, recipient-scoped, current.** Payments that went only to the
   recipient: token payments
   [`0xa8d1d98f…4a88`](https://testnet.explorer.nervos.org/transaction/0xa8d1d98f8fd5b22cab9fd989b58a39995171e7099b1df5df46292c6ca8f94a88)
@@ -433,13 +437,13 @@ no Type ID collision can change which code runs as it.
 
 | Rule | Code | Testnet, current | Raw node text logged | CKB-VM |
 |---|---|---|---|---|
-| Spending limit (CKB) | 12 | rejected and accepted | yes (first 220 characters) | yes |
+| Spending limit (CKB) | 12 | rejected and accepted | yes (full, 28 Oct run) | yes |
 | Spending limit (token) | 20 | rejected and accepted | no, parsed code only | yes |
-| Rate limit | 14 | rejected and accepted | yes (first 220 characters) | yes |
-| No splitting | 16 | rejected | yes (first 220 characters) | yes |
-| Recipient: key cell may not grow | 17 | rejected | yes (first 220 characters) | yes |
-| Recipient: pay only the recipient | 13 | accepted only (no third-party attempt) | - | yes |
-| No type scripts | 18 | rejected | yes (first 220 characters) | yes |
+| Rate limit | 14 | rejected and accepted | yes (full, 28 Oct run) | yes |
+| No splitting | 16 | rejected | yes (full, 28 Oct run) | yes |
+| Recipient: key cell may not grow | 17 | rejected | yes (full, 28 Oct run) | yes |
+| Recipient: pay only the recipient | 13 | rejected and accepted | yes (full, 28 Oct run) | yes |
+| No type scripts | 18 | rejected | yes (full, 28 Oct run) | yes |
 | Owner sweep, recovery, cancel | - | accepted (with decoy, keys lost) | - | yes |
 | Args, authorisation, overflow, token data | 10, 11, 15, 19 | not run | - | yes |
 | Adversarial cases (section 3, last part) | 10 to 18 | not run | - | yes, 42 tests |
@@ -475,10 +479,9 @@ Consistent with the README's [Limits](../README.md#limits):
 - **Owner locks must need a signature.** The lock treats any input under the
   owner's lock as the owner's consent; an anyone-can-pay owner lock would give
   anyone owner mode. `openSession` refuses one; the lock itself cannot tell.
-- **Gaps in this evidence.** Error 13 (third-party payment) and errors 10, 11,
-  15 and 19 have not been sent to testnet; the token limit's rejection has no raw
-  node text; the other rejections keep only the first 220 characters of the
-  node's text. A new run of the smoke scripts records the full text.
+- **Gaps in this evidence.** Errors 10, 11, 15 and 19 have not been sent to
+  testnet; the token limit's rejection (20) has no raw node text. The lock smoke's
+  rejections have the node's full text since the 28 Oct run.
 
 ## 6. Re-checking this report
 

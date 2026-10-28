@@ -1,0 +1,34 @@
+1. owner funds three session cells (400, 400, 300 CKB) and the key cell (200 CKB)
+  https://testnet.explorer.nervos.org/transaction/0x6f47708384ceccad1d19f7307dc8f487ebd54db65a54a511197a59b24822c710
+2. session spends exactly max_per_tx (100 CKB), no owner signature
+  ✓ accepted: https://testnet.explorer.nervos.org/transaction/0x5081db80211a35fe7ee3a7aee1ab51e1300ffd14a37cfbfe29fc0ac17cf6e9af
+3. session tries 100 CKB + 1 shannon
+  ✓ rejected by the network: code 12 (outflow exceeds max_per_tx)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 12 on page https://nervosnetwork.github.io/ckb-script-error-codes/by-data-hash/ab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce.html#12 })
+4. rate-limited cell (min_interval 3 blocks), spent with no since
+  ✓ rejected by the network: code 14 (rate limited: input too young)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 14 on page https://nervosnetwork.github.io/ckb-script-error-codes/by-data-hash/ab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce.html#14 })
+5. same cell with since = 3 relative blocks (waits for maturity)
+  ✓ accepted once mature: https://testnet.explorer.nervos.org/transaction/0x91a9aea1cde29d43b432ee1ce40c8be77d2430d100685df6dc9fb48f4ccafbfb
+6. session splits its change into two cells (outflow 0)
+  ✓ rejected by the network: code 16 (too many change cells: a session spend may not split the session cell)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 16 on page https://nervosnetwork.github.io/ckb-script-error-codes/by-data-hash/ab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce.html#16 })
+7. recipient-scoped cell: 50 CKB moved into the key cell
+  ✓ rejected by the network: code 17 (the key cell may not grow in a session spend)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 17 on page https://nervosnetwork.github.io/ckb-script-error-codes/by-data-hash/ab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce.html#17 })
+8. change given a type script (a valid Type ID, so only the session lock objects)
+  ✓ rejected by the network: code 18 (session cells and their change may not carry a type script (in a token session: none but the token))
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 18 on page https://nervosnetwork.github.io/ckb-script-error-codes/by-data-hash/ab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce.html#18 })
+8b. recipient-scoped cell (recipient: the owner) pays 100 CKB to a third party
+  third party lock hash: 0x665808fa9ebeff46f0f2509e11739edd53c59ba6702c4d89ea10be29df7b528f
+  allowed recipient    : 0x827952323b4decaec3ed232e5e3c8948b5722015c2e86c5d907a2f3bf2ee7963
+  node, full text:
+    Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 13 on page https://nervosnetwork.github.io/ckb-script-error-codes/by-data-hash/ab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce.html#13 })
+  rpc code: -302
+  rpc data: "Verification(Error { kind: Script, inner: TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 13 on page https://nervosnetwork.github.io/ckb-script-error-codes/by-data-hash/ab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce.html#13 } })"
+  rpc source: "lock"
+  rpc errorCode: 13
+  ✓ rejected by the network: code 13 (recipient not allowed)
+9. owner sweeps the three session cells and the key cell back
+  ✓ accepted: https://testnet.explorer.nervos.org/transaction/0xa3e43a1e7ef05712dc7d97047027ea14bc73702be1e66e4df6b7d0b1f704d144
+done — every rule held on the real network.
