@@ -131,6 +131,7 @@ async function main(): Promise<void> {
     const err = sessionLockErrorFrom(msg);
     if (err?.code !== 20) throw new Error(`expected code 20, node said:\n${msg}`);
     console.log(`  ✓ 11 units: rejected by the network, code 20 (${err.meaning})`);
+    console.log(`    node: ${msg.replace(/\s+/g, " ")}`);
   }
 
   // 5. Close: the tokens come back.

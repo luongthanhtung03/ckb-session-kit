@@ -50,7 +50,7 @@ async function expectRejected(send: () => Promise<unknown>, code: number, label:
     const err = sessionLockErrorFrom(msg);
     if (err?.code !== code) throw new Error(`${label}: expected code ${code}, node said:\n${msg}`);
     console.log(`  ✓ rejected by the network: code ${err.code} (${err.meaning})`);
-    console.log(`    node: ${msg.slice(0, 220)}…`);
+    console.log(`    node: ${msg.replace(/\s+/g, " ")}`);
     return;
   }
   throw new Error(`${label}: the network ACCEPTED a spend it should have rejected`);

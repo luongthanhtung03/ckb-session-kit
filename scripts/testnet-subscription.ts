@@ -211,6 +211,7 @@ async function earlyCharge(charger: ccc.Signer, sub: Parameters<typeof findSubsc
     if (err?.code !== 14) throw e;
     console.log(`early: a charge 1 block after opening, period ${PERIOD}
   ✓ refused by the node: error 14, ${err.meaning}`);
+    console.log(`    node: ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ")}`);
   }
 }
 

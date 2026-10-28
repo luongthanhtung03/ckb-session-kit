@@ -256,6 +256,7 @@ async function handCharge(
     const err = sessionLockErrorFrom(e instanceof Error ? e.message : String(e), [0]);
     if (err?.code !== o.code) throw e;
     console.log(`${o.what}\n  ✓ refused by the node: error ${o.code}, ${err.meaning}`);
+    console.log(`    node: ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ")}`);
   }
 }
 
