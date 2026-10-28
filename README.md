@@ -441,7 +441,13 @@ The last command compares the build's data hash with `codeHash` in
 the same three steps. Another host or rustc builds a working lock with other
 bytes, so its hash will not match.
 
-`npm run smoke:lock` runs every rule against public testnet. Run on 14 Oct 2026, on the current lock:
+[`docs/SECURITY-EVIDENCE.md`](docs/SECURITY-EVIDENCE.md) collects the evidence
+for each rule and error code in one report: the check in the script, the accepted
+transactions, the node's rejection text, the CKB-VM tests, and which rules have
+only been shown in CKB-VM tests. `npm run evidence` re-checks its logs against
+testnet, read-only.
+
+`npm run smoke:lock` runs the rules in the table below against public testnet. Run on 14 Oct 2026, on the current lock:
 
 | Step | Network said |
 |---|---|
@@ -475,6 +481,8 @@ that an over-limit spend is refused. Run on 8 Oct 2026:
 ## Limits
 
 What this does not do, in one place. Each is stated where it applies above.
+What has and has not been shown on testnet is in
+[`docs/SECURITY-EVIDENCE.md`](docs/SECURITY-EVIDENCE.md#5-not-covered-and-limits).
 
 - **Testnet only, not audited.** The lock has had community and adversarial
   reviews, each finding fixed with a regression test, but no external audit.
