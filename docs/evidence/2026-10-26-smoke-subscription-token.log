@@ -1,0 +1,28 @@
+
+> ckb-session-kit@1.0.0 smoke:subscription-token
+> tsx scripts/testnet-subscription-token.ts
+
+charger: ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfrks0ww06uv9pgqzwuajnq694mjncvctgqcjrs7
+payout : ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vqfrks0ww06uv9pgqzwuajnq694mjncvctg0t589g
+token  : demo xUDT, type hash 0xc02ed0f9904248de2f27e951469609478ea870b01618eade28171db3ae436cc7
+setup: cancel a subscription left open by an earlier run
+  https://testnet.explorer.nervos.org/transaction/0xb6a51e929aab3cd075ec8b48a8d35108cf6db786977ef588e7d9a4e86e9ebcaf
+open: first period paid now (2 units), 4 units in the cell, period 10 blocks (one subscriber signature)
+  https://testnet.explorer.nervos.org/transaction/0xc168cc4f0122a0c84add3449a261dd400defacffc59934d2c906da60d10353ba
+verify: creator accepts terms, token, first payment and account (paid through block 22872589, 2 charges left) · another account refused · a CKB check refused (a subscription cell carries no type and no data)
+early: a charge 1 block after opening, period 10
+  ✓ refused by the node: error 14, rate limited: input too young
+leak: a mature charge of the price that also moves 1 shannon of CKB
+  ✓ refused by the node: error 12, outflow exceeds max_per_tx
+charge 1: 2 units to the creator's token cell, charger key only, no CKB out
+  ✓ https://testnet.explorer.nervos.org/transaction/0x7aa3872fec7e32e5b1f4e719d034a0d7310f717aa128642a1bfb2d252efceb6d
+  ✓ creator: paid through block 22872602; the cell still holds 283 CKB
+charge 2: 2 units to the creator's token cell, charger key only, no CKB out
+  ✓ https://testnet.explorer.nervos.org/transaction/0x20ee3154a4db0d375f3f444e48fe9d4e47587abb2df0111c7979c0d03823335c
+  ✓ creator: paid through block 22872616; the cell still holds 283 CKB
+  payout token balance 6 → 12 units
+dry: third charge
+  ✓ refused: the subscription holds 0 token units: not enough for a price of 2
+cancel: the subscriber sweeps the cell back (one signature, no creator)
+  ✓ https://testnet.explorer.nervos.org/transaction/0x9121f5f3bcd7614a2c191ec99550bf57f56117733cdd670a3e2fb300f9c05f51 · 283 CKB and 0 units back
+done: the first period in tokens at opening, two token charges a period apart with no CKB out, an early charge and a CKB leak refused by the network, cancel by the subscriber alone

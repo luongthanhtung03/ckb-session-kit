@@ -1,0 +1,13 @@
+
+> ckb-session-kit@0.0.1 smoke:token
+> tsx scripts/testnet-token.ts
+
+token: xUDT issued by the funder, type hash 0x17c9148634c3937c9a370a36cdc2a3253d24237a0321f194b29f40c5d14a8b8d
+supply: minted 1,000 units, creator token cell: https://testnet.explorer.nervos.org/transaction/0x94437db37037dd3920ef006d2b6ea99984a718f54662e15647b17fa9835f008f
+open: a token session, 100 units, at most 10 per spend, paying only the creator
+  https://testnet.explorer.nervos.org/transaction/0x7dac7740cf9be29cf900085e98f43cb3557e2c956b9946a2d20ddc3dec49105d
+  ✓ payment 1: 3 units to the creator, no wallet: https://testnet.explorer.nervos.org/transaction/0xa8d1d98f8fd5b22cab9fd989b58a39995171e7099b1df5df46292c6ca8f94a88
+  ✓ payment 2: 3 units to the creator, no wallet: https://testnet.explorer.nervos.org/transaction/0xba27bcc564c00cdf2b8b3d3badc30091a29f17fbc4ce71bbb84117af6cb7b19d
+  session now holds 94 units and 300 CKB
+  ✓ 11 units: rejected by the network, code 20 (token outflow exceeds max_per_tx_token)
+close: 94 units back to the owner https://testnet.explorer.nervos.org/transaction/0x798c65c8ab49de39eb5aeb084c386f6ec1e1803e12636129ba73ace24b710a5d · key cell https://testnet.explorer.nervos.org/transaction/0xf238cb12086fefccede58d95fb2bab4d4e78ee116603ef31ce25ab7a4b167838

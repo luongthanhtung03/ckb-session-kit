@@ -1,0 +1,53 @@
+
+> ckb-session-kit@1.0.0 matrix:wallets
+> tsx scripts/wallet-matrix.ts
+
+secp256k1-blake160  ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsq22hsgzmwk895lnzg5x4prmzvq3fc5f50gjha0ur
+  funded: https://testnet.explorer.nervos.org/transaction/0x9594c6e1ce8499d8477c32445bb4bdf1ccce6762e232d35f874b140d21568288
+  session opened: https://testnet.explorer.nervos.org/transaction/0x5e14b73f596c0938d228f117bfcae5788ae1c043f93ba6c97b73041febe2a7a4
+  paid 1 CKB: https://testnet.explorer.nervos.org/transaction/0xd89e75ffc99be568127dda64b35f09966c0a6e9f6c3b805b2e2d85cc099260f9
+  session swept: https://testnet.explorer.nervos.org/transaction/0xd9336db92d25b50f4f42cb715c8b1f84bca40c30d3cff9638108bd6021ad61f4
+  key cell back: https://testnet.explorer.nervos.org/transaction/0x881ca37f01bfe087da0e1eda74e712f2ac1e9d18b126867099c20a7a2fc42a87
+  subscribed: https://testnet.explorer.nervos.org/transaction/0x2b0274df681c435ab40a685110906dfe7e78658b5cb87eac885823da3329dad7
+  cancelled: https://testnet.explorer.nervos.org/transaction/0x9aeff7dc0518e8b4a12228cfe60768bd0a02481c474e38b5bb61733a1284f634
+  returned: https://testnet.explorer.nervos.org/transaction/0x3567d74f36e661da9ad5f2cacbf6b5a046ad922e2ea59acd6e9cc3f7794fe6c2
+omnilock-evm  ckt1qrejnmlar3r452tcg57gvq8patctcgy8acync0hxfnyka35ywafvkqgjfvt8mxu89ws7wg0s587n34yfgnfrsuhkqqaejwpw
+  funded: https://testnet.explorer.nervos.org/transaction/0x4431afc5e4bd3c5b74a8726245319eeec02f1fa9433b8f161b7501500d53d486
+  ✗ the owner's Omnilock does not verify a signature itself: it cannot own a session
+omnilock-btc  ckt1qrejnmlar3r452tcg57gvq8patctcgy8acync0hxfnyka35ywafvkqgykdxmlp5uy6maejjtgjzyzjh7pha2gl5aqq77q0vr
+  funded: https://testnet.explorer.nervos.org/transaction/0xbb6ee245e9474db7521a24813561cb586b46589e9e291cafaa8ef53133d5cb23
+  session opened: https://testnet.explorer.nervos.org/transaction/0x9a1beefc1fbc7d6a3d0eee5ef14a4b9c37c60f26794ff9716ee8ea8da9235f3d
+  paid 1 CKB: https://testnet.explorer.nervos.org/transaction/0xe5db9f8bf28be2a1e5859037643ba2b84cb38150b143c8113479002e7ff21e11
+  session swept: https://testnet.explorer.nervos.org/transaction/0x5f7f4d69404be44a09bc0d35e40890e85e1c16ab70fefb20926ae516c4f4056f
+  key cell back: https://testnet.explorer.nervos.org/transaction/0x44a0e09da81c6df8377971c08e08131c88fd22e307a511f6077f63d02a9ae86e
+  subscribed: https://testnet.explorer.nervos.org/transaction/0xf44697da2f0c19d62370113d89b5e767735338eadab5ec236c2946831842c2a3
+  cancelled: https://testnet.explorer.nervos.org/transaction/0x3814188336d6a345a525a0eb9805d35202072c2567c4f1bae3b50a2a1fdb0be9
+  returned: https://testnet.explorer.nervos.org/transaction/0x38e7eb6b4f8995b4cc86442e30853c2e2664c9f2af1153f39766f8338b10d593
+omnilock-doge  ckt1qrejnmlar3r452tcg57gvq8patctcgy8acync0hxfnyka35ywafvkqg9rgzzmsfq6mzxpzzq9gl6lx3kadn0t4tqqq4mqzlc
+  funded: https://testnet.explorer.nervos.org/transaction/0xaf5859eddae4189811a35629f5f72ded804c142b1585300a6242c7355d929b2f
+  session opened: https://testnet.explorer.nervos.org/transaction/0xbd6933129c74bae2a9ed16467ea422c093e8869f901a871994cc41838667bbb5
+  paid 1 CKB: https://testnet.explorer.nervos.org/transaction/0x1f7069e9fb0e078dccaa291be51c24bc86d6245b2925446a917d09b68f18dbf2
+  session swept: https://testnet.explorer.nervos.org/transaction/0x356fb5f179bb2aee0d396b1933840eb6c96b693907d68deaf78970934a2cd260
+  key cell back: https://testnet.explorer.nervos.org/transaction/0x093d533118f9f671928f87a710eb0079275246ad552ab39c8e131e60c5df9c1d
+  subscribed: https://testnet.explorer.nervos.org/transaction/0x6d8c67d776d499b099649bcbc24d7647d42ec488c6f95e30a8c5177764980c42
+  cancelled: https://testnet.explorer.nervos.org/transaction/0x0e98ab80f1b09993fcb78bf7ed835f1212c8c00f79c57483a4c242eabfdb88ec
+  returned: https://testnet.explorer.nervos.org/transaction/0x48482fdc68e6c573bf2f15b936cc2f6e543953b1ed08f92a294a803a0403742f
+nostr  ckt1qp4wtmsvhzrm9h66ngvpxuc4hx7u2klg65nr0vk7qcjqjt2lpjga2qgqczv88a8ja7ktqjv2m9a64q709cadmsh9tn0nv3
+  funded: https://testnet.explorer.nervos.org/transaction/0xa24c7915f37a37a95ed5120ecc6695bd2ade49b82ecd567d9ce56b9fd83f08cd
+  session opened: https://testnet.explorer.nervos.org/transaction/0x24e6503a5e0113bef6b506434cf202e2fa6e10d47723e301d290bdcadcf4a079
+  paid 1 CKB: https://testnet.explorer.nervos.org/transaction/0x297eaa51014e9a4a6cdfa889527ac32e381aebe21d2cfa2b21078a849fb79989
+  session swept: https://testnet.explorer.nervos.org/transaction/0x05dfbc0979d09a784d4943d49ecbfcb6a5d718c01a620816b4cdb0bc4f57e62f
+  key cell back: https://testnet.explorer.nervos.org/transaction/0xd9139c2ee919c133c3d107b0e5a60789e48553ba38f33024d90af10a7c9ce601
+  subscribed: https://testnet.explorer.nervos.org/transaction/0x832c08a309464e20ce3441034d1aebcdade51721f21bc14bbc11b7237ed7484b
+  cancelled: https://testnet.explorer.nervos.org/transaction/0xf6cfb8478fd6f53bab2b192f6ebfd7b498522299d122b91205a759b43e97778f
+  returned: https://testnet.explorer.nervos.org/transaction/0xc00c5d8c5d1ce0d8366d50cb080406ca0364389fb30f844a2aae23e176467d1a
+
+| Owner lock | session opened | paid 1 CKB | session swept | key cell back | subscribed | cancelled |
+|---|---|---|---|---|---|---|
+| secp256k1-blake160 | [0x5e14b73f…](https://testnet.explorer.nervos.org/transaction/0x5e14b73f596c0938d228f117bfcae5788ae1c043f93ba6c97b73041febe2a7a4) | [0xd89e75ff…](https://testnet.explorer.nervos.org/transaction/0xd89e75ffc99be568127dda64b35f09966c0a6e9f6c3b805b2e2d85cc099260f9) | [0xd9336db9…](https://testnet.explorer.nervos.org/transaction/0xd9336db92d25b50f4f42cb715c8b1f84bca40c30d3cff9638108bd6021ad61f4) | [0x881ca37f…](https://testnet.explorer.nervos.org/transaction/0x881ca37f01bfe087da0e1eda74e712f2ac1e9d18b126867099c20a7a2fc42a87) | [0x2b0274df…](https://testnet.explorer.nervos.org/transaction/0x2b0274df681c435ab40a685110906dfe7e78658b5cb87eac885823da3329dad7) | [0x9aeff7dc…](https://testnet.explorer.nervos.org/transaction/0x9aeff7dc0518e8b4a12228cfe60768bd0a02481c474e38b5bb61733a1284f634) |
+| omnilock-evm | failed | failed | failed | failed | failed | failed |
+| omnilock-btc | [0x9a1beefc…](https://testnet.explorer.nervos.org/transaction/0x9a1beefc1fbc7d6a3d0eee5ef14a4b9c37c60f26794ff9716ee8ea8da9235f3d) | [0xe5db9f8b…](https://testnet.explorer.nervos.org/transaction/0xe5db9f8bf28be2a1e5859037643ba2b84cb38150b143c8113479002e7ff21e11) | [0x5f7f4d69…](https://testnet.explorer.nervos.org/transaction/0x5f7f4d69404be44a09bc0d35e40890e85e1c16ab70fefb20926ae516c4f4056f) | [0x44a0e09d…](https://testnet.explorer.nervos.org/transaction/0x44a0e09da81c6df8377971c08e08131c88fd22e307a511f6077f63d02a9ae86e) | [0xf44697da…](https://testnet.explorer.nervos.org/transaction/0xf44697da2f0c19d62370113d89b5e767735338eadab5ec236c2946831842c2a3) | [0x38141883…](https://testnet.explorer.nervos.org/transaction/0x3814188336d6a345a525a0eb9805d35202072c2567c4f1bae3b50a2a1fdb0be9) |
+| omnilock-doge | [0xbd693312…](https://testnet.explorer.nervos.org/transaction/0xbd6933129c74bae2a9ed16467ea422c093e8869f901a871994cc41838667bbb5) | [0x1f7069e9…](https://testnet.explorer.nervos.org/transaction/0x1f7069e9fb0e078dccaa291be51c24bc86d6245b2925446a917d09b68f18dbf2) | [0x356fb5f1…](https://testnet.explorer.nervos.org/transaction/0x356fb5f179bb2aee0d396b1933840eb6c96b693907d68deaf78970934a2cd260) | [0x093d5331…](https://testnet.explorer.nervos.org/transaction/0x093d533118f9f671928f87a710eb0079275246ad552ab39c8e131e60c5df9c1d) | [0x6d8c67d7…](https://testnet.explorer.nervos.org/transaction/0x6d8c67d776d499b099649bcbc24d7647d42ec488c6f95e30a8c5177764980c42) | [0x0e98ab80…](https://testnet.explorer.nervos.org/transaction/0x0e98ab80f1b09993fcb78bf7ed835f1212c8c00f79c57483a4c242eabfdb88ec) |
+| nostr | [0x24e6503a…](https://testnet.explorer.nervos.org/transaction/0x24e6503a5e0113bef6b506434cf202e2fa6e10d47723e301d290bdcadcf4a079) | [0x297eaa51…](https://testnet.explorer.nervos.org/transaction/0x297eaa51014e9a4a6cdfa889527ac32e381aebe21d2cfa2b21078a849fb79989) | [0x05dfbc09…](https://testnet.explorer.nervos.org/transaction/0x05dfbc0979d09a784d4943d49ecbfcb6a5d718c01a620816b4cdb0bc4f57e62f) | [0xd9139c2e…](https://testnet.explorer.nervos.org/transaction/0xd9139c2ee919c133c3d107b0e5a60789e48553ba38f33024d90af10a7c9ce601) | [0x832c08a3…](https://testnet.explorer.nervos.org/transaction/0x832c08a309464e20ce3441034d1aebcdade51721f21bc14bbc11b7237ed7484b) | [0xf6cfb847…](https://testnet.explorer.nervos.org/transaction/0xf6cfb8478fd6f53bab2b192f6ebfd7b498522299d122b91205a759b43e97778f) |
+
+omnilock-evm: the owner's Omnilock does not verify a signature itself: it cannot own a session

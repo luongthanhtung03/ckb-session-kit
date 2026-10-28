@@ -1,0 +1,8 @@
+decoy: a cell with malformed args that start with the owner's hash (74 CKB, unspendable)
+  https://testnet.explorer.nervos.org/transaction/0x5da6f0fc022fc8b57f3027353c05655df922bef41bc72f678a07f4eff566a2b4
+lose: both session keys dropped; recovery uses only the owner's wallet
+recover: found 2 session cell(s) by args prefix (decoy skipped)
+  swept 2 cell(s), 389 CKB back to the owner, 1 signature(s)
+  https://testnet.explorer.nervos.org/transaction/0x690223009970442db6de2135a8ef2242e0ae2eff2efd6e016fab8f50cee2427e
+done — sessions recovered without the lost keys; the decoy could not block it.
+lost for good: the two key cells (fee budgets), which only the session keys can spend.

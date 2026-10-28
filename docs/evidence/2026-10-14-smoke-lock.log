@@ -1,0 +1,28 @@
+
+> ckb-session-kit@0.0.1 smoke:lock
+> tsx scripts/testnet-lock-smoke.ts
+
+1. owner funds three session cells (400, 400, 300 CKB) and the key cell (200 CKB)
+  https://testnet.explorer.nervos.org/transaction/0x12a553c12e733a50f18db09edf8112031c9e39b1949e1f11699a67e3e30ba350
+2. session spends exactly max_per_tx (100 CKB), no owner signature
+  ✓ accepted: https://testnet.explorer.nervos.org/transaction/0xe2fced3a5d73059465f0b9400acdf0cba3fc27e441b82d1faebcbe44b1b20a8b
+3. session tries 100 CKB + 1 shannon
+  ✓ rejected by the network: code 12 (outflow exceeds max_per_tx)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 12 on page https://nervosnetwork.github.io/ckb-script-e…
+4. rate-limited cell (min_interval 3 blocks), spent with no since
+  ✓ rejected by the network: code 14 (rate limited: input too young)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 14 on page https://nervosnetwork.github.io/ckb-script-e…
+5. same cell with since = 3 relative blocks (waits for maturity)
+  ✓ accepted once mature: https://testnet.explorer.nervos.org/transaction/0xe53e4ada7f76d847b7e1883115c9b31851d8962e195cc2eb1fdaeb53e6b07653
+6. session splits its change into two cells (outflow 0)
+  ✓ rejected by the network: code 16 (too many change cells: a session spend may not split the session cell)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 16 on page https://nervosnetwork.github.io/ckb-script-e…
+7. recipient-scoped cell: 50 CKB moved into the key cell
+  ✓ rejected by the network: code 17 (the key cell may not grow in a session spend)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 17 on page https://nervosnetwork.github.io/ckb-script-e…
+8. change given a type script (a valid Type ID, so only the session lock objects)
+  ✓ rejected by the network: code 18 (session cells and their change may not carry a type script (in a token session: none but the token))
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 18 on page https://nervosnetwork.github.io/ckb-script-e…
+9. owner sweeps the three session cells and the key cell back
+  ✓ accepted: https://testnet.explorer.nervos.org/transaction/0x8019404b3708050660b921201ec534cc7f20ef68fa1e836012d33f531066bae5
+done — every rule held on the real network.

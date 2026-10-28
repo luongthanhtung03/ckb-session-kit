@@ -1,0 +1,16 @@
+
+> ckb-session-kit@1.0.0 matrix:wallets
+> tsx scripts/wallet-matrix.ts
+
+omnilock-evm  ckt1qrejnmlar3r452tcg57gvq8patctcgy8acync0hxfnyka35ywafvkqgjfvt8mxu89ws7wg0s587n34yfgnfrsuhkqqaejwpw
+  session opened: https://testnet.explorer.nervos.org/transaction/0xae66203d64e7000d200992280e0bfbff7ffd08b83a18b22686fa01e7663230f1
+  paid 1 CKB: https://testnet.explorer.nervos.org/transaction/0x3b0211b0c260c9cd0a009276271c9cb5007fcd4d566ab4eac161280a8e4c0206
+  session swept: https://testnet.explorer.nervos.org/transaction/0xe5bc64e9980482c5eeeb832a204fa9142006b64badc97f6f845f328ecc0f1170
+  key cell back: https://testnet.explorer.nervos.org/transaction/0xf795b0331fbee0e850f238c89f3728b4f7e22fcaacf66ee0e2cfc7344c9f83fd
+  subscribed: https://testnet.explorer.nervos.org/transaction/0x6f5b5666593c7d4c63a69c0afcec90a1440dc1ad3c1570001cc8c059621c889c
+  cancelled: https://testnet.explorer.nervos.org/transaction/0x9e963bbfdf38eebc238f7b4c77290fc9228e8f6fdaba70ee039c73a7821517e3
+  returned: https://testnet.explorer.nervos.org/transaction/0x54da0f4553350d13f25c512edb1ab2c1742887e79a92fb3b15a160019adb83ee
+
+| Owner lock | session opened | paid 1 CKB | session swept | key cell back | subscribed | cancelled |
+|---|---|---|---|---|---|---|
+| omnilock-evm | [0xae66203d…](https://testnet.explorer.nervos.org/transaction/0xae66203d64e7000d200992280e0bfbff7ffd08b83a18b22686fa01e7663230f1) | [0x3b0211b0…](https://testnet.explorer.nervos.org/transaction/0x3b0211b0c260c9cd0a009276271c9cb5007fcd4d566ab4eac161280a8e4c0206) | [0xe5bc64e9…](https://testnet.explorer.nervos.org/transaction/0xe5bc64e9980482c5eeeb832a204fa9142006b64badc97f6f845f328ecc0f1170) | [0xf795b033…](https://testnet.explorer.nervos.org/transaction/0xf795b0331fbee0e850f238c89f3728b4f7e22fcaacf66ee0e2cfc7344c9f83fd) | [0x6f5b5666…](https://testnet.explorer.nervos.org/transaction/0x6f5b5666593c7d4c63a69c0afcec90a1440dc1ad3c1570001cc8c059621c889c) | [0x9e963bbf…](https://testnet.explorer.nervos.org/transaction/0x9e963bbfdf38eebc238f7b4c77290fc9228e8f6fdaba70ee039c73a7821517e3) |

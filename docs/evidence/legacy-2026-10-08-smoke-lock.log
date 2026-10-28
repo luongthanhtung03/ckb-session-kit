@@ -1,0 +1,16 @@
+1. owner funds two session cells (400 CKB each) and the key cell (200 CKB)
+  https://testnet.explorer.nervos.org/transaction/0x7f1476477ebc17c50f338595aeca941722946fb5e3da48c52555a114b2c159de
+2. session spends exactly max_per_tx (100 CKB), no owner signature
+  ✓ accepted: https://testnet.explorer.nervos.org/transaction/0x48b3bde2a50bb8ba3aff0800e850b2aa521793b35628d165eab7f22f984be828
+3. session tries 100 CKB + 1 shannon
+  ✓ rejected by the network: code 12 (outflow exceeds max_per_tx)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 12 on page https://nervosnetwork.github.io/ckb-script-e…
+4. rate-limited cell (min_interval 3 blocks), spent with no since
+  ✓ rejected by the network: code 14 (rate limited: input too young)
+    node: Client request error TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 14 on page https://nervosnetwork.github.io/ckb-script-e…
+5. same cell with since = 3 relative blocks (waits for maturity)
+  ✓ accepted once mature: https://testnet.explorer.nervos.org/transaction/0xd2038582a6099ede9e1b906f257509ca0a50ec9a7aba2c12e39b519319b458cb
+6. owner sweeps both session cells and the key cell back
+  ✓ accepted: https://testnet.explorer.nervos.org/transaction/0x4edd74ccfc854482cc3a5114aa8563e169f7666028f6bfb6d1c1b30f22ca53d6
+done — every rule held on the real network.
+exit 0

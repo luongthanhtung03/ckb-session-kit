@@ -32,6 +32,7 @@
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit && tsc -p examples && tsc -p e2e",
     "check:lock-hash": "node scripts/check-lock-hash.mjs",
+    "evidence": "node scripts/evidence.mjs",
     "test": "vitest run",
     "e2e": "playwright test -c e2e",
     "smoke:testnet": "tsx scripts/testnet-smoke.ts",

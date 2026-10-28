@@ -1,0 +1,23 @@
+
+> ckb-session-kit@1.0.0 smoke:subscription
+> tsx scripts/testnet-subscription.ts
+
+charger: ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfrks0ww06uv9pgqzwuajnq694mjncvctgqcjrs7
+payout : ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vqfrks0ww06uv9pgqzwuajnq694mjncvctg0t589g
+open: first period paid now, price 10 CKB, period 10 blocks, budget 173 CKB (one subscriber signature)
+  https://testnet.explorer.nervos.org/transaction/0x383242a3bf89ae8007fc8fc4f7ec04420718c2e32590bdbbd445bcf4c4e2a1b9
+verify: creator accepts terms, first payment and account (paid through block 22870793, 2 charges left) · another account refused (the opening does not commit to this account)
+early: a charge 1 block after opening, period 10
+  ✓ refused by the node: error 14, rate limited: input too young
+charge 1: 10 CKB to the creator, charger key only
+  ✓ https://testnet.explorer.nervos.org/transaction/0xf98e36b2f5ef1bb86875fb0989e32f25f67807bc95e34aa273b497db5eebdb16
+  ✓ creator: paid through block 22870807
+charge 2: 10 CKB to the creator, charger key only
+  ✓ https://testnet.explorer.nervos.org/transaction/0x930beb93436c884f679f691a901eec1db4742fd69cd28e8d63b4eb386de260e0
+  ✓ creator: paid through block 22870820
+  payout balance 821 → 851 CKB
+dry: third charge
+  ✓ refused: the subscription holds 153 CKB: not enough for a price of 10 CKB and a 153 CKB cell left behind
+cancel: the subscriber sweeps the rest back (one signature, no creator)
+  ✓ https://testnet.explorer.nervos.org/transaction/0x235c9d2e4fc2205fa552c144890002f611c362402b62ceb1dc8540160c459c4f · 153 CKB back
+done: the first period at opening, two charges a period apart, an early charge refused by the network, cancel by the subscriber alone
