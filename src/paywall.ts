@@ -16,9 +16,11 @@ import { sessionSigner } from "./transfer.js";
  * signed by the key that paid. Anyone can see the payment on-chain; only the
  * payer can use it.
  *
- * One payment, one claim: a payment transaction may carry exactly one memo.
- * Otherwise one transaction could pay the creator once and carry memos from
- * several keys, each claiming the full amount for a different article or reader.
+ * One payment, one claim: a payment transaction may carry exactly one memo in
+ * the witnesses a signature covers. Otherwise one transaction could pay the
+ * creator once and carry memos from several keys, each claiming the full amount
+ * for a different article or reader. A memo in a witness nobody signed (the
+ * session cell's) does not count: whoever relays the payment could add one.
  */
 
 /** A session payment has a handful of inputs; more is not one, and costs RPC calls to check. */
@@ -29,9 +31,42 @@ export function paymentMemo(label: string): ccc.Hex {
   return ccc.hexFrom(ccc.bytesFrom(label, "utf8"));
 }
 
-/** The one witness carrying a memo (an `inputType`) and its index; undefined with none or several. */
-export function soleMemo(tx: ccc.Transaction): { index: number; memo: ccc.Hex } | undefined {
-  let found: { index: number; memo: ccc.Hex } | undefined;
+/**
+ * The standard secp256k1-blake160 sighash_all lock, the session key's own lock: the
+ * same code on mainnet and testnet. Its signature covers the first witness of its
+ * lock group (and the rest of the group, and every witness past the inputs).
+ */
+const SECP256K1_BLAKE160 = {
+  codeHash: "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8",
+  hashType: "type",
+} as const;
+
+/** Whether `lock` runs the standard secp256k1-blake160 sighash_all code (`code`: that script on this network). */
+export const isSecp256k1Lock = (lock: ccc.Script, code: { codeHash: ccc.Hex; hashType: ccc.HashType } = SECP256K1_BLAKE160) =>
+  lock.codeHash === code.codeHash && lock.hashType === code.hashType;
+
+/**
+ * Which witnesses of `tx` a signature covers, given the locks of its inputs in
+ * order: the first witness of each input lock group whose lock signs (`signs`),
+ * and every witness past the inputs, which a sighash_all signature also covers.
+ *
+ * Any other witness can be changed by whoever relays the transaction without
+ * changing its hash: a session cell's (the session lock reads no witness) or an
+ * anyone-can-pay cell's taking a top-up (audit, 30 Oct). A memo there is nobody's.
+ */
+export function signedWitnesses(
+  tx: ccc.Transaction,
+  inputLocks: ccc.ScriptLike[],
+  signs: (lock: ccc.Script) => boolean,
+): (index: number) => boolean {
+  const locks = inputLocks.map((l) => ccc.Script.from(l));
+  return (i) =>
+    i >= tx.inputs.length || (i < locks.length && signs(locks[i]) && !locks.slice(0, i).some((l) => l.eq(locks[i])));
+}
+
+/** Every witness carrying a memo (an `inputType`), with its index. */
+export function memoWitnesses(tx: ccc.Transaction): { index: number; memo: ccc.Hex }[] {
+  const found: { index: number; memo: ccc.Hex }[] = [];
   for (let i = 0; i < tx.witnesses.length; i++) {
     let inputType: ccc.Hex | undefined;
     try {
@@ -39,11 +74,22 @@ export function soleMemo(tx: ccc.Transaction): { index: number; memo: ccc.Hex } 
     } catch {
       continue; // not WitnessArgs: carries no memo
     }
-    if (inputType === undefined) continue;
-    if (found) return undefined;
-    found = { index: i, memo: inputType };
+    if (inputType !== undefined) found.push({ index: i, memo: inputType });
   }
   return found;
+}
+
+/**
+ * The one witness carrying a memo and its index; undefined with none or several.
+ * Only witnesses `counts` accepts are looked at (`signedWitnesses`: those a
+ * signature covers); by default, all of them.
+ */
+export function soleMemo(
+  tx: ccc.Transaction,
+  counts: (index: number) => boolean = () => true,
+): { index: number; memo: ccc.Hex } | undefined {
+  const found = memoWitnesses(tx).filter((m) => counts(m.index));
+  return found.length === 1 ? found[0] : undefined;
 }
 
 function accessMessage(txHash: ccc.HexLike, memo: ccc.HexLike): string {
@@ -95,17 +141,27 @@ export async function verifyAccess(
 
   // Cheap checks first, before resolving any input over RPC.
   if (tx.inputs.length > MAX_PAYMENT_INPUTS) return { ok: false, reason: "not a session payment: too many inputs" };
-  const sole = soleMemo(tx);
-  if (!sole) return { ok: false, reason: "a payment must carry exactly one memo" };
-  const memoAt = sole.index;
+  const memos = memoWitnesses(tx);
+  if (!memos.length) return { ok: false, reason: "a payment must carry exactly one memo" };
 
   // The payer's lock: the standard secp256k1 lock of the key that signed the request.
   const payerLock = (await new ccc.SignerCkbPublicKey(client, proof.publicKey).getAddressObjSecp256k1()).script;
 
-  // One lookup before all of them: anyone can sign a request for someone else's
+  // Before all of them, only the inputs whose witness carries a memo, until one is
+  // the payer's (usually the first): anyone can sign a request for someone else's
   // public payment, and must not get to make the server resolve every input.
-  const memoCell = memoAt < tx.inputs.length ? await client.getCell(tx.inputs[memoAt].previousOutput) : undefined;
-  if (!memoCell?.cellOutput.lock.eq(payerLock)) return { ok: false, reason: "the signing key did not pay this transaction" };
+  const known = new Map<number, ccc.Cell | undefined>();
+  let paidByKey = false;
+  for (const { index } of memos) {
+    if (index >= tx.inputs.length) continue;
+    const cell = await client.getCell(tx.inputs[index].previousOutput);
+    known.set(index, cell);
+    if (cell?.cellOutput.lock.eq(payerLock)) {
+      paidByKey = true;
+      break;
+    }
+  }
+  if (!paidByKey) return { ok: false, reason: "the signing key did not pay this transaction" };
   const to = ccc.Script.from(expect.to);
   const token = expect.token && ccc.Script.from(expect.token);
   // What a cell gives the recipient: its capacity, or with a token its units of that exact token
@@ -113,9 +169,9 @@ export async function verifyAccess(
   const value = (o: ccc.CellOutput, data: ccc.Hex): bigint =>
     !o.lock.eq(to) ? 0n : !token ? o.capacity : o.type?.eq(token) ? tokenAmount(data) : 0n;
 
-  // The rest at once, reusing the memo's input.
+  // The rest at once, reusing those already looked up.
   const inputs = await Promise.all(
-    tx.inputs.map((input, i) => (i === memoAt ? memoCell : client.getCell(input.previousOutput))),
+    tx.inputs.map((input, i) => (known.has(i) ? known.get(i) : client.getCell(input.previousOutput))),
   );
   let payerInput = -1;
   let toIn = 0n;
@@ -125,6 +181,16 @@ export async function verifyAccess(
     toIn += value(cell.cellOutput, cell.outputData);
   }
   if (payerInput < 0) return { ok: false, reason: "the signing key did not pay this transaction" };
+
+  // One memo among the witnesses a signature covers. A memo in a witness nobody
+  // signed (the session cell's, say) was not put there by the payer and cannot
+  // void the payment; several signed ones could each claim it (audit, 30 Oct).
+  const covered = signedWitnesses(
+    tx,
+    inputs.map((c) => c!.cellOutput.lock),
+    (lock) => isSecp256k1Lock(lock, payerLock),
+  );
+  if (!soleMemo(tx, covered)) return { ok: false, reason: "a payment must carry exactly one memo" };
 
   // The witness the payer's lock verified (the first of its group) must carry the memo.
   const witness = tx.getWitnessArgsAt(payerInput);

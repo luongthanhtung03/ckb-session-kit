@@ -184,7 +184,11 @@ The payer proves that the key which paid `txHash` is asking.
 ### `verifyAccess(client, proof, { to, minAmount, memo, token? }) → AccessCheck`
 The server's check, with no database: the request is signed by the key that
 paid; the payment is committed, carries exactly this memo and no other, and the
-recipient gained at least `minAmount`. One payment buys one claim. With
+recipient gained at least `minAmount`. One payment buys one claim. Only memos in
+witnesses a signature covers count (the first witness of each secp256k1 lock
+group, and any past the inputs): the session cell's and an anyone-can-pay
+cell's witnesses are signed by nobody, so a memo a relay adds there is ignored
+and cannot void the payment. With
 `token` (an xUDT type script) the price is in that token's units: only cells of
 exactly that type under `to` count, and CKB counts for nothing (nor tokens
 toward a CKB price).
@@ -316,13 +320,19 @@ is checked before anything is read, so a memo is at most `3 + 3 × maxPixels` by
 ### `placementPrice(pixels, board?) → bigint`
 `price × pixels`, in shannons.
 
-### `placementMemo(tx, board?) → { index, pixels } | undefined`
-The cheap check, before resolving any input: the transaction carries exactly one
-memo, in a witness at an input's index, and it decodes.
+### `placementMemo(tx, board?, inputs?) → { index, pixels } | undefined`
+With `inputs` (the spent cells, resolved, in order): exactly one memo among the
+witnesses a signature covers (the first witness of a secp256k1 lock group, or
+one past the inputs), at an input's index, and it decodes. A memo in a witness
+nobody signs (the session cell's, the board's) is ignored. Without `inputs`, the
+cheap check before resolving any input: `undefined` means the transaction is
+certainly no placement; otherwise the first witness at an input's index holding
+a valid placement, which `checkPlacement` settles.
 
 ### `checkPlacement(tx, inputs, boardLock, board?) → PlacementCheck`
 Whether a transaction is a valid placement, given its input cells resolved in
-order: one valid memo, in the first witness of a lock group that is not the
+order: one valid memo among the signed witnesses (`placementMemo` with
+`inputs`), in the first witness of a secp256k1 lock group that is not the
 board's (the witness the payer's lock signs: `spendInSession` puts it on the
 key cell), and the board's lock gained at least `price × pixels`, outputs minus
 inputs. `{ ok: true, pixels, paid }` or `{ ok: false, reason }`.

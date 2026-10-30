@@ -95,11 +95,13 @@ describe("placementPrice", () => {
  * A placement as spendInSession builds it: session cell in, one of the board's
  * cells in and out (+amount), key cell in and out, the memo in the key cell's witness.
  */
-function payment(opts: { paid?: bigint; memo?: ccc.Hex; memoAt?: number; extra?: { lock: ccc.Script; capacity: bigint } } = {}) {
+function payment(
+  opts: { paid?: bigint; memo?: ccc.Hex; memoAt?: number; extra?: { lock: ccc.Script; capacity: bigint }; signingBoard?: boolean } = {},
+) {
   const lock = (b: string) => ccc.Script.from({ codeHash: "0x" + b.repeat(32), hashType: "type", args: "0x01" });
-  const board = lock("bb");
+  const board = opts.signingBoard ? secp256k1("bb") : lock("bb");
   const session = lock("dd");
-  const key = lock("ee");
+  const key = secp256k1("ee");
   const inputs = [
     { lock: session, capacity: 200n * CKB },
     { lock: board, capacity: 61n * CKB },
@@ -118,6 +120,12 @@ function payment(opts: { paid?: bigint; memo?: ccc.Hex; memoAt?: number; extra?:
   });
   tx.setWitnessArgsAt(opts.memoAt ?? 2, { inputType: memo, lock: "0x" + "00".repeat(65) });
   return { tx, inputs, board, key };
+}
+
+/** A standard secp256k1-blake160 lock, as the session key's key cell has. */
+function secp256k1(b: string) {
+  const code = "0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8";
+  return ccc.Script.from({ codeHash: code, hashType: "type", args: "0x" + b.repeat(20) });
 }
 
 describe("checkPlacement", () => {
@@ -166,21 +174,45 @@ describe("checkPlacement", () => {
     expect(checkPlacement(tx, inputs, board)).toEqual({ ok: false, reason: "no valid placement memo" });
   });
 
-  it("rejects two memos", () => {
+  it("rejects two signed memos", () => {
     const { tx, inputs, board } = payment();
-    tx.setWitnessArgsAt(0, { inputType: encodePlacement([{ x: 0, y: 0, colour: 0 }]) });
+    tx.setWitnessArgsAt(3, { inputType: encodePlacement([{ x: 0, y: 0, colour: 0 }]) }); // past the inputs: every signature covers it
     expect(checkPlacement(tx, inputs, board)).toEqual({ ok: false, reason: "no valid placement memo" });
   });
 
-  it("rejects a memo in the board's own witness: no signature covers it", () => {
+  it("rejects two memos in the first witnesses of two secp256k1 groups", () => {
+    const { tx, inputs, board } = payment({ extra: { lock: secp256k1("ef"), capacity: 61n * CKB } });
+    tx.setWitnessArgsAt(3, { inputType: encodePlacement([{ x: 0, y: 0, colour: 0 }]), lock: "0x" + "00".repeat(65) });
+    expect(checkPlacement(tx, inputs, board)).toEqual({ ok: false, reason: "no valid placement memo" });
+  });
+
+  // Audit, 30 Oct: the session cell's witness is signed by nobody, so a relay could
+  // add a memo there; it neither voids the payer's placement nor replaces it.
+  it("ignores an unsigned memo at the session input", () => {
+    const { tx, inputs, board } = payment();
+    tx.setWitnessArgsAt(0, { inputType: encodePlacement([{ x: 0, y: 0, colour: 0 }]) });
+    expect(checkPlacement(tx, inputs, board)).toMatchObject({ ok: true, pixels: [{ x: 1, y: 2, colour: 3 }, { x: 4, y: 5, colour: 6 }] });
+  });
+
+  it("does not take a relay's memo as the placement of a payment that had none", () => {
+    const { tx, inputs, board } = payment({ memoAt: 0 }); // only the session cell's witness carries one
+    expect(checkPlacement(tx, inputs, board)).toEqual({ ok: false, reason: "no valid placement memo" });
+  });
+
+  it("ignores a memo in the board's own witness: no signature covers it", () => {
     const { tx, inputs, board } = payment({ memoAt: 1 });
+    expect(checkPlacement(tx, inputs, board)).toEqual({ ok: false, reason: "no valid placement memo" });
+  });
+
+  it("rejects a memo in the board's own witness when the board's lock signs", () => {
+    const { tx, inputs, board } = payment({ memoAt: 1, signingBoard: true });
     expect(checkPlacement(tx, inputs, board)).toEqual({ ok: false, reason: "the memo is in the board's own witness" });
   });
 
-  it("rejects a memo outside the first witness of its lock group", () => {
-    const { tx, inputs, board, key } = payment({ memoAt: 3, extra: { lock: ccc.Script.from({ codeHash: "0x" + "ee".repeat(32), hashType: "type", args: "0x01" }), capacity: 61n * CKB } });
+  it("ignores a memo outside the first witness of its lock group", () => {
+    const { tx, inputs, board, key } = payment({ memoAt: 3, extra: { lock: secp256k1("ee"), capacity: 61n * CKB } });
     expect(key.eq(inputs[3].lock)).toBe(true);
-    expect(checkPlacement(tx, inputs, board)).toMatchObject({ ok: false, reason: expect.stringMatching(/first witness/) });
+    expect(checkPlacement(tx, inputs, board)).toEqual({ ok: false, reason: "no valid placement memo" });
   });
 
   it("rejects a memo in a witness past the inputs", () => {
@@ -208,6 +240,13 @@ describe("placementMemo", () => {
 
   it("is undefined with no memo", () => {
     expect(placementMemo(ccc.Transaction.from({}))).toBeUndefined();
+  });
+
+  it("without inputs, lets through a placement a relay padded with an unsigned memo", () => {
+    const { tx, inputs } = payment();
+    tx.setWitnessArgsAt(0, { inputType: ccc.hexFrom(ccc.bytesFrom("junk", "utf8")) });
+    expect(placementMemo(tx)).toMatchObject({ index: 2 });
+    expect(placementMemo(tx, PLACE_BOARD, inputs)).toMatchObject({ index: 2 });
   });
 });
 

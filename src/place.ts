@@ -1,5 +1,5 @@
 import { ccc } from "@ckb-ccc/core";
-import { soleMemo } from "./paywall.js";
+import { isSecp256k1Lock, memoWitnesses, signedWitnesses, soleMemo } from "./paywall.js";
 
 /**
  * CKB Place: a shared pixel board kept on-chain, with no database.
@@ -112,16 +112,36 @@ export function placementPrice(pixels: number, board: PlaceBoard = PLACE_BOARD):
 }
 
 /**
- * The cheap part of the check, before resolving any input: the transaction
- * carries exactly one memo, it is a valid placement, and where it sits (the
- * witness index). `undefined` if not.
+ * The placement memo of `tx` and where it sits (the witness index), or `undefined`.
+ *
+ * With `inputs` (the cells `tx` spends, resolved, in input order) this is exact:
+ * exactly one memo among the witnesses a signature covers (`signedWitnesses`: the
+ * first witness of a secp256k1 lock group, as the session key's key cell has, or
+ * one past the inputs), at an input's index, and a valid placement. A memo in a
+ * witness nobody signed (the session cell's, the board's) is ignored: whoever
+ * relays the transaction could have put it there (audit, 30 Oct).
+ *
+ * Without `inputs` it is the cheap check, before resolving any input: `undefined`
+ * means `tx` is certainly no placement; otherwise the first witness at an input's
+ * index holding a valid placement, which `checkPlacement` then settles.
  */
 export function placementMemo(
   tx: ccc.TransactionLike,
   board: PlaceBoard = PLACE_BOARD,
+  inputs?: ccc.CellOutputLike[],
 ): { index: number; pixels: Pixel[] } | undefined {
   const t = ccc.Transaction.from(tx);
-  const found = soleMemo(t); // two memos: which one was paid for is ambiguous
+  if (!inputs) {
+    for (const m of memoWitnesses(t)) {
+      const pixels = m.index < t.inputs.length ? decodePlacement(m.memo, board) : undefined;
+      if (pixels) return { index: m.index, pixels };
+    }
+    return undefined;
+  }
+  if (inputs.length !== t.inputs.length) return undefined;
+  const locks = inputs.map((c) => ccc.CellOutput.from(c).lock);
+  // Two signed memos: which one was paid for is ambiguous.
+  const found = soleMemo(t, signedWitnesses(t, locks, (lock) => isSecp256k1Lock(lock)));
   if (!found || found.index >= t.inputs.length) return undefined;
   const pixels = decodePlacement(found.memo, board);
   return pixels && { index: found.index, pixels };
@@ -133,11 +153,11 @@ export type PlacementCheck = { ok: true; pixels: Pixel[]; paid: bigint } | { ok:
  * Whether `tx` is a valid placement on the board under `boardLock`. `inputs` are
  * the cells `tx` spends, resolved, in input order.
  *
- * - exactly one memo, and a valid one (`placementMemo`);
- * - the memo sits in the first witness of an input's lock group, and that lock is
- *   not the board's: it is the witness the payer's lock verifies, so a lock that
- *   signs its witnesses (secp256k1: the session key's key cell) commits the
- *   payment to these pixels and no relay can swap them;
+ * - exactly one memo among the witnesses a signature covers, and a valid one,
+ *   in the first witness of a secp256k1 lock group that is not the board's
+ *   (`placementMemo` with `inputs`): the witness the payer's lock signs (the
+ *   session key's key cell), so the payment commits to these pixels and no relay
+ *   can swap them, nor add a memo of its own that counts;
  * - the board's lock gained at least `price × pixels` (outputs minus inputs).
  */
 export function checkPlacement(
@@ -148,16 +168,12 @@ export function checkPlacement(
 ): PlacementCheck {
   const t = ccc.Transaction.from(tx);
   if (inputs.length !== t.inputs.length) return { ok: false, reason: "inputs not resolved" };
-  const memo = placementMemo(t, board);
+  const memo = placementMemo(t, board, inputs);
   if (!memo) return { ok: false, reason: "no valid placement memo" };
 
   const lock = ccc.Script.from(boardLock);
   const cells = inputs.map((c) => ccc.CellOutput.from(c));
-  const memoLock = cells[memo.index].lock;
-  if (memoLock.eq(lock)) return { ok: false, reason: "the memo is in the board's own witness" };
-  if (cells.slice(0, memo.index).some((c) => c.lock.eq(memoLock))) {
-    return { ok: false, reason: "the memo is not in the first witness of its lock group" };
-  }
+  if (cells[memo.index].lock.eq(lock)) return { ok: false, reason: "the memo is in the board's own witness" };
 
   const sum = (cs: ccc.CellOutput[]) => cs.reduce((s, c) => (c.lock.eq(lock) ? s + c.capacity : s), 0n);
   const paid = sum(t.outputs) - sum(cells);

@@ -156,15 +156,31 @@ describe("verifyAccess", () => {
   // cell: its witness is signed by nobody and read by no lock, so a relaying node can
   // set an inputType there; the tx hash and the key's signature are unchanged. If that
   // copy is the one committed, the payer has paid and the server refuses the claim
-  // forever. Marked it.fails: it documents the gap and fails once soleMemo looks only
-  // at witnesses the payer signed.
-  it.fails("AUDIT-2: a third party's unsigned memo at the session input does not void a real payment", async () => {
+  // forever. Fixed: only memos in witnesses a signature covers count.
+  it("AUDIT-2: a third party's unsigned memo at the session input does not void a real payment", async () => {
     const { client, payer, creator } = await setup();
     const { transaction } = (await client.getTransaction(TX_HASH))!;
     transaction.setWitnessArgsAt(0, { inputType: paymentMemo("griefed") });
     const proof = await signAccess(payer, TX_HASH, MEMO);
     const r = await verifyAccess(client, proof, { to: creator, minAmount: 1n * CKB, memo: MEMO });
     expect(r).toEqual({ ok: true, paid: 1n * CKB });
+  });
+
+  it("ignores an unsigned copy of the payer's own memo at the session input too", async () => {
+    const { client, payer, creator } = await setup();
+    const { transaction } = (await client.getTransaction(TX_HASH))!;
+    transaction.setWitnessArgsAt(0, { inputType: MEMO });
+    transaction.setWitnessArgsAt(1, { inputType: MEMO }); // the creator's anyone-can-pay cell: unsigned as well
+    const r = await verifyAccess(client, await signAccess(payer, TX_HASH, MEMO), { to: creator, minAmount: 1n * CKB, memo: MEMO });
+    expect(r).toEqual({ ok: true, paid: 1n * CKB });
+  });
+
+  it("still rejects a second memo in a witness every signature covers (past the inputs)", async () => {
+    const { client, payer, creator } = await setup();
+    const { transaction } = (await client.getTransaction(TX_HASH))!;
+    transaction.setWitnessArgsAt(3, { inputType: paymentMemo("read:other") });
+    const r = await verifyAccess(client, await signAccess(payer, TX_HASH, MEMO), { to: creator, minAmount: 1n * CKB, memo: MEMO });
+    expect(r).toEqual({ ok: false, reason: "a payment must carry exactly one memo" });
   });
 
   it("rejects a payment that is not committed yet", async () => {
