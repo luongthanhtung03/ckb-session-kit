@@ -1171,4 +1171,32 @@ describe.skipIf(skip)("session lock", () => {
       });
     });
   });
+
+  // Audit, 30 Oct 2026. These pass: each shows what the lock accepts today, where the
+  // README's wording promises more than the lock checks.
+  describe("audit 30 Oct: what the recipient rule does not cover", () => {
+    const scoped: Scope = { maxPerTx: 100n * CKB, recipient: true };
+
+    // README "If a session key leaks": "at most max_per_tx per transaction, only to the
+    // recipient if one is set". The fee is not an output, so the recipient rule never sees it.
+    it("AUDIT-1: a recipient-scoped session gives the whole max_per_tx to the miner, paying no recipient", async () => {
+      await ok(scoped, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
+        { lock: "session", capacity: 400n * CKB },
+        KEY_CELL,
+      ]);
+    });
+
+    // The session cell's own witness is covered by no signature: the key's secp256k1
+    // sighash_all signs only its own group's witnesses and those past the last input.
+    // The lock reads no witness, so anyone relaying the transaction can put a WitnessArgs
+    // with an inputType there without changing the tx hash or invalidating it.
+    it("AUDIT-2: accepts an unsigned WitnessArgs carrying an inputType at the session input", async () => {
+      const injected = ccc.hexFrom(ccc.WitnessArgs.from({ inputType: "0x" + "72".repeat(10) }).toBytes());
+      await ok(scope100, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
+        { lock: "stranger", capacity: 100n * CKB },
+        { lock: "session", capacity: 400n * CKB },
+        KEY_CELL,
+      ], { witnesses: [injected, ccc.hexFrom(ccc.WitnessArgs.from({ inputType: "0x01", lock: "0x" + "00".repeat(65) }).toBytes())] });
+    });
+  });
 });

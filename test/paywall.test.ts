@@ -152,6 +152,21 @@ describe("verifyAccess", () => {
     expect(lookups).toBe(0);
   });
 
+  // Audit, 30 Oct 2026 (with session-lock.test.ts AUDIT-2). Input 0 is the session
+  // cell: its witness is signed by nobody and read by no lock, so a relaying node can
+  // set an inputType there; the tx hash and the key's signature are unchanged. If that
+  // copy is the one committed, the payer has paid and the server refuses the claim
+  // forever. Marked it.fails: it documents the gap and fails once soleMemo looks only
+  // at witnesses the payer signed.
+  it.fails("AUDIT-2: a third party's unsigned memo at the session input does not void a real payment", async () => {
+    const { client, payer, creator } = await setup();
+    const { transaction } = (await client.getTransaction(TX_HASH))!;
+    transaction.setWitnessArgsAt(0, { inputType: paymentMemo("griefed") });
+    const proof = await signAccess(payer, TX_HASH, MEMO);
+    const r = await verifyAccess(client, proof, { to: creator, minAmount: 1n * CKB, memo: MEMO });
+    expect(r).toEqual({ ok: true, paid: 1n * CKB });
+  });
+
   it("rejects a payment that is not committed yet", async () => {
     const { client, payer, creator } = await setup({ status: "pending" });
     const proof = await signAccess(payer, TX_HASH, MEMO);
