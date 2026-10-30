@@ -126,6 +126,13 @@ function tokensIn(cells: { type?: ccc.Script; data: ccc.HexLike }[], token: ccc.
   return cells.reduce((s, c) => (c.type?.eq(token) && ccc.bytesFrom(c.data).length >= 16 ? s + tokenAmount(c.data) : s), 0n);
 }
 
+/** Whether `tx` spends a cell under `lockHash`, looking its inputs up; false past `MAX_PAYMENT_INPUTS`. */
+async function spentBy(client: ccc.Client, tx: ccc.Transaction, lockHash: ccc.Hex): Promise<boolean> {
+  if (tx.inputs.length > MAX_PAYMENT_INPUTS) return false;
+  const inputs = await Promise.all(tx.inputs.map((i) => client.getCell(i.previousOutput)));
+  return inputs.some((c) => c?.cellOutput.lock.hash() === lockHash);
+}
+
 /** Whether `p` spends a cell under `lockHash`: who took part in the transaction. */
 const spends = (p: Payment, lockHash: ccc.Hex) => p.inputs.some((c) => c?.cellOutput.lock.hash() === lockHash);
 
@@ -283,7 +290,9 @@ export async function openSubscription(
 
 /**
  * The live cells of a subscription, their balance (shannons) and token balance
- * (units; 0 without a token), and how many blocks until one can be charged.
+ * (units; 0 without a token), and how many blocks until one can be charged: once
+ * a cell is a period old and the last charge (a cell created by a transaction
+ * spending the charger's cell) is too.
  */
 export async function findSubscriptionCells(
   client: ccc.Client,
@@ -298,13 +307,20 @@ export async function findSubscriptionCells(
   if (!cells.length) return { lock, cells, balance, tokenBalance, nextChargeIn: undefined };
   const tip = await client.getTip();
   let nextChargeIn: bigint | undefined;
+  // The rate limit is per cell, so a cell older than the last charge's change (a
+  // top-up) could pay a second price in the same period: wait out the newest
+  // charge as well (review, 28 Oct).
+  let lastChargeWait = 0n;
   for (const c of cells) {
-    const born = (await client.getTransaction(c.outPoint.txHash))?.blockNumber;
-    if (born === undefined || born === null) continue; // not committed yet
+    const created = await client.getTransaction(c.outPoint.txHash);
+    const born = created?.blockNumber;
+    if (!created || born === undefined || born === null) continue; // not committed yet
     const age = tip - ccc.numFrom(born);
     const wait = age >= sub.periodBlocks ? 0n : sub.periodBlocks - age;
     if (nextChargeIn === undefined || wait < nextChargeIn) nextChargeIn = wait;
+    if (wait > lastChargeWait && (await spentBy(client, created.transaction, sub.chargerLockHash))) lastChargeWait = wait;
   }
+  if (nextChargeIn !== undefined && lastChargeWait > nextChargeIn) nextChargeIn = lastChargeWait;
   return { lock, cells, balance, tokenBalance, nextChargeIn };
 }
 
@@ -312,7 +328,8 @@ export async function findSubscriptionCells(
  * The creator's charger key takes one price from the subscription and pays it to
  * `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee comes from
  * one of the charger's own plain cells, which goes back to it smaller. Throws a
- * `SessionBalanceError` while no cell is a full period old, or once what is left
+ * `SessionBalanceError` while no cell is a full period old or the last charge is
+ * under one, or once what is left
  * cannot cover a price and still leave a cell behind.
  *
  * In a token subscription the price is in token units and always tops up

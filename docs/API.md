@@ -225,7 +225,9 @@ The memo an opening commits to, binding the subscription to one account at the c
 The charger key takes one price, with the period as the inputs' relative `since`,
 and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee
 comes from one of the charger's own plain cells. Throws `SessionBalanceError`
-before a full period (saying how many blocks are left) and once what is left
+before a full period (saying how many blocks are left), counted from the last
+charge as well as from each cell, so a top-up cannot pay a second price in the
+same period, and once what is left
 cannot cover a price plus a cell. In a token subscription the price is in units
 and always tops up `payTo`'s token cell; every mature token cell is merged into
 one change that keeps all the CKB and exactly 16 data bytes.
@@ -260,7 +262,8 @@ payment count), `active` (tip within the paid period), `chargesLeft` and
 payments in the token and adds `tokenBalance`; `chargesLeft` is then units / price.
 
 ### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, tokenBalance, nextChargeIn }`
-`nextChargeIn` is the number of blocks until a cell is a full period old (0 = it can be charged now).
+`nextChargeIn` is the number of blocks until a cell is a full period old and the
+last charge is too (0 = it can be charged now).
 In a token subscription, only cells typed with the token count; `tokenBalance` is
 their units (0 for CKB), `balance` their shannons.
 

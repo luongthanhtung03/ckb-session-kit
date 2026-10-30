@@ -220,6 +220,30 @@ describe("chargeSubscription", () => {
     expect(tx.outputs.filter((o) => o.lock.eq(lock)).map((o) => o.capacity)).toEqual([490n * CKB]);
   });
 
+  // Review, 28 Oct: an older cell (a top-up) must not pay a second price in the period of the last charge.
+  it("refuses while the last charge is under a period old, even if another cell is mature", async () => {
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const lock = subscriptionLock(d, r.sub);
+    const fee = cellOf(r.chargerLock, 100n * CKB);
+    const CHARGED = h("0f");
+    const change = ccc.Cell.from({ outPoint: { txHash: CHARGED, index: 1 }, cellOutput: { lock, capacity: 300n * CKB }, outputData: "0x" });
+    const topUp = cellOf(lock, 200n * CKB);
+    const charge = ccc.Transaction.from({ inputs: [{ previousOutput: fee.outPoint }] });
+    const { client } = fakeClient([change, topUp, fee, cellOf(r.payToLock, 200n * CKB)], 900n, (hash) =>
+      hash === CHARGED ? charge : ccc.Transaction.default(),
+    );
+    const getTransaction = client.getTransaction.bind(client);
+    // The charge's change is 10 blocks old; the top-up 100.
+    client.getTransaction = (async (hash: ccc.HexLike) => {
+      const res = await getTransaction(hash);
+      return ccc.hexFrom(hash) === CHARGED ? { ...res, blockNumber: 990n } : res;
+    }) as never;
+    await expect(
+      chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true }),
+    ).rejects.toThrow(/next charge in 10 blocks/);
+  });
+
   it("refuses once what is left cannot cover a price and a cell", async () => {
     const { client: c0 } = fakeClient([]);
     const r = await roles(c0);

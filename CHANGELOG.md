@@ -15,6 +15,9 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   accepted is reported as sent even when the reply times out (it skipped the
   check `signAndSend` does). `recoverSessions` now throws when the owner holds no
   plain cell, instead of reporting every session as failed.
+- `chargeSubscription` waits a full period after the last charge, not only after
+  the oldest cell: a top-up cell older than the last charge's change could pay a
+  second price in the same period. `nextChargeIn` counts the same way.
 
 ## 1.0.0 (2026-10-27)
 
