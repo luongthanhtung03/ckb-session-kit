@@ -10,7 +10,6 @@ import {
   addTopUp,
   assertPlainXudt,
   assertSigningLock,
-  collect,
   isAnyoneCanPay,
   keyCellFloor,
   ownerSweep,
@@ -107,9 +106,17 @@ export function subscriptionMemo(account: string): ccc.Hex {
  * left to `recoverSessions`. Cells whose tokens would overflow a u128 are left out
  * (`withinU128`).
  */
-async function subscriptionCells(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
+async function subscriptionCells(
+  client: ccc.Client,
+  lock: ccc.Script,
+  token?: ccc.Script,
+  /** Refuse ("too-many-cells") once more than this many cells of any kind sit under the lock. */
+  cap?: number,
+): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
+  let seen = 0;
   for await (const cell of client.findCellsByLock(lock, null, true)) {
+    if (cap !== undefined && ++seen > cap) throw tooManyCells(cap);
     const type = cell.cellOutput.type;
     if (token ? type?.eq(token) && ccc.bytesFrom(cell.outputData).length >= 16 : !type) cells.push(cell);
   }
@@ -117,6 +124,34 @@ async function subscriptionCells(client: ccc.Client, lock: ccc.Script, token?: c
   // subscriber's and the charger's own cells are always kept.
   return token ? withinU128(client, cells) : cells;
 }
+
+/**
+ * The most cells under one subscription's lock that a status or a charge reads
+ * (security audit, 30 Oct). Anyone can create cells under any lock, and each
+ * cell read costs RPC calls (its creating transaction, and that transaction's
+ * inputs), so without a bound one request could be made to cost thousands. A
+ * subscription in use holds one cell, or a few after top-ups; 16 is far above that.
+ *
+ * Beyond it, a status or a charge is refused with a `SessionPolicyError` of
+ * reason "too-many-cells", never answered from part of the cells: the cells
+ * left unread could hold the newest charge (so access would be denied as
+ * unpaid, with a wrong balance) or a mature cell (so a charge would leave it free
+ * to pay a second price in the same period). Refusing grants nothing and charges
+ * nothing. The subscriber clears the extra cells with `cancelSubscription`
+ * (which reads every cell and refunds what was planted too) and opens again.
+ */
+export const MAX_SUBSCRIPTION_CELLS = 16;
+/** The most transactions in a lock's recent history that `lastSpend` reads, on the same grounds. */
+const MAX_HISTORY = 4 * MAX_SUBSCRIPTION_CELLS;
+/** The charger's cells read when picking one to pay a charge's fee: any of them will do. */
+const FEE_CELL_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
+
+const tooManyCells = (cap: number) =>
+  new SessionPolicyError(
+    `over ${cap} cells or recent transactions under this subscription's lock: refused rather than read in part; ` +
+      "the subscriber can cancel (which sweeps them all) and open again",
+    "too-many-cells",
+  );
 
 /** The token units in token cells (cells typed with `token`, with at least 16 data bytes). */
 function tokensIn(cells: { type?: ccc.Script; data: ccc.HexLike }[], token: ccc.Script): bigint {
@@ -136,7 +171,10 @@ async function lastSpend(
   tip: bigint,
   window: bigint,
 ): Promise<{ txHash: ccc.Hex; age: bigint } | undefined> {
+  let seen = 0;
   for await (const t of client.findTransactionsByLock(lock, null, true, "desc")) {
+    // Stopping short could miss the last charge and let a second one into the period: refuse instead.
+    if (++seen > MAX_HISTORY) throw tooManyCells(MAX_HISTORY);
     const born = ccc.numFrom(t.blockNumber);
     const age = tip > born ? tip - born : 0n; // the indexer may be a block past the tip read
     if (age >= window) return undefined;
@@ -286,7 +324,8 @@ export async function openSubscription(
  * The live cells of a subscription, their balance (shannons) and token balance
  * (units; 0 without a token), and how many blocks until one can be charged: once
  * a cell is a period old and the last charge (the newest transaction that spent
- * a cell under the lock) is too.
+ * a cell under the lock) is too. Throws a `SessionPolicyError` ("too-many-cells")
+ * with over `MAX_SUBSCRIPTION_CELLS` cells under the lock.
  */
 export async function findSubscriptionCells(
   client: ccc.Client,
@@ -307,13 +346,16 @@ type Created = Awaited<ReturnType<ccc.Client["getTransaction"]>>;
 async function subscriptionState(client: ccc.Client, deployment: SessionLockDeployment, sub: Subscription) {
   const lock = subscriptionLock(deployment, sub);
   const token = tokenOf(sub);
-  const cells = await subscriptionCells(client, lock, token);
+  const cells = await subscriptionCells(client, lock, token, MAX_SUBSCRIPTION_CELLS);
   const balance = cells.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   const tokenBalance = token ? tokensIn(cells.map((c) => ({ type: c.cellOutput.type, data: c.outputData })), token) : 0n;
-  const [tip, created] = await Promise.all([
-    client.getTip(),
-    Promise.all(cells.map((c): Promise<Created> => client.getTransaction(c.outPoint.txHash))),
-  ]);
+  // Cells made by one transaction share one lookup.
+  const byHash = new Map<ccc.Hex, Promise<Created>>();
+  const creating = (h: ccc.Hex): Promise<Created> => {
+    if (!byHash.has(h)) byHash.set(h, client.getTransaction(h));
+    return byHash.get(h)!;
+  };
+  const [tip, created] = await Promise.all([client.getTip(), Promise.all(cells.map((c) => creating(c.outPoint.txHash)))]);
   const ages = created.map((res) => {
     const born = res?.blockNumber;
     return born === undefined || born === null ? undefined : tip - ccc.numFrom(born);
@@ -416,12 +458,28 @@ export async function chargeSubscription(
   // The charger's own cell authorises the charge and pays the fee; it comes back last, smaller.
   // A random one, so charges of many subscriptions at once rarely collide (review, 28 Oct).
   const floor = keyCellFloor(chargerLock);
-  const keyCell = randomPick((await collect(client, chargerLock)).filter((c) => c.cellOutput.capacity > floor));
+  const keyCell = randomPick(await feeCells(client, chargerLock, floor));
   if (!keyCell) throw new SessionBalanceError(`the charger needs a plain cell above ${ccc.fixedPointToString(floor)} CKB for fees`, "no-fee-cell");
   tx.inputs.push(ccc.CellInput.from({ previousOutput: keyCell.outPoint }));
   tx.addOutput({ lock: chargerLock, capacity: 0n });
   await tx.completeFeeChangeToOutput(charger, tx.outputs.length - 1);
   return signAndSend(charger, tx, opts.beforeSend);
+}
+
+/**
+ * Plain cells of the charger above `floor`: at most `MAX_SUBSCRIPTION_CELLS` of
+ * them, from the first `FEE_CELL_SCAN` cells under its lock. Any one of them pays
+ * a fee, so there is no need to read every cell someone may have sent to the
+ * charger's address (security audit, 30 Oct).
+ */
+async function feeCells(client: ccc.Client, lock: ccc.Script, floor: bigint): Promise<ccc.Cell[]> {
+  const cells: ccc.Cell[] = [];
+  let seen = 0;
+  for await (const cell of client.findCellsByLock(lock, null, true)) {
+    if (++seen > FEE_CELL_SCAN || cells.length >= MAX_SUBSCRIPTION_CELLS) break;
+    if (!cell.cellOutput.type && cell.outputData === "0x" && cell.cellOutput.capacity > floor) cells.push(cell);
+  }
+  return cells;
 }
 
 /**
@@ -438,8 +496,13 @@ export async function cancelSubscription(
 ): Promise<{ txHash?: ccc.Hex; refunded: bigint; refundedTokens?: bigint; nothingFound?: true }> {
   const lock = (await subscriber.getRecommendedAddressObj()).script;
   if (lock.hash() !== sub.subscriberLockHash) throw new SessionPolicyError("this signer is not the subscriber");
-  const { cells, balance, tokenBalance, lock: subLock } = await findSubscriptionCells(subscriber.client, deployment, sub);
+  // Every cell, without MAX_SUBSCRIPTION_CELLS: cancelling is how a subscriber
+  // clears cells planted under its lock, and the reads are its own.
+  const subLock = subscriptionLock(deployment, sub);
   const token = tokenOf(sub);
+  const cells = await subscriptionCells(subscriber.client, subLock, token);
+  const balance = cells.reduce((s, c) => s + c.cellOutput.capacity, 0n);
+  const tokenBalance = token ? tokensIn(cells.map((c) => ({ type: c.cellOutput.type, data: c.outputData })), token) : 0n;
   // A charger may leave a token subscription's last change untyped; its CKB is the subscriber's too (review, 27 Oct).
   const untyped = token ? await subscriptionCells(subscriber.client, subLock) : [];
   const all = [...cells, ...untyped];
@@ -647,19 +710,21 @@ async function paymentOf(
     }
   }
   if (owed < sub.price) owed = sub.price;
-  const inputs = await Promise.all(tx.inputs.map((i) => client.getCell(i.previousOutput)));
-  if (inputs.some((c) => !c)) return "an input of the transaction could not be looked up";
   const toPayTo = (cells: { cellOutput: ccc.CellOutput; data: ccc.HexLike }[]) =>
     cells.filter((c) => c.cellOutput.lock.hash() === sub.payToLockHash);
-  const outs = toPayTo(tx.outputs.map((cellOutput, i) => ({ cellOutput, data: tx.outputsData[i] ?? "0x" })));
-  const ins = toPayTo(inputs.map((c) => ({ cellOutput: c!.cellOutput, data: c!.outputData })));
-  const paid = token
-    ? tokensIn(outs.map((c) => ({ type: c.cellOutput.type, data: c.data })), token) -
-      tokensIn(ins.map((c) => ({ type: c.cellOutput.type, data: c.data })), token)
-    : [outs, ins]
-        .map((cells) => cells.reduce((s, c) => (!c.cellOutput.type ? s + c.cellOutput.capacity : s), 0n))
-        .reduce((o, i) => o - i);
-  if (paid < owed) return "the transaction that created the cell did not pay the price to payTo";
+  const amount = (cells: { cellOutput: ccc.CellOutput; data: ccc.HexLike }[]) =>
+    token
+      ? tokensIn(cells.map((c) => ({ type: c.cellOutput.type, data: c.data })), token)
+      : cells.reduce((s, c) => (!c.cellOutput.type ? s + c.cellOutput.capacity : s), 0n);
+  const out = amount(toPayTo(tx.outputs.map((cellOutput, i) => ({ cellOutput, data: tx.outputsData[i] ?? "0x" }))));
+  const notPaid = "the transaction that created the cell did not pay the price to payTo";
+  // What payTo gained is at most what its outputs hold: a transaction that falls
+  // short already is refused before its inputs are looked up (security audit, 30 Oct).
+  if (out < owed) return notPaid;
+  const inputs = await Promise.all(tx.inputs.map((i) => client.getCell(i.previousOutput)));
+  if (inputs.some((c) => !c)) return "an input of the transaction could not be looked up";
+  const paid = out - amount(toPayTo(inputs.map((c) => ({ cellOutput: c!.cellOutput, data: c!.outputData }))));
+  if (paid < owed) return notPaid;
   return { tx, block: ccc.numFrom(created.blockNumber), inputs };
 }
 
@@ -698,6 +763,11 @@ export interface SubscriptionStatus {
  * Each must have been created by a payment, so a cell re-created by the
  * subscriber to reset its age counts for nothing. Cancelling ends access at once.
  * A token subscription (`sub.token`) counts payments in its token, as `verifySubscription` does.
+ *
+ * Throws a `SessionPolicyError` of reason "too-many-cells" when over
+ * `MAX_SUBSCRIPTION_CELLS` cells (or recent transactions) sit under the lock:
+ * not a verdict on the subscription, so not an `ok: false`. A server should
+ * answer it as a conflict the subscriber can clear by cancelling and opening again.
  */
 export async function subscriptionStatus(
   client: ccc.Client,
@@ -713,14 +783,20 @@ export async function subscriptionStatus(
     return { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
   const lock = subscriptionLock(deployment, sub);
-  const opening = await paymentOf(client, deployment, proof.openTx, sub);
+  // One check per transaction, however many cells it made (security audit, 30 Oct).
+  const checked = new Map<ccc.Hex, Promise<Payment | string>>();
+  const payment = (txHash: ccc.Hex, fetched?: Created) => {
+    if (!checked.has(txHash)) checked.set(txHash, paymentOf(client, deployment, txHash, sub, fetched));
+    return checked.get(txHash)!;
+  };
+  const openHash = ccc.hexFrom(proof.openTx);
+  const opening = await payment(openHash);
   if (typeof opening === "string") return { ok: false, reason: `opening: ${opening}` };
   if (!opening.tx.outputs.some((o) => o.lock.eq(lock))) return { ok: false, reason: "the opening created no cell under this subscription's lock" };
   if (!commitsToAccount(opening, sub, proof.account)) return { ok: false, reason: "the opening does not commit to this account" };
 
   const { cells, balance, tokenBalance, nextChargeIn, tip, created, spent } = await subscriptionState(client, deployment, sub);
   let paidThroughBlock: bigint | undefined;
-  const openHash = ccc.hexFrom(proof.openTx);
   const renews = (p: Payment | string, txHash: ccc.Hex): p is Payment =>
     // Only the proven opening or a charge renews; another payment to payTo that
     // also creates a cell here (a paid read, say) is not a period (review, 27 Oct).
@@ -729,7 +805,7 @@ export async function subscriptionStatus(
   // A charge of the whole balance leaves no cell, but still paid for its period
   // (30 Oct). Not a sweep: the subscriber's cancel spends no charger cell.
   if (spent && !paying.some((c) => c.txHash === spent.txHash)) paying.push({ txHash: spent.txHash, fetched: undefined });
-  const payments = await Promise.all(paying.map((c) => paymentOf(client, deployment, c.txHash, sub, c.fetched)));
+  const payments = await Promise.all(paying.map((c) => payment(c.txHash, c.fetched)));
   for (const [i, { txHash }] of paying.entries()) {
     const p = payments[i];
     if (!renews(p, txHash)) continue;

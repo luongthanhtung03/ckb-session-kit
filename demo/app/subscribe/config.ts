@@ -1,5 +1,10 @@
 /** Shared by the page and the server routes. */
-/** The creator's charger key: its secp256k1 address. The server holds this key (CHARGER_KEY). */
+/**
+ * The charger key's secp256k1 address. The server holds this key (CHARGER_KEY), so
+ * it must be a key of its own holding only fee cells, never the creator's (security
+ * audit, 30 Oct). Still the creator's key today: replace it with the address
+ * `npm run setup:charger` prints (see config.test.ts).
+ */
 export const CHARGER =
   "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfrks0ww06uv9pgqzwuajnq694mjncvctgqcjrs7";
 /**

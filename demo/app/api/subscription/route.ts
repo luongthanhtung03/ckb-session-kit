@@ -1,5 +1,5 @@
 import { ccc } from "@ckb-ccc/core";
-import { subscriptionStatus, type SessionLockDeployment } from "ckb-session-kit";
+import { SessionPolicyError, subscriptionStatus, type SessionLockDeployment } from "ckb-session-kit";
 import deploymentJson from "../../../../deployment/testnet.json";
 import { NOTES } from "../../subscribe/notes";
 import { isAccount, isAsset, isHash, termsFor } from "../../subscribe/terms";
@@ -11,7 +11,9 @@ const deployment = deploymentJson as SessionLockDeployment;
  * Where a subscriber's subscription stands, and the members' notes while it is
  * paid up. Nothing is stored: every request carries the subscriber's lock hash,
  * the opening's hash and the account id the opening committed to, and the chain
- * says the rest. Bad shape 400; not a paid-up subscription 402; chain unreachable 503.
+ * says the rest. Bad shape 400; not a paid-up subscription 402; more cells under
+ * the subscription's lock than the library reads (MAX_SUBSCRIPTION_CELLS, security
+ * audit 30 Oct) 409, which the subscriber clears by cancelling; chain unreachable 503.
  */
 export async function POST(request: Request) {
   let subscriber: unknown, openTx: unknown, account: unknown, asset: unknown;
@@ -27,7 +29,11 @@ export async function POST(request: Request) {
   try {
     const terms = await termsFor(client, subscriber.toLowerCase() as ccc.Hex, asset);
     r = await subscriptionStatus(client, deployment, terms, { openTx, account });
-  } catch {
+  } catch (e) {
+    // Not a verdict on the subscription, and a retry cannot clear it.
+    if (e instanceof SessionPolicyError && e.reason === "too-many-cells") {
+      return Response.json({ error: e.message }, { status: 409 });
+    }
     return Response.json({ error: "could not reach the chain", retry: true }, { status: 503 });
   }
   if (!r.ok) return Response.json({ error: r.reason }, { status: 402 });

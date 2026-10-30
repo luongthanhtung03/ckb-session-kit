@@ -65,7 +65,10 @@ So nothing new is enforced on-chain, and the deployed code hash
   and a payout address (ideally anyone-can-pay, so any price can be added to one
   cell; without it each charge creates a new cell and must be at least 61 CKB).
   `openSubscription` refuses `payTo` equal to the charger lock before anything is
-  signed.
+  signed. The charger key must also be a **key of its own**, not the key behind
+  the payout address or any other income: it lives in the server's environment,
+  and the lock bounds only what it can take from subscriptions. Give it nothing
+  but a few fee cells (security audit, 30 Oct 2026, at the end).
 - **One charge per transaction.** Rule 4 applies per subscription: an output
   belonging to another subscriber's cell is "anyone else" to this one. A creator
   with many subscribers sends one transaction each per period. This is a limit,
@@ -138,7 +141,7 @@ cell (only possible when the whole cell is at most the price). `budget` of
 | Creator refuses to let the subscriber leave | Owner mode needs no creator signature |
 | Subscriber cancels right after being served | Inherent to pre-paid service: the creator charges at the start of a period, not the end |
 | Creator charges just before a cancel lands | Inherent; at most one price, since a period has passed |
-| Anyone adds a fresh cell under the same lock | Harmless: it only adds funds; `chargeSubscription` takes mature cells only (as `spendInSession` does since 14 Oct) |
+| Anyone adds a fresh cell under the same lock | Harmless: it only adds funds; `chargeSubscription` takes mature cells only (as `spendInSession` does since 14 Oct). Over `MAX_SUBSCRIPTION_CELLS` (16) such cells, a status or a charge is refused rather than read in part (30 Oct); the subscriber cancels and re-opens |
 | Subscriber's wallet is a lock that signs nothing | `assertSigningLock`, as for sessions |
 
 ## Open questions for review
@@ -319,3 +322,42 @@ counts it as paid when it spent a charger cell and paid `payTo` the price. Any
 spend counts for the wait, since only the charger can spend in session mode and
 an owner sweep takes every cell; a cancel is still the newest spend, so it still
 ends access at once. The lock is unchanged.
+
+## Security audit, 30 Oct 2026
+
+**Medium: the demo's charger key was the creator's key.** `CHARGER` in the demo
+carried the same blake160 as the creator's anyone-can-pay address (every paid
+read and minute) and as `PAY_TO`'s key part. `CHARGER_KEY` sits in the server's
+environment (Vercel), so whoever could read that environment could spend all of
+the creator's income, not only take one price per period from subscriptions as
+the lock allows. The charger must be a key of its own that holds only a few fee
+cells: then a leak of the server's environment costs at most those fee cells
+plus what the threat table above already allows (one price per period per
+subscriber, to the payout address). `npm run setup:charger` makes such a key
+(`.env.charger`, gitignored) without sending anything. Rotating it changes every
+subscription's lock args, so subscriptions opened under the old charger are not
+found under the new terms: their subscribers cancel (or `recoverSessions`) and
+open again.
+
+**Low-Med: one status request could cost thousands of RPC calls.** Anyone can
+create cells under a subscription's lock. `subscriptionStatus` looked up each
+cell's creating transaction and then every input of it (up to 32), with no cap
+and no de-duplication: 100 cells planted by one 32-input transaction cost 3,307
+RPC calls per request to an unauthenticated route. Now:
+- At most `MAX_SUBSCRIPTION_CELLS` (16) cells of any kind under the lock are read
+  by a status or a charge (and at most 64 recent transactions of its history).
+  Beyond that the call throws `SessionPolicyError` with reason `"too-many-cells"`;
+  the demo answers it with 409. It is never answered from part of the cells: the
+  unread ones could hold the newest charge (a paid-up subscriber would be told
+  unpaid, with a wrong balance) or a mature cell (a charge that left it out would
+  let it pay a second price in the same period). Refusing grants no access and
+  charges nothing, so no planted cell can grant or deny access by being read or
+  skipped. Planting 17 cells to block a subscription costs over 2,600 CKB, which
+  go to the subscriber: `cancelSubscription` reads every cell (no cap; the reads
+  are the subscriber's own) and sweeps the planted ones back with the rest.
+- Each creating transaction is fetched and checked once per call, however many
+  cells it made.
+- A creating transaction whose outputs to `payTo` already hold less than it owes
+  is refused before any of its inputs is looked up.
+- The charge picks its fee cell from the first 64 cells under the charger's lock
+  (at most 16 that qualify): any one of them pays a fee.

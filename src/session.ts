@@ -41,10 +41,12 @@ export interface CreateOptions {
 }
 
 /**
- * Why a policy error is the payer's own setup rather than the request: today only
- * a `payTo` that is not anyone-can-pay, so a charge can never top it up.
+ * Why a policy error is not about the request itself: "payto-not-anyone-can-pay",
+ * the payer's own setup (a charge can never top such a `payTo` up); or
+ * "too-many-cells", more cells under a subscription's lock than a status or a
+ * charge reads (`MAX_SUBSCRIPTION_CELLS`).
  */
-export type SessionPolicyReason = "payto-not-anyone-can-pay";
+export type SessionPolicyReason = "payto-not-anyone-can-pay" | "too-many-cells";
 
 export class SessionPolicyError extends Error {
   readonly reason?: SessionPolicyReason;

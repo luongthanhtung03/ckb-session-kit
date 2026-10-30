@@ -36,6 +36,7 @@ export {
   cancelSubscription,
   chargeSubscription,
   findSubscriptionCells,
+  MAX_SUBSCRIPTION_CELLS,
   openSubscription,
   subscriptionLock,
   subscriptionMemo,

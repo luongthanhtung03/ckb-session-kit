@@ -44,6 +44,7 @@
     "smoke:pay-per-read": "tsx scripts/testnet-pay-per-read.ts",
     "setup:creator": "tsx scripts/setup-creator.ts",
     "setup:board": "tsx scripts/setup-board.ts",
+    "setup:charger": "tsx scripts/setup-charger.ts",
     "setup:token": "tsx scripts/setup-token.ts",
     "setup:subscription-payout": "tsx scripts/setup-subscription-payout.ts",
     "smoke:recover": "tsx scripts/testnet-recover.ts",

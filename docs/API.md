@@ -30,8 +30,9 @@ before any network call; the session lock checks again on-chain.
 Thrown by `createSession` for a policy it refuses, and by `onchainRecipient` for
 a scope the lock cannot enforce. `reason` (type `SessionPolicyReason`) is
 `"payto-not-anyone-can-pay"` when a charge must top up `payTo` and `payTo` is not
-anyone-can-pay: the creator's setup, not the request. Other policy errors leave
-it undefined.
+anyone-can-pay: the creator's setup, not the request; `"too-many-cells"` when
+more cells sit under a subscription's lock than a status or a charge reads
+(`MAX_SUBSCRIPTION_CELLS`). Other policy errors leave it undefined.
 
 ## On-chain sessions
 
@@ -280,12 +281,23 @@ payment count, plus a last charge that took the whole balance and left no cell),
 `active` (tip within the paid period), `chargesLeft` and `nextChargeIn`.
 Cancelling ends access at once. A token subscription counts its
 payments in the token and adds `tokenBalance`; `chargesLeft` is then units / price.
+Throws `SessionPolicyError` (`"too-many-cells"`) past `MAX_SUBSCRIPTION_CELLS`;
+answer it as a conflict (the demo uses 409), not as unpaid.
 
 ### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, tokenBalance, nextChargeIn }`
 `nextChargeIn` is the number of blocks until a cell is a full period old and the
 last charge (the newest spend of a cell under the lock) is too (0 = it can be charged now).
 In a token subscription, only cells typed with the token count; `tokenBalance` is
 their units (0 for CKB), `balance` their shannons.
+
+### `MAX_SUBSCRIPTION_CELLS`
+16: the most cells (of any kind) under one subscription's lock that
+`subscriptionStatus`, `chargeSubscription` and `findSubscriptionCells` read (and
+at most 64 recent transactions of its history). Anyone can create cells under a lock
+and each costs RPC calls, so past it they throw `SessionPolicyError` with reason
+`"too-many-cells"` rather than answer from part of the cells (which could deny a
+paid-up subscriber or leave a mature cell out of a charge). `cancelSubscription`
+reads every cell, so the subscriber can sweep planted ones and open again.
 
 ### `subscriptionLock(deployment, subscription)`
 The session-lock script of a subscription: 112-byte args, or 160 with a token.
