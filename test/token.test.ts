@@ -263,6 +263,13 @@ describe("recoverSessions with token sessions", () => {
       token: { typeHash: token.hash(), maxPerTx: 10n },
     });
     const plainLock = sessionLockScript(d, { ownerLockHash: ownerLock.hash(), sessionLockHash: h("b2"), maxPerTx: 5n * CKB });
+    const flagged = await xudtOf(h("33") + "01000000");
+    const flaggedLock = sessionLockScript(d, {
+      ownerLockHash: ownerLock.hash(),
+      sessionLockHash: h("b1"),
+      maxPerTx: 5n * CKB,
+      token: { typeHash: flagged.hash(), maxPerTx: 10n },
+    });
     let i = 0;
     const cell = (lock: ccc.Script, capacity: bigint, type?: ccc.Script, data: ccc.Hex = "0x") =>
       ccc.Cell.from({
@@ -272,11 +279,12 @@ describe("recoverSessions with token sessions", () => {
       });
     const cells = [
       cell(tokenLock, 300n * CKB, token, amount(70n)),
-      cell(tokenLock, 300n * CKB, token, ccc.hexFrom(amount(30n) + "aa")), // extension bytes: still the token
+      cell(tokenLock, 300n * CKB, token, ccc.hexFrom(amount(30n) + "aa")), // planted: extra bytes no session makes (audit, 30 Oct)
       cell(tokenLock, 200n * CKB), // untyped CKB in a token session
       cell(tokenLock, 250n * CKB, foreign, amount(1n)), // planted: another token
       cell(tokenLock, 250n * CKB, token, "0x01"), // planted: malformed token data
       cell(plainLock, 250n * CKB, token, amount(5n)), // planted: a token in a plain session
+      cell(flaggedLock, 250n * CKB, flagged, amount(1n)), // planted: its own token, but not a plain xUDT (audit, 30 Oct)
     ];
     const sent: ccc.Transaction[] = [];
     const owner = {
@@ -285,6 +293,7 @@ describe("recoverSessions with token sessions", () => {
           const prefix = ccc.Script.from(key.script).args;
           for (const c of cells) if (c.cellOutput.lock.args.startsWith(prefix)) yield c;
         },
+        getKnownScript: (k: ccc.KnownScript) => client.getKnownScript(k),
       },
       getRecommendedAddressObj: async () => ({ script: ownerLock }),
       async *findCells() {
@@ -301,13 +310,13 @@ describe("recoverSessions with token sessions", () => {
     vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
     vi.spyOn(ccc.Transaction.prototype, "addCellDepsOfKnownScripts").mockResolvedValue(undefined as never);
 
-    expect(await recoverSessions(owner, d)).toMatchObject({ recovered: 800n * CKB, cells: 3, failed: 0 });
+    expect(await recoverSessions(owner, d)).toMatchObject({ recovered: 500n * CKB, cells: 2, failed: 0 });
     const [tx] = sent;
-    expect(tx.inputs.map((x) => Number(x.previousOutput.index))).toEqual([0, 1, 2, 9]);
+    expect(tx.inputs.map((x) => Number(x.previousOutput.index))).toEqual([0, 2, 9]);
     expect(tx.outputs).toHaveLength(1);
     expect(tx.outputs[0].lock.eq(ownerLock)).toBe(true);
     expect(tx.outputs[0].type?.eq(token)).toBe(true);
-    expect(tx.outputsData[0]).toBe(amount(100n));
+    expect(tx.outputsData[0]).toBe(amount(70n));
   });
 
   // Review, 28 Oct: planted cells whose tokens overflow a u128 with the owner's
@@ -343,6 +352,7 @@ describe("recoverSessions with token sessions", () => {
           }),
         }),
         getCell: async (op: ccc.OutPointLike) => [ownCell, strangerCell].find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
+        getKnownScript: (k: ccc.KnownScript) => client.getKnownScript(k),
       },
       getRecommendedAddressObj: async () => ({ script: ownerLock }),
       async *findCells() {

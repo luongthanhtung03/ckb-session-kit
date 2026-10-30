@@ -68,6 +68,7 @@ describe("recoverSessions: a planted foreign-typed cell sharing the victim's ses
         },
         sendTransaction,
         getTransaction: async () => undefined,
+        getKnownScript: (k: ccc.KnownScript) => new ccc.ClientPublicTestnet().getKnownScript(k),
       },
       getRecommendedAddressObj: async () => ({ script: ownerLock }),
       async *findCells() {
@@ -84,6 +85,60 @@ describe("recoverSessions: a planted foreign-typed cell sharing the victim's ses
     // owner could ever spend it).
     expect(swept.some((o) => o.eq(real[0].outPoint))).toBe(true);
     expect(result.recovered).toBe(600n * CKB);
+  });
+
+  // The fix has two halves. Even a planted cell `sweepable` keeps (a plain xUDT in the
+  // 16 bytes a session makes) can be refused by the node, spent first by its maker,
+  // say; grouped by the full session lock, it fails alone.
+  it("sweeps the victim's session alone when a kept planted cell under another lock is refused", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    vi.spyOn(ccc.Transaction.prototype, "addCellDepsOfKnownScripts").mockResolvedValue(undefined as never);
+    const xudt = ccc.Script.from({
+      ...(await new ccc.ClientPublicTestnet().getKnownScript(ccc.KnownScript.XUdt)),
+      args: h("ab"),
+    });
+    const kept = ccc.Cell.from({
+      outPoint: op(8),
+      cellOutput: {
+        lock: sessionLockScript(d, {
+          ownerLockHash: ownerLock.hash(),
+          sessionLockHash: h("b1"),
+          maxPerTx: 0n,
+          token: { typeHash: xudt.hash(), maxPerTx: 1n },
+        }),
+        type: xudt,
+        capacity: 250n * CKB,
+      },
+      outputData: ccc.hexFrom(ccc.numLeToBytes(1n, 16)),
+    });
+    const real = plainCell(1, "b1", 400n * CKB);
+    const cells = [real, kept];
+    const sent: ccc.Transaction[] = [];
+    const sendTransaction = async (tx: ccc.Transaction) => {
+      if (tx.inputs.some((i) => i.previousOutput.eq(kept.outPoint))) throw new Error("dead input");
+      sent.push(tx);
+      return tx.hash();
+    };
+    const owner = {
+      client: {
+        async *findCells(key: { script: ccc.ScriptLike }) {
+          const prefix = ccc.Script.from(key.script).args;
+          for (const c of cells) if (c.cellOutput.lock.args.startsWith(prefix)) yield c;
+        },
+        sendTransaction,
+        getTransaction: async () => undefined,
+        getKnownScript: (k: ccc.KnownScript) => new ccc.ClientPublicTestnet().getKnownScript(k),
+      },
+      getRecommendedAddressObj: async () => ({ script: ownerLock }),
+      async *findCells() {
+        yield ccc.Cell.from({ outPoint: op(9), cellOutput: { lock: ownerLock, capacity: 100n * CKB }, outputData: "0x" });
+      },
+      signTransaction: async (tx: ccc.Transaction) => tx,
+      sendTransaction,
+    } as unknown as ccc.Signer;
+
+    expect(await recoverSessions(owner, d)).toMatchObject({ recovered: 400n * CKB, cells: 1, failed: 1 });
+    expect(sent.flatMap((tx) => tx.inputs.map((i) => i.previousOutput)).some((o) => o.eq(real.outPoint))).toBe(true);
   });
 });
 
@@ -134,12 +189,18 @@ describe("spendInSession: the key cell that pays the fee", () => {
       return true;
     } as never);
     vi.spyOn(ccc.SignerCkbPrivateKey.prototype, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
-    vi.spyOn(client, "sendTransaction").mockResolvedValue(h("ee"));
+    const send = vi.spyOn(client, "sendTransaction").mockResolvedValue(h("ee"));
 
     // Today this throws "the key cell cannot cover another fee; top it up", although a
     // 100 CKB key cell is live, and keeps throwing after every further top-up.
     await expect(spendInSession(session, client, d, binding, { to: recipient, amount: 1n * CKB, topUp: true })).resolves.toBe(
       h("ee"),
     );
+    // One key cell in (the largest), one out under the key's lock, smaller: lock rule 17.
+    const tx = ccc.Transaction.from(send.mock.calls[0][0]);
+    const keyIns = tx.inputs.filter((i) => [first, funded].some((c) => c.outPoint.eq(i.previousOutput)));
+    expect(keyIns.map((i) => i.previousOutput.eq(funded.outPoint))).toEqual([true]);
+    const keyOuts = tx.outputs.filter((o) => o.lock.eq(keyLock));
+    expect(keyOuts.map((o) => o.capacity)).toEqual([100n * CKB - 1000n]);
   });
 });

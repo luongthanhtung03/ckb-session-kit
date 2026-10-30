@@ -427,15 +427,24 @@ export async function openSession(
  * widens who may mint (owner mode by input or output type, code review 14 Oct).
  */
 export async function assertPlainXudt(type: ccc.Script, client: ccc.Client): Promise<void> {
-  const xudt = await client.getKnownScript(ccc.KnownScript.XUdt);
+  const fault = plainXudtFault(type, await client.getKnownScript(ccc.KnownScript.XUdt));
+  if (fault) throw new SessionPolicyError(fault);
+}
+
+/** The network's xUDT code: what `client.getKnownScript(ccc.KnownScript.XUdt)` returns. */
+type XudtCode = { codeHash: ccc.Hex; hashType: ccc.HashType };
+
+/** Why `type` is not a plain xUDT under the network's xUDT script `xudt`, or undefined if it is. */
+function plainXudtFault(type: ccc.Script, xudt: XudtCode): string | undefined {
   if (type.codeHash !== xudt.codeHash || type.hashType !== xudt.hashType) {
-    throw new SessionPolicyError("a token session holds an xUDT token; this type script is not xUDT");
+    return "a token session holds an xUDT token; this type script is not xUDT";
   }
   const args = ccc.bytesFrom(type.args);
-  if (args.length < 32) throw new SessionPolicyError("xUDT args must start with the issuer's 32-byte lock hash");
+  if (args.length < 32) return "xUDT args must start with the issuer's 32-byte lock hash";
   if (args.length >= 36 && ccc.numLeFromBytes(args.slice(32, 36)) !== 0n) {
-    throw new SessionPolicyError("xUDT tokens with flags (extension scripts, other owner modes) are not supported in a session");
+    return "xUDT tokens with flags (extension scripts, other owner modes) are not supported in a session";
   }
+  return undefined;
 }
 
 /**
@@ -563,7 +572,10 @@ export async function spendInSession(
     }
   }
   // The key cell authorises the spend, comes back as the last output and pays the fee.
-  tx.inputs.push(ccc.CellInput.from({ previousOutput: state.keyCells[0].outPoint }));
+  // The largest one: any other plain cell sent to the key address (a stranger's
+  // 61 CKB, or a top-up beside a key cell run down to its floor) is listed first
+  // and may not cover the fee (audit, 30 Oct). One key cell in, one out, no larger.
+  tx.inputs.push(ccc.CellInput.from({ previousOutput: largestCell(state.keyCells).outPoint }));
   if (request.memo !== undefined) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: request.memo });
   tx.addOutput({ lock: state.keyLock, capacity: 0n });
   await tx.completeFeeChangeToOutput(sessionSigner(session, client), tx.outputs.length - 1);
@@ -572,6 +584,16 @@ export async function spendInSession(
     throw new SessionBalanceError("the key cell cannot cover another fee; top it up", "no-fee-cell");
   }
   return signAndSend(sessionSigner(session, client), tx, request.beforeSend);
+}
+
+/** The largest of `cells` by capacity; on a tie, the lowest out point (tx hash, then index), whatever the indexer order. */
+function largestCell(cells: ccc.Cell[]): ccc.Cell {
+  const before = (x: ccc.OutPoint, y: ccc.OutPoint) => (x.txHash !== y.txHash ? x.txHash < y.txHash : x.index < y.index);
+  return cells.reduce((best, c) => {
+    const a = c.cellOutput.capacity;
+    const b = best.cellOutput.capacity;
+    return a > b || (a === b && before(c.outPoint, best.outPoint)) ? c : best;
+  });
 }
 
 /** The cells created at least `blocks` blocks before the tip: those a relative `since` of `blocks` can spend. */
@@ -643,7 +665,8 @@ export async function closeSession(
  * for a token session) are kept: a cell with malformed args would fail the lock
  * even in owner mode, and anyone can create one with this owner's hash as a prefix
  * to block a sweep. Likewise a typed cell is kept only if it holds the session's
- * own token in well-formed data; anything else could make the sweep fail. Cells
+ * own token, a plain xUDT, in exactly 16 bytes of data; anything else could make
+ * the sweep fail. Cells
  * whose tokens would overflow a u128 together are left out (`withinU128`).
  *
  * Pass several deployments (`[TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]`)
@@ -655,6 +678,7 @@ export async function findOwnedSessionCells(
 ): Promise<ccc.Cell[]> {
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
   const cells: ccc.Cell[] = [];
+  let xudt: XudtCode | undefined; // looked up once, at the first typed cell
   for (const deployment of [deployments].flat()) {
     for await (const cell of owner.client.findCells({
       script: { codeHash: deployment.codeHash, hashType: deployment.hashType, args: ownerLock.hash() },
@@ -662,7 +686,8 @@ export async function findOwnedSessionCells(
       scriptSearchMode: "prefix",
       withData: true,
     })) {
-      if (sweepable(cell)) cells.push(cell);
+      if (cell.cellOutput.type && !xudt) xudt = await owner.client.getKnownScript(ccc.KnownScript.XUdt);
+      if (sweepable(cell, xudt)) cells.push(cell);
     }
   }
   return withinU128(owner.client, cells);
@@ -674,8 +699,8 @@ export async function findOwnedSessionCells(
  *
  * Anyone can create a cell under a session lock carrying this owner's hash and
  * their own key, and spend it before the sweep lands, which would make a single
- * sweep fail. So if the one transaction is refused, each session (cells sharing a
- * session key) is swept on its own, one signature each: a cell someone else can
+ * sweep fail. So if the one transaction is refused, each session (cells under one
+ * session lock) is swept on its own, one signature each: a cell someone else can
  * spend fails alone, and `failed` counts the sessions not recovered. A fault no
  * retry can fix (the owner holds no plain cell to prove ownership) is thrown.
  *
@@ -699,10 +724,13 @@ export async function recoverSessions(
     if (fixed(e)) throw e;
     // Fall through: one session at a time.
   }
+  // One group per session lock (its full hash), not per session key: anyone can
+  // plant a cell carrying the victim's (public) key hash under other args, and a
+  // group it joined would fail on every retry (audit, 30 Oct).
   const sessions = new Map<string, ccc.Cell[]>();
   for (const c of cells) {
-    const keyHash = c.cellOutput.lock.args.slice(66, 130); // session_lock_hash, bytes 32..64
-    sessions.set(keyHash, [...(sessions.get(keyHash) ?? []), c]);
+    const lockHash = c.cellOutput.lock.hash();
+    sessions.set(lockHash, [...(sessions.get(lockHash) ?? []), c]);
   }
   const result = { txHashes: [] as ccc.Hex[], recovered: 0n, cells: 0, failed: 0 };
   for (const group of sessions.values()) {
@@ -718,14 +746,25 @@ export async function recoverSessions(
   return result;
 }
 
-/** A session cell an owner sweep can safely include. */
-function sweepable(cell: ccc.Cell): boolean {
+/**
+ * A session cell an owner sweep can safely include. A typed cell must hold the
+ * session's own token, a plain xUDT (`assertPlainXudt`'s rules, against the
+ * network's xUDT script `xudt`), in exactly the 16-byte amount a session makes:
+ * any other type script can refuse to be consumed, or needs code the sweep does
+ * not bring (audit, 30 Oct).
+ */
+function sweepable(cell: ccc.Cell, xudt?: XudtCode): boolean {
   const args = ccc.bytesFrom(cell.cellOutput.lock.args);
   const type = cell.cellOutput.type;
   if (args.length === 80 || args.length === 112) return !type;
   if (args.length !== 128 && args.length !== 160) return false;
   if (!type) return true;
-  return type.hash() === ccc.hexFrom(args.slice(80, 112)) && ccc.bytesFrom(cell.outputData).length >= 16;
+  return (
+    !!xudt &&
+    plainXudtFault(type, xudt) === undefined &&
+    type.hash() === ccc.hexFrom(args.slice(80, 112)) &&
+    ccc.bytesFrom(cell.outputData).length === 16
+  );
 }
 
 /**
