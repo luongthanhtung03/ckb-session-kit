@@ -16,6 +16,41 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   demo's charge route answers it with 503 (the deployment's setup, not the
   subscription's state) instead of 409.
 
+### Fixed (audit round 2, 31 Oct)
+- `closeSession` refuses a signer whose lock is not `binding.ownerLock` with a
+  `SessionPolicyError`, before asking it to sign. After a wallet switch, the
+  new wallet was shown a sweep of the old wallet's session to itself (the lock
+  refused it on-chain, so nothing was lost).
+- `closeSession` can finish once the session is empty on-chain: with the
+  funding committed and nothing indexed, it asks the node whether the funding's
+  outputs under the session and the key are still live, and reports
+  `nothingFound` when all are spent. Before, a close whose key return was taken
+  but whose reply was lost (or a close from a second tab) left a key that could
+  never be forgotten. The key return now goes through `signAndSend`, so a lost
+  reply the node did take is reported as `keyTx`.
+- CCC's client cache lists a client's own outputs as live until cleared, so a
+  tab (or a warm server instance) built every later spend on cells another tab
+  had spent, and the node rejected each one. `spendInSession`, `closeSession`,
+  `chargeSubscription` and `cancelSubscription` now leave out cached-only cells
+  the node no longer has, and on a rejection for a spent or unknown input clear
+  the cache and build the transaction once more.
+- `verifyAccess`, `verifySubscription` and `subscriptionStatus` read payments
+  with `getTransactionNoCache`. `getTransaction` answers from the cache when
+  the node no longer knows a transaction, so a payment that was reorged out kept
+  granting access on a long-lived server client.
+- Demo: one "unknown" answer just after a lost send no longer makes a page
+  forget the session key (about 62 CKB stranded once the funding lands) or a
+  payment record. A key or record is forgotten only when the node rejected the
+  transaction, or has not known it for 10 minutes (the rule the payment polls
+  already used); meanwhile the page keeps polling it.
+- Demo: every page's wallet lookup drops a late answer from the previous
+  wallet, and the subscribe page drops a status refresh started for the
+  previous wallet, asset or opening, and clears its status and notes on
+  disconnect.
+- Demo: the CKB Place board asks again about a placement `get_transaction`
+  missed once, instead of leaving it off the board until a reload.
+- Demo: the charge route builds a new CCC client per request.
+
 ### Fixed (security audit, 30 Oct)
 - `recoverSessions`: when the one sweep is refused, sessions are now swept one
   session lock at a time (full lock hash), not one session key hash at a time. A
