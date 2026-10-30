@@ -183,6 +183,35 @@ export async function withinU128(client: ccc.Client, cells: ccc.Cell[]): Promise
 /** One of `cells` at random: payers or chargers at once then rarely compete for the same cell. */
 export const randomPick = <T>(cells: T[]): T | undefined => cells[Math.floor(Math.random() * cells.length)];
 
+/** Whether `lock` is this network's anyone-can-pay lock (RFC 0026). */
+export async function isAnyoneCanPay(lock: ccc.Script, client: ccc.Client): Promise<boolean> {
+  const acp = await client.getKnownScript(ccc.KnownScript.AnyoneCanPay);
+  return lock.codeHash === acp.codeHash && lock.hashType === acp.hashType;
+}
+
+/**
+ * Tops up a random cell under the anyone-can-pay `lock` in `tx`: one input, and
+ * one output holding `ckb` shannons more, or with `token`, `units` more of it in
+ * a cell of that token. Returns the cell, or undefined when `lock` has none to add to.
+ */
+export async function addTopUp(
+  tx: ccc.Transaction,
+  client: ccc.Client,
+  lock: ccc.Script,
+  add: { ckb?: bigint; token?: ccc.Script; units?: bigint },
+): Promise<ccc.Cell | undefined> {
+  const { token } = add;
+  const target = randomPick((await collect(client, lock, token)).filter((c) => !!token === !!c.cellOutput.type));
+  if (!target) return undefined;
+  tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
+  tx.addOutput(
+    { lock, type: target.cellOutput.type, capacity: target.cellOutput.capacity + (add.ckb ?? 0n) },
+    token ? tokenData(tokenAmount(target.outputData) + (add.units ?? 0n)) : "0x",
+  );
+  await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay, ...(token ? [ccc.KnownScript.XUdt] : []));
+  return target;
+}
+
 /** Plain cells under `lock`; with `token`, also cells holding exactly that token. */
 export async function collect(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
@@ -452,24 +481,14 @@ export async function spendInSession(
   // The payment: output 0, plus the recipient's cell when topping up.
   let ckbOut: bigint;
   if (request.topUp) {
-    const acp = await client.getKnownScript(ccc.KnownScript.AnyoneCanPay);
-    if (toLock.codeHash !== acp.codeHash || toLock.hashType !== acp.hashType) {
-      throw new ScopeError("top-up needs an anyone-can-pay recipient");
-    }
+    if (!(await isAnyoneCanPay(toLock, client))) throw new ScopeError("top-up needs an anyone-can-pay recipient");
     // Payers at once compete for a cell; a random pick spreads them out when the
     // recipient keeps several.
-    const targets = (await collect(client, toLock, tokenType)).filter((c) =>
-      request.token !== undefined ? !!c.cellOutput.type : !c.cellOutput.type,
-    );
-    const target = randomPick(targets);
-    if (!target) throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up");
-    tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
     ckbOut = request.amount ?? 0n;
-    tx.addOutput(
-      { lock: toLock, type: target.cellOutput.type, capacity: target.cellOutput.capacity + ckbOut },
-      request.token !== undefined ? tokenData(tokenAmount(target.outputData) + tokenOut) : "0x",
-    );
-    await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay);
+    const paid = request.token !== undefined ? { token: tokenType, units: tokenOut } : { ckb: ckbOut };
+    if (!(await addTopUp(tx, client, toLock, paid))) {
+      throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up");
+    }
   } else if (request.token !== undefined) {
     tx.addOutput({ lock: toLock, type: tokenType, capacity: 0n }, tokenData(tokenOut)); // CCC sizes it
     ckbOut = tx.outputs[0].capacity;

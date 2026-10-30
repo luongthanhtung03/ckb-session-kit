@@ -1,4 +1,5 @@
 import { ccc } from "@ckb-ccc/core";
+import { soleMemo } from "./paywall.js";
 
 /**
  * CKB Place: a shared pixel board kept on-chain, with no database.
@@ -120,18 +121,7 @@ export function placementMemo(
   board: PlaceBoard = PLACE_BOARD,
 ): { index: number; pixels: Pixel[] } | undefined {
   const t = ccc.Transaction.from(tx);
-  let found: { index: number; memo: ccc.Hex } | undefined;
-  for (let i = 0; i < t.witnesses.length; i++) {
-    let inputType: ccc.Hex | undefined;
-    try {
-      inputType = t.getWitnessArgsAt(i)?.inputType;
-    } catch {
-      continue; // not WitnessArgs: carries no memo
-    }
-    if (inputType === undefined) continue;
-    if (found) return undefined; // two memos: which one was paid for is ambiguous
-    found = { index: i, memo: inputType };
-  }
+  const found = soleMemo(t); // two memos: which one was paid for is ambiguous
   if (!found || found.index >= t.inputs.length) return undefined;
   const pixels = decodePlacement(found.memo, board);
   return pixels && { index: found.index, pixels };

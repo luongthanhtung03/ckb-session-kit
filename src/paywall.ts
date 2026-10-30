@@ -29,6 +29,23 @@ export function paymentMemo(label: string): ccc.Hex {
   return ccc.hexFrom(ccc.bytesFrom(label, "utf8"));
 }
 
+/** The one witness carrying a memo (an `inputType`) and its index; undefined with none or several. */
+export function soleMemo(tx: ccc.Transaction): { index: number; memo: ccc.Hex } | undefined {
+  let found: { index: number; memo: ccc.Hex } | undefined;
+  for (let i = 0; i < tx.witnesses.length; i++) {
+    let inputType: ccc.Hex | undefined;
+    try {
+      inputType = tx.getWitnessArgsAt(i)?.inputType;
+    } catch {
+      continue; // not WitnessArgs: carries no memo
+    }
+    if (inputType === undefined) continue;
+    if (found) return undefined;
+    found = { index: i, memo: inputType };
+  }
+  return found;
+}
+
 function accessMessage(txHash: ccc.HexLike, memo: ccc.HexLike): string {
   return `ckb-session-kit access ${ccc.hexFrom(txHash)} ${ccc.hexFrom(memo)}`;
 }
@@ -78,21 +95,9 @@ export async function verifyAccess(
 
   // Cheap checks first, before resolving any input over RPC.
   if (tx.inputs.length > MAX_PAYMENT_INPUTS) return { ok: false, reason: "not a session payment: too many inputs" };
-  let memos = 0;
-  let memoAt = -1;
-  for (let i = 0; i < tx.witnesses.length; i++) {
-    let inputType: ccc.Hex | undefined;
-    try {
-      inputType = tx.getWitnessArgsAt(i)?.inputType;
-    } catch {
-      continue; // not WitnessArgs: carries no memo
-    }
-    if (inputType !== undefined) {
-      memos++;
-      memoAt = i;
-    }
-  }
-  if (memos !== 1) return { ok: false, reason: "a payment must carry exactly one memo" };
+  const sole = soleMemo(tx);
+  if (!sole) return { ok: false, reason: "a payment must carry exactly one memo" };
+  const memoAt = sole.index;
 
   // The payer's lock: the standard secp256k1 lock of the key that signed the request.
   const payerLock = (await new ccc.SignerCkbPublicKey(client, proof.publicKey).getAddressObjSecp256k1()).script;

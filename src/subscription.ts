@@ -7,9 +7,11 @@ import {
   type SessionLockDeployment,
 } from "./lock.js";
 import {
+  addTopUp,
   assertPlainXudt,
   assertSigningLock,
   collect,
+  isAnyoneCanPay,
   keyCellFloor,
   ownerSweep,
   randomPick,
@@ -85,11 +87,6 @@ function assertTerms(sub: Subscription): void {
   if (sub.payToLockHash === sub.subscriberLockHash) throw new SessionPolicyError("payTo must not be the subscriber");
 }
 
-async function isAnyoneCanPay(lock: ccc.Script, client: ccc.Client): Promise<boolean> {
-  const acp = await client.getKnownScript(ccc.KnownScript.AnyoneCanPay);
-  return lock.codeHash === acp.codeHash && lock.hashType === acp.hashType;
-}
-
 /**
  * The memo an opening commits to, binding the subscription to one account at the
  * creator: a hash, so the account id never appears on-chain and can double as a
@@ -136,14 +133,7 @@ async function spentBy(client: ccc.Client, tx: ccc.Transaction, lockHash: ccc.He
 /** Whether `p` spends a cell under `lockHash`: who took part in the transaction. */
 const spends = (p: Payment, lockHash: ccc.Hex) => p.inputs.some((c) => c?.cellOutput.lock.hash() === lockHash);
 
-/** A cell of `token` under `payTo`'s anyone-can-pay lock to top up; random, so payers at once rarely collide. */
-async function tokenTarget(client: ccc.Client, payToLock: ccc.Script, token: ccc.Script): Promise<ccc.Cell> {
-  const target = randomPick((await collect(client, payToLock, token)).filter((c) => !!c.cellOutput.type));
-  if (!target) {
-    throw new SessionBalanceError("payTo has no cell of this token to top up: create one (any amount, even 0) first");
-  }
-  return target;
-}
+const NO_TOKEN_TARGET = "payTo has no cell of this token to top up: create one (any amount, even 0) first";
 
 /**
  * The subscriber opens a subscription, in one transaction and one signature: the
@@ -245,24 +235,13 @@ export async function openSubscription(
   }
   // The first period, paid now.
   if (token) {
-    const target = await tokenTarget(client, payToLock, token);
-    tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
-    tx.addOutput(
-      { lock: payToLock, type: token, capacity: target.cellOutput.capacity },
-      tokenData(tokenAmount(target.outputData) + opts.price),
-    );
-    await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay, ccc.KnownScript.XUdt);
+    if (!(await addTopUp(tx, client, payToLock, { token, units: opts.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET);
     await tx.completeInputsByUdt(subscriber, token);
     const extra = (await tx.getInputsUdtBalance(client, token)) - tx.getOutputsUdtBalance(token);
     if (extra > 0n) tx.addOutput({ lock: subscriberLock, type: token }, tokenData(extra));
   } else {
-    // Random, like a token target: openings at once rarely compete for one cell (review, 28 Oct).
-    const target = acp ? randomPick(await collect(client, payToLock)) : undefined;
-    if (target) {
-      tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
-      tx.addOutput({ lock: payToLock, capacity: target.cellOutput.capacity + opts.price });
-      await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay);
-    } else {
+    // A random cell, so openings at once rarely compete for one (review, 28 Oct).
+    if (!acp || !(await addTopUp(tx, client, payToLock, { ckb: opts.price }))) {
       tx.addOutput({ lock: payToLock, capacity: opts.price });
       if (tx.outputs[1].capacity !== opts.price) {
         throw new SessionBalanceError(`payTo has no cell to top up, and a new one needs ${ccc.fixedPointToString(newCell)} CKB`);
@@ -381,20 +360,12 @@ export async function chargeSubscription(
   const tx = ccc.Transaction.from({ cellDeps: [sessionLockCellDep(deployment)] });
   if (token) {
     if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("a token subscription needs an anyone-can-pay payTo");
-    const target = await tokenTarget(client, payToLock, token);
-    tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
-    tx.addOutput(
-      { lock: payToLock, type: token, capacity: target.cellOutput.capacity },
-      tokenData(tokenAmount(target.outputData) + sub.price),
-    );
-    await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay, ccc.KnownScript.XUdt);
+    if (!(await addTopUp(tx, client, payToLock, { token, units: sub.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET);
   } else if (opts.topUp) {
     if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("topUp needs an anyone-can-pay payTo");
-    const target = randomPick(await collect(client, payToLock));
-    if (!target) throw new SessionBalanceError("payTo has no anyone-can-pay cell to top up");
-    tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
-    tx.addOutput({ lock: payToLock, capacity: target.cellOutput.capacity + sub.price });
-    await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay);
+    if (!(await addTopUp(tx, client, payToLock, { ckb: sub.price }))) {
+      throw new SessionBalanceError("payTo has no anyone-can-pay cell to top up");
+    }
   } else {
     tx.addOutput({ lock: payToLock, capacity: sub.price });
     if (tx.outputs[0].capacity !== sub.price) {
