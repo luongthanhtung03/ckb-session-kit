@@ -319,6 +319,19 @@ ran it on 27 Oct 2026 with the demo token:
 **Try it in the browser:** [ckb-session-kit.vercel.app/subscribe](https://ckb-session-kit.vercel.app/subscribe):
 2 CKB per 60 blocks; members' notes the server releases only while you are paid up.
 
+**Deploying it.** The server that charges holds the charger key (`CHARGER_KEY` in
+the deployment's environment, on Vercel for the demo). Make it a **key of its
+own, never the creator's key** or the key behind the payout address: the lock
+limits what the charger can take from subscriptions, but nothing limits what a
+key can do with its own cells, so a leak of the server's environment would also
+hand over all the creator's income. Give it only a few fee cells. `npm run
+setup:charger` creates one in `.env.charger` (gitignored) and prints its address
+and the next steps; nothing is sent. A status or a charge reads at most
+`MAX_SUBSCRIPTION_CELLS` (16) cells under one subscription's lock and refuses
+beyond that (`SessionPolicyError`, reason `"too-many-cells"`), so planted cells
+cannot make one request cost thousands of RPC calls; the subscriber clears them
+by cancelling.
+
 ## Which wallets can own a session
 
 The owner signs to open, close and recover, so the owner's wallet must work. `npm

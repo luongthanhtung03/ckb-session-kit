@@ -16,6 +16,29 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   demo's charge route answers it with 503 (the deployment's setup, not the
   subscription's state) instead of 409.
 
+### Fixed (security audit, 30 Oct)
+- `subscriptionStatus`, `chargeSubscription` and `findSubscriptionCells` read at
+  most `MAX_SUBSCRIPTION_CELLS` (16, exported) cells under a subscription's lock,
+  and at most 64 recent transactions of its history. Beyond that they throw
+  `SessionPolicyError` with the new reason `"too-many-cells"` instead of reading
+  part of the cells, which could deny a paid-up subscriber or let a cell left out
+  of a charge pay a second price in the period. Planted cells (anyone can create
+  them) made each status request look up every creating transaction and all its
+  inputs again: 100 cells cost 3,307 RPC calls. `cancelSubscription` still reads
+  and sweeps every cell, so the subscriber can clear planted ones.
+- Subscription payments are checked once per transaction within a call, and a
+  transaction whose outputs to `payTo` already fall short is refused before its
+  inputs are looked up.
+- `chargeSubscription` picks its fee cell from the first 64 cells under the
+  charger's lock instead of reading all of them.
+- Demo: `/api/subscription` answers `"too-many-cells"` with 409 (the page shows
+  it), not 503 with retry.
+- Demo: the charger address is the creator's key, so `CHARGER_KEY` on the server
+  could spend the creator's income and payout cells. New `npm run setup:charger`
+  creates a separate key (`.env.charger`, written once, mode 0600) and prints its
+  address and next steps; the docs now require a charger key of its own holding
+  only fee cells. `CHARGER` is replaced once that key is funded and set on Vercel.
+
 ### Fixed (30 Oct)
 - `chargeSubscription` and `nextChargeIn` date the last charge from the
   subscription lock's indexer history, not from its change cell: a charge of the
