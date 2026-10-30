@@ -1,6 +1,7 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TESTNET_DEPLOYMENT as d, TESTNET_LEGACY_DEPLOYMENTS } from "../src/lock.js";
+import { TESTNET_LEGACY_DEPLOYMENTS } from "../src/lock.js";
+import { codeCellAt, TEST_DEPLOYMENT as d } from "./fixtures/deployment.js";
 import { SessionBalanceError } from "../src/onchain.js";
 import { SessionPolicyError } from "../src/session.js";
 import {
@@ -43,7 +44,7 @@ function fakeClient(
         yield { txHash: t.txHash, blockNumber: t.blockNumber, txIndex: 0n, cells: [{ isInput: t.spent, cellIndex: 0n }] };
       }
     },
-    getCellLive: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
+    getCellLive: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))) ?? codeCellAt(op),
     getCell: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
     getTip: async () => 1000n,
     getTransaction: async (hash: ccc.HexLike) => ({
@@ -363,6 +364,31 @@ describe("chargeSubscription", () => {
     expect(await reasonOf([cellOf(lock, 500n * CKB), payout(), fee()], 990n)).toBeUndefined(); // not a full period
     expect(await reasonOf([cellOf(lock, 160n * CKB), payout(), fee()])).toBeUndefined(); // run dry
     expect(await reasonOf([payout(), fee()])).toBeUndefined(); // cancelled
+  });
+
+  // Audit round 2, 31 Oct (finding 14): a charger cell just above its floor passed
+  // the filter, then CCC threw a plain "Insufficient CKB" for the fee.
+  it("needs a charger cell with room for the fee, and turns CCC's fee shortfall into no-fee-cell", async () => {
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const lock = subscriptionLock(d, r.sub);
+    const charge = async (cells: ccc.Cell[]) => {
+      const { client, sent } = fakeClient(cells);
+      const err = await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(sent).toHaveLength(0);
+      return err as SessionBalanceError;
+    };
+    const payout = () => cellOf(r.payToLock, 200n * CKB);
+    const thin = await charge([cellOf(lock, 500n * CKB), payout(), cellOf(r.chargerLock, 61n * CKB + 1000n)]);
+    expect(thin).toBeInstanceOf(SessionBalanceError);
+    expect(thin.reason).toBe("no-fee-cell");
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockRejectedValue(new ccc.ErrorTransactionInsufficientCapacity(1000n));
+    const short = await charge([cellOf(lock, 500n * CKB), payout(), cellOf(r.chargerLock, 100n * CKB)]);
+    expect(short).toBeInstanceOf(SessionBalanceError);
+    expect(short.reason).toBe("no-fee-cell");
   });
 });
 

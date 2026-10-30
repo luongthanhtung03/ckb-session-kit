@@ -6,6 +6,7 @@ import {
   type SessionLockDeployment,
   type SessionLockParams,
 } from "./lock.js";
+import { assertCurrentDeployment } from "./deployment.js";
 import { checkRequest, isActive, SessionPolicyError, type Session } from "./session.js";
 import { ScopeError, sessionSigner } from "./transfer.js";
 
@@ -216,7 +217,15 @@ export async function addTopUp(
   add: { ckb?: bigint; token?: ccc.Script; units?: bigint },
 ): Promise<ccc.Cell | undefined> {
   const { token } = add;
-  const target = randomPick((await collect(client, lock, token)).filter((c) => !!token === !!c.cellOutput.type));
+  const cells = (await collect(client, lock, token)).filter((c) => !!token === !!c.cellOutput.type);
+  // A cell the payment would take past a u128 of tokens cannot be topped up (xUDT refuses it).
+  const room = token ? cells.filter((c) => tokenAmount(c.outputData) + (add.units ?? 0n) <= U128_MAX) : cells;
+  if (cells.length && !room.length) {
+    throw new SessionBalanceError(
+      "every token cell of the recipient would hold over 2^128 - 1 units after this payment", "no-payout-cell",
+    );
+  }
+  const target = randomPick(room);
   if (!target) return undefined;
   tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
   tx.addOutput(
@@ -391,6 +400,8 @@ export async function openSession(
   if (recipientLockHash === keyLock.hash()) {
     throw new SessionPolicyError("the recipient is the session key itself: it could then pay anyone");
   }
+  // Not a legacy lock, and its code is live on this network (audit round 2, 31 Oct).
+  await assertCurrentDeployment(client, deployment);
   const lock = sessionLockScript(deployment, params(session, keyLock, binding));
 
   const tx = ccc.Transaction.from({
@@ -578,12 +589,28 @@ export async function spendInSession(
   tx.inputs.push(ccc.CellInput.from({ previousOutput: largestCell(state.keyCells).outPoint }));
   if (request.memo !== undefined) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: request.memo });
   tx.addOutput({ lock: state.keyLock, capacity: 0n });
-  await tx.completeFeeChangeToOutput(sessionSigner(session, client), tx.outputs.length - 1);
+  await completeFeeOrNoFeeCell(tx, sessionSigner(session, client), "the key cell cannot cover the fee; top it up");
   // Below this, the key cell could no longer go back to the owner at the end.
   if (tx.outputs[tx.outputs.length - 1].capacity < keyCellFloor(binding.ownerLock)) {
     throw new SessionBalanceError("the key cell cannot cover another fee; top it up", "no-fee-cell");
   }
   return signAndSend(sessionSigner(session, client), tx, request.beforeSend);
+}
+
+/**
+ * `completeFeeChangeToOutput` into the last output, with CCC's "Insufficient CKB"
+ * (the paying cell holds its floor but not the fee too) as a
+ * `SessionBalanceError` with reason `no-fee-cell` (audit round 2, 31 Oct).
+ */
+export async function completeFeeOrNoFeeCell(tx: ccc.Transaction, signer: ccc.Signer, message: string): Promise<void> {
+  try {
+    await tx.completeFeeChangeToOutput(signer, tx.outputs.length - 1);
+  } catch (e) {
+    // By class, or by message where a second copy of CCC threw it (a bundler's CJS and ESM builds).
+    const short = e instanceof ccc.ErrorTransactionInsufficientCapacity || (e instanceof Error && /^Insufficient CKB/.test(e.message));
+    if (short) throw new SessionBalanceError(message, "no-fee-cell");
+    throw e;
+  }
 }
 
 /** The largest of `cells` by capacity; on a tie, the lowest out point (tx hash, then index), whatever the indexer order. */

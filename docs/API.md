@@ -53,6 +53,11 @@ send throws but the node did take the transaction, `openSession` returns
 normally. A session cell occupies
 121 CKB (153 with a recipient), which stays locked as the cell itself.
 
+Before building anything, `openSession` calls `assertCurrentDeployment`: a
+legacy deployment, `hashType: "data"`, or a deployment whose code cell is not
+live on the owner's network (or does not hash to `codeHash`) is refused with
+`SessionPolicyError`.
+
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
 cell also holds `amount` units of the xUDT `type` (taken from the owner's
 cells, any surplus returned), and one spend may move at most `maxPerTx` units,
@@ -147,8 +152,10 @@ where `token` is `{ type, maxPerTx }`.
 Not enough in the session, its change, or its key cell, or a budget below what a
 cell occupies. `reason` (type `SessionBalanceReason`) is set when the cells missing
 are the paying side's own rather than the session's or subscription's state:
-`"no-fee-cell"` (no key cell, or no charger cell, that can pay the fee) or
-`"no-payout-cell"` (the recipient or `payTo` has no cell to top up). Match on it,
+`"no-fee-cell"` (no key cell, or no charger cell, that can pay the fee, including
+CCC's "Insufficient CKB" when the cell holds its floor but not the fee) or
+`"no-payout-cell"` (the recipient or `payTo` has no cell to top up, or none of its
+token cells can take the payment without passing 2^128 - 1 units). Match on it,
 not on the message, which may change. Other balance errors leave it undefined.
 
 ## The session lock
@@ -161,6 +168,24 @@ Equal to [`deployment/testnet.json`](../deployment/testnet.json).
 Earlier deployments, newest first. Deployed code is immutable, so sessions opened
 under an earlier version keep its rules until swept; recover with
 `recoverSessions(wallet, [TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS])`.
+`openSession` and `openSubscription` refuse them (the 13 Oct code cannot spend
+a token session's args at all; the 8 Oct one lacks errors 16-18). Spending,
+closing, recovering, charging and cancelling still accept them.
+
+### `assertCurrentDeployment(client, deployment)`
+Throws `SessionPolicyError` unless new cells may go under `deployment` on
+`client`'s network: not a legacy deployment; `hashType` not `data` (the lock
+faults under CKB-VM version 0; use `data1`, `data2` or `type`); and the cell
+dep is live and holds the code: its data hashes to `codeHash` (`hashCkb`), or
+for `hashType: "type"` its type script does. A `depGroup` cell dep is resolved
+and any member may match. One `getCellLive` lookup per client and deployment:
+a pass is cached for the process, a failure is not. `openSession` and
+`openSubscription` call it.
+
+There is no mainnet deployment and no `MAINNET_DEPLOYMENT`. A mainnet caller
+deploys the binary (byte-identical to the testnet one, `npm run check:lock-hash`)
+and passes its own `SessionLockDeployment`:
+`{ codeHash, hashType: "data2", cellDep: { outPoint: { txHash, index }, depType: "code" } }`.
 
 ### `sessionLockScript(deployment, params)`, `sessionLockArgs(params)`, `sessionLockCellDep(deployment)`
 Build the lock script, its 80- or 112-byte args
@@ -226,7 +251,8 @@ One transaction, one subscriber signature: the first period's price goes to
 input. Refuses terms the lock would not enforce as meant: a price or period of 0,
 `payTo` equal to the charger (every charge would fail with error 17), the
 subscriber as charger or payout, a charger lock that needs no signature, an old
-deployment of the lock, a live subscription with exactly the same terms, and a
+deployment of the lock or one whose code is not on the client's network
+(`assertCurrentDeployment`), a live subscription with exactly the same terms, and a
 price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
 of 153 CKB plus n prices pays n more periods. Keep a plain cell in the wallet:
 cancelling needs one. `budget` is required without `token`.
@@ -243,7 +269,9 @@ The memo an opening commits to, binding the subscription to one account at the c
 ### `chargeSubscription(charger, deployment, subscription, { payTo, topUp?, beforeSend? }) → txHash`
 The charger key takes one price, with the period as the inputs' relative `since`,
 and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee
-comes from one of the charger's own plain cells. Throws `SessionBalanceError`
+comes from one of the charger's own plain cells holding at least its floor plus
+0.01 CKB; with none, or when CCC finds the cell short of the fee, it throws
+`SessionBalanceError` with reason `"no-fee-cell"`. Throws `SessionBalanceError`
 before a full period (saying how many blocks are left), counted from the last
 charge as well as from each cell, so a top-up cannot pay a second price in the
 same period (the last charge is read from the lock's indexer history, so a
