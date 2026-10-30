@@ -14,6 +14,7 @@ export {
   TESTNET_LEGACY_DEPLOYMENTS,
 } from "./lock.js";
 export type { SessionLockDeployment, SessionLockParams } from "./lock.js";
+export { assertCurrentDeployment } from "./deployment.js";
 export {
   assertPlainXudt,
   assertSigningLock,

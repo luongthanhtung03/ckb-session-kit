@@ -242,6 +242,40 @@ describe("spendInSession in a token session", () => {
     expect(await reasonOf(spendInSession(s.session, client, d, s.binding, { to: s.recipient, token: 3n * T, topUp: true }))).toBeUndefined();
   });
 
+  // Audit round 2, 31 Oct (finding 14): a key cell above its floor but short of the
+  // fee made CCC throw a plain "Insufficient CKB"; it is the same no-fee-cell case.
+  it("turns CCC's fee shortfall into SessionBalanceError no-fee-cell", async () => {
+    const s = await setup({ tokens: 100n * T, capacity: 300n * CKB, recipient: true });
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockRejectedValue(new ccc.ErrorTransactionInsufficientCapacity(1000n));
+    const err = await spendInSession(s.session, client, d, s.binding, { to: s.recipient, token: 3n * T, topUp: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SessionBalanceError);
+    expect((err as SessionBalanceError).reason).toBe("no-fee-cell");
+    expect(s.sent).toHaveLength(0);
+  });
+
+  // Audit round 2, 31 Oct (finding 19): a top-up that would take the payee's token
+  // cell past a u128 threw a plain error from the encoder.
+  it("never tops up a token cell past 2^128 - 1 units: picks another, or says no-payout-cell", async () => {
+    const MAX = (1n << 128n) - 1n;
+    let s = await setup({ tokens: 100n * T, capacity: 300n * CKB, recipient: true });
+    const full = (c: ccc.Cell) => ccc.Cell.from({ ...c, outputData: amount(MAX - 1n) });
+    const at = s.cells.findIndex((c) => c.cellOutput.type?.eq(s.type) && !c.cellOutput.lock.eq(s.lock));
+    s.cells[at] = full(s.cells[at]);
+    const err = await spendInSession(s.session, client, d, s.binding, { to: s.recipient, token: 3n * T, topUp: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SessionBalanceError);
+    expect((err as SessionBalanceError).reason).toBe("no-payout-cell");
+    expect(s.sent).toHaveLength(0);
+
+    vi.restoreAllMocks();
+    s = await setup({ tokens: 100n * T, capacity: 300n * CKB, recipient: true });
+    const roomy = s.cells.find((c) => c.cellOutput.type?.eq(s.type) && !c.cellOutput.lock.eq(s.lock))!;
+    s.cells.push(...[1, 2].map(() => cellOf(roomy.cellOutput.lock, 142n * CKB, s.type, amount(MAX - 1n))));
+    for (let i = 0; i < 5; i++) {
+      await spendInSession(s.session, client, d, s.binding, { to: s.recipient, token: 3n * T, topUp: true });
+    }
+    for (const tx of s.sent) expect(tx.inputs.some((i) => i.previousOutput.eq(roomy.outPoint))).toBe(true);
+  });
+
   it("refuses more tokens than the session holds", async () => {
     const { session, binding, recipient } = await setup({ tokens: 2n * T, capacity: 250n * CKB });
     await expect(

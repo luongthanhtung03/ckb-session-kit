@@ -1,13 +1,16 @@
 /**
  * Audit round 2, 31 Oct: network and deployment confusion before mainnet.
- * Each test fails today and shows one finding. Mocked chain only: nothing is sent.
+ * Each test failed before the fixes of 31 Oct and shows one finding (4, 6, 7).
+ * Mocked chain only: nothing is sent.
  */
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { assertCurrentDeployment } from "../src/deployment.js";
 import { TESTNET_DEPLOYMENT, TESTNET_LEGACY_DEPLOYMENTS, type SessionLockDeployment } from "../src/lock.js";
 import { openSession } from "../src/onchain.js";
-import { createSession } from "../src/session.js";
+import { createSession, SessionPolicyError } from "../src/session.js";
 import { openSubscription } from "../src/subscription.js";
+import { CODE_CELL, codeCellAt, FAKE_CODE, TEST_DEPLOYMENT } from "./fixtures/deployment.js";
 
 const CKB = 100_000_000n;
 const newSession = () => createSession({ expiresAt: new Date(Date.now() + 60_000), scope: { maxPerTx: 5n * CKB } });
@@ -106,5 +109,78 @@ describe("a deployment is never checked against the client's network before fund
     );
     await expect(openSession(signer, newSession(), wrong, { budget: 200n * CKB })).rejects.toThrow();
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("assertCurrentDeployment (the fix for findings 4, 6, 7)", () => {
+  const client = () => new ccc.ClientPublicTestnet();
+  const zeroLock = { codeHash: "0x" + "00".repeat(32), hashType: "data" as const, args: "0x" };
+  const at = (cells: ccc.Cell[]) => async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op)));
+
+  it("refuses every legacy deployment and hash_type data with a SessionPolicyError, before any lookup", async () => {
+    const c = client();
+    const live = vi.spyOn(c, "getCellLive").mockImplementation(async (op) => codeCellAt(op));
+    for (const legacy of TESTNET_LEGACY_DEPLOYMENTS) {
+      await expect(assertCurrentDeployment(c, legacy)).rejects.toThrow(/old deployment/);
+    }
+    await expect(assertCurrentDeployment(c, { ...TEST_DEPLOYMENT, hashType: "data" })).rejects.toBeInstanceOf(SessionPolicyError);
+    expect(live).not.toHaveBeenCalled();
+  });
+
+  it("accepts a code cell that hashes to codeHash, and looks it up once per client and deployment", async () => {
+    const c = client();
+    const live = vi.spyOn(c, "getCellLive").mockImplementation(async (op) => codeCellAt(op));
+    await assertCurrentDeployment(c, TEST_DEPLOYMENT);
+    await assertCurrentDeployment(c, { ...TEST_DEPLOYMENT, hashType: "data1" });
+    await assertCurrentDeployment(c, TEST_DEPLOYMENT);
+    expect(live).toHaveBeenCalledTimes(2); // data2 once, data1 once
+
+    const { signer, sent } = await owner(c, codeCellAt);
+    const calls = () => vi.mocked(c.getCellLive).mock.calls.length;
+    const before = calls();
+    await openSession(signer, newSession(), TEST_DEPLOYMENT, { budget: 200n * CKB });
+    await openSession(signer, newSession(), TEST_DEPLOYMENT, { budget: 200n * CKB });
+    expect(sent).toHaveLength(2);
+    expect(calls()).toBe(before); // the cache answered both
+  });
+
+  it("does not remember a failed check: the next call looks again", async () => {
+    const c = client();
+    let served = false;
+    const live = vi.spyOn(c, "getCellLive").mockImplementation(async (op) => (served ? codeCellAt(op) : undefined));
+    await expect(assertCurrentDeployment(c, TEST_DEPLOYMENT)).rejects.toThrow(/not a live cell/);
+    served = true;
+    await expect(assertCurrentDeployment(c, TEST_DEPLOYMENT)).resolves.toBeUndefined();
+    expect(live).toHaveBeenCalledTimes(2);
+  });
+
+  it("resolves a dep group and matches any member; refuses a group without the code", async () => {
+    const group = (members: ccc.OutPoint[], i: number) =>
+      ccc.Cell.from({
+        outPoint: { txHash: "0x" + "d0".repeat(32), index: i },
+        cellOutput: { lock: zeroLock, capacity: 100n * CKB },
+        outputData: ccc.hexFrom(
+          ccc.bytesConcat(ccc.numLeToBytes(members.length, 4), ...members.map((m) => ccc.bytesConcat(m.txHash, ccc.numLeToBytes(m.index, 4)))),
+        ),
+      });
+    const other = ccc.Cell.from({ outPoint: { txHash: "0x" + "d1".repeat(32), index: 0 }, cellOutput: { lock: zeroLock, capacity: 100n * CKB }, outputData: "0x00" });
+    const good = group([other.outPoint, CODE_CELL.outPoint], 0);
+    const bad = group([other.outPoint], 1);
+    const c = client();
+    vi.spyOn(c, "getCellLive").mockImplementation(at([good, bad, other, CODE_CELL]));
+    const viaGroup = (g: ccc.Cell): SessionLockDeployment => ({ ...TEST_DEPLOYMENT, cellDep: { outPoint: g.outPoint, depType: "depGroup" } });
+    await expect(assertCurrentDeployment(c, viaGroup(good))).resolves.toBeUndefined();
+    await expect(assertCurrentDeployment(c, viaGroup(bad))).rejects.toThrow(/does not hold code/);
+    // A code cell given as a dep group is not a list of out points.
+    await expect(assertCurrentDeployment(c, viaGroup(CODE_CELL))).rejects.toThrow(/list of out points/);
+  });
+
+  it("with hash_type type, matches the code cell's type script hash, not its data hash", async () => {
+    const typeId = ccc.Script.from({ codeHash: "0x" + "00".repeat(31) + "01", hashType: "type", args: "0x" + "ee".repeat(32) });
+    const code = ccc.Cell.from({ outPoint: CODE_CELL.outPoint, cellOutput: { lock: zeroLock, type: typeId, capacity: 100n * CKB }, outputData: FAKE_CODE });
+    const c = client();
+    vi.spyOn(c, "getCellLive").mockImplementation(at([code]));
+    await expect(assertCurrentDeployment(c, { ...TEST_DEPLOYMENT, hashType: "type", codeHash: typeId.hash() })).resolves.toBeUndefined();
+    await expect(assertCurrentDeployment(c, { ...TEST_DEPLOYMENT, hashType: "type" })).rejects.toThrow(/type hash/);
   });
 });

@@ -444,6 +444,21 @@ see [`deployment/testnet.json`](deployment/testnet.json). The code is immutable.
 Earlier deployments (8 Oct, before errors 16–18; 13 Oct, before token sessions)
 are kept in `TESTNET_LEGACY_DEPLOYMENTS`, so `recoverSessions` still sweeps
 sessions opened under them.
+`openSession` and `openSubscription` refuse them: new cells go under the current
+lock only.
+
+Reference the lock with `hash_type` `data1` or `data2` (or `type`, for a
+type-id deployment). Under `data` (CKB-VM version 0) the binary faults on load,
+owner mode included, so a cell under it could never be spent; the library
+refuses such a deployment when opening.
+
+Before it builds an opening, the library reads the deployment's cell dep from
+the client's network (`getCellLive`, a dep group resolved) and refuses unless it
+holds code hashing to `codeHash` (`assertCurrentDeployment`), once per client
+and deployment. `TESTNET_DEPLOYMENT` on a mainnet client is therefore refused.
+There is no mainnet deployment and no `MAINNET_DEPLOYMENT` constant: to use the
+lock on mainnet, deploy the binary yourself (byte-identical, see below) and pass
+your own `SessionLockDeployment` (`codeHash`, `hashType: "data2"`, `cellDep`).
 
 Verify the deployed lock yourself. The deployed binary was built with rustc
 1.99.0 on the x86_64-pc-windows-gnu host (pinned in

@@ -1,7 +1,6 @@
 import { ccc } from "@ckb-ccc/core";
 import {
   relativeBlocksSince,
-  TESTNET_LEGACY_DEPLOYMENTS,
   sessionLockCellDep,
   sessionLockScript,
   type SessionLockDeployment,
@@ -14,12 +13,14 @@ import {
   keyCellFloor,
   ownerSweep,
   randomPick,
+  completeFeeOrNoFeeCell,
   SessionBalanceError,
   signAndSend,
   tokenAmount,
   tokenData,
   withinU128,
 } from "./onchain.js";
+import { assertCurrentDeployment } from "./deployment.js";
 import { SessionPolicyError } from "./session.js";
 
 /**
@@ -231,10 +232,6 @@ export async function openSubscription(
   },
 ): Promise<{ txHash: ccc.Hex; subscription: Subscription }> {
   const client = subscriber.client;
-  if (TESTNET_LEGACY_DEPLOYMENTS.some((d) => ccc.hexFrom(d.codeHash) === ccc.hexFrom(deployment.codeHash))) {
-    // The 8 Oct code lacks errors 16-18 (review M5); no new subscription goes under an old lock.
-    throw new SessionPolicyError("this is an old deployment of the session lock: open subscriptions under the current one");
-  }
   const token = opts.token && ccc.Script.from(opts.token.type);
   if (token && opts.token) {
     await assertPlainXudt(token, client);
@@ -271,6 +268,9 @@ export async function openSubscription(
         "raise the price or use an anyone-can-pay address",
     );
   }
+  // Not a legacy lock (the 8 Oct code lacks errors 16-18, review M5), and its code
+  // is live on this network (audit round 2, 31 Oct).
+  await assertCurrentDeployment(client, deployment);
   const lock = subscriptionLock(deployment, sub);
   // Two live cells under the same lock are one group with two rate-limited cells:
   // two charges per period (review M1).
@@ -459,15 +459,23 @@ export async function chargeSubscription(
   // A random one, so charges of many subscriptions at once rarely collide (review, 28 Oct).
   const floor = keyCellFloor(chargerLock);
   const keyCell = randomPick(await feeCells(client, chargerLock, floor));
-  if (!keyCell) throw new SessionBalanceError(`the charger needs a plain cell above ${ccc.fixedPointToString(floor)} CKB for fees`, "no-fee-cell");
+  if (!keyCell) throw new SessionBalanceError(`the charger needs a plain cell of at least ${ccc.fixedPointToString(floor + FEE_CELL_MARGIN)} CKB for fees`, "no-fee-cell");
   tx.inputs.push(ccc.CellInput.from({ previousOutput: keyCell.outPoint }));
   tx.addOutput({ lock: chargerLock, capacity: 0n });
-  await tx.completeFeeChangeToOutput(charger, tx.outputs.length - 1);
+  await completeFeeOrNoFeeCell(tx, charger, `the charger's cell cannot cover the fee; send it a plain cell above ${ccc.fixedPointToString(floor + FEE_CELL_MARGIN)} CKB`);
   return signAndSend(charger, tx, opts.beforeSend);
 }
 
 /**
- * Plain cells of the charger above `floor`: at most `MAX_SUBSCRIPTION_CELLS` of
+ * What a charger's fee cell holds above the cell it comes back as, at least: far
+ * more than a charge's fee (about 0.00001 CKB at the minimum fee rate). A cell
+ * just above the floor would pass the filter and then fail inside CCC (round-2
+ * fuzz, 31 Oct).
+ */
+const FEE_CELL_MARGIN = 1_000_000n; // 0.01 CKB
+
+/**
+ * Plain cells of the charger of at least `floor` plus `FEE_CELL_MARGIN`: at most `MAX_SUBSCRIPTION_CELLS` of
  * them, from the first `FEE_CELL_SCAN` cells under its lock. Any one of them pays
  * a fee, so there is no need to read every cell someone may have sent to the
  * charger's address (security audit, 30 Oct).
@@ -477,7 +485,7 @@ async function feeCells(client: ccc.Client, lock: ccc.Script, floor: bigint): Pr
   let seen = 0;
   for await (const cell of client.findCellsByLock(lock, null, true)) {
     if (++seen > FEE_CELL_SCAN || cells.length >= MAX_SUBSCRIPTION_CELLS) break;
-    if (!cell.cellOutput.type && cell.outputData === "0x" && cell.cellOutput.capacity > floor) cells.push(cell);
+    if (!cell.cellOutput.type && cell.outputData === "0x" && cell.cellOutput.capacity >= floor + FEE_CELL_MARGIN) cells.push(cell);
   }
   return cells;
 }

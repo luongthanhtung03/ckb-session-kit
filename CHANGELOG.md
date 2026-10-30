@@ -16,6 +16,32 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   demo's charge route answers it with 503 (the deployment's setup, not the
   subscription's state) instead of 409.
 
+### Fixed (audit round 2, 31 Oct)
+- `openSession` and `openSubscription` refuse `TESTNET_LEGACY_DEPLOYMENTS`
+  (`assertCurrentDeployment`, new). `openSession` used to accept them: a token
+  session under the 13 Oct lock was stuck for good (that code refuses 128/160-byte
+  args before owner mode), and new sessions under the 8 Oct one lacked errors
+  16-18. Spending, closing, recovering, charging and cancelling still accept old
+  deployments, so funds under them can come back.
+- Before building an opening, the deployment's cell dep is read from the
+  client's network (`getCellLive`; a dep group is resolved) and must hold code
+  hashing to `codeHash` (data hash, or type hash for `hashType: "type"`).
+  `TESTNET_DEPLOYMENT` on a mainnet client, a typo in `codeHash` or a wrong out
+  point used to put funds under a lock with no code. One lookup per client and
+  deployment. `hashType: "data"` is refused too: the lock faults under CKB-VM
+  version 0. There is still no mainnet deployment; README and API.md say how to
+  pass your own.
+- `spendInSession` and `chargeSubscription`: a key or charger cell above its
+  floor but short of the fee threw CCC's plain "Insufficient CKB"; it is now
+  `SessionBalanceError` with reason `"no-fee-cell"`. The charger's fee cells must
+  hold at least the floor plus 0.01 CKB. Found by the round-2 property suite,
+  added in `test/property-library.test.ts` and `test/property-fuzz.test.ts`,
+  which now fails on any plain error.
+- `addTopUp` (top-ups in `spendInSession`, `chargeSubscription`,
+  `openSubscription`) skips a payee token cell the payment would take past
+  2^128 - 1 units, and throws `SessionBalanceError` `"no-payout-cell"` if every
+  cell would, instead of a plain overflow error.
+
 ### Fixed (security audit, 30 Oct)
 - `recoverSessions`: when the one sweep is refused, sessions are now swept one
   session lock at a time (full lock hash), not one session key hash at a time. A

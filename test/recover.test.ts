@@ -1,6 +1,6 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sessionLockScript, TESTNET_DEPLOYMENT as d } from "../src/lock.js";
+import { sessionLockScript, TESTNET_DEPLOYMENT as d, TESTNET_LEGACY_DEPLOYMENTS } from "../src/lock.js";
 import { assertSigningLock, openSession, recoverSessions, SessionBalanceError } from "../src/onchain.js";
 import { sessionAddress } from "../src/transfer.js";
 import { createSession } from "../src/session.js";
@@ -56,6 +56,21 @@ function fakeOwner(cells: ccc.Cell[], send: (tx: ccc.Transaction) => boolean, o:
 afterEach(() => vi.restoreAllMocks());
 
 describe("recoverSessions", () => {
+  // Audit round 2, 31 Oct: new sessions refuse legacy deployments; recovery must not.
+  it("still sweeps a session under a legacy deployment (no code-cell or legacy check on the way out)", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const legacy = TESTNET_LEGACY_DEPLOYMENTS[0];
+    const old = ccc.Cell.from({
+      outPoint: op(4),
+      cellOutput: { lock: sessionLockScript(legacy, { ownerLockHash: ownerLock.hash(), sessionLockHash: h("b4"), maxPerTx: 5n * CKB }), capacity: 300n * CKB },
+      outputData: "0x",
+    });
+    const { owner, sent } = fakeOwner([old], () => true);
+    expect(await recoverSessions(owner, legacy)).toMatchObject({ recovered: 300n * CKB, cells: 1, failed: 0 });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].cellDeps.some((c) => c.outPoint.eq(ccc.OutPoint.from(legacy.cellDep.outPoint)))).toBe(true);
+  });
+
   it("sweeps everything in one transaction when it can", async () => {
     vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
     const { owner, sent } = fakeOwner([cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)], () => true);

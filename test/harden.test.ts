@@ -1,6 +1,6 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TESTNET_DEPLOYMENT as d } from "../src/lock.js";
+import { codeCellAt, TEST_DEPLOYMENT as d } from "./fixtures/deployment.js";
 import { closeSession, openSession, SessionBalanceError } from "../src/onchain.js";
 import { createSession } from "../src/session.js";
 import { deserializeSession, indexedDbStore, memoryStore, serializeSession } from "../src/store.js";
@@ -21,6 +21,7 @@ async function owner(lock: (c: ccc.Client) => Promise<ccc.Script>, send: (tx: cc
   vi.spyOn(signer, "getRecommendedAddressObj").mockResolvedValue({ script } as never);
   vi.spyOn(signer, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
   vi.spyOn(client, "sendTransaction").mockImplementation(async (tx) => send(ccc.Transaction.from(tx)));
+  vi.spyOn(client, "getCellLive").mockImplementation(async (op) => codeCellAt(op));
   vi.spyOn(ccc.Transaction.prototype, "completeInputsByCapacity").mockResolvedValue(0 as never);
   vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
   return { client, signer };

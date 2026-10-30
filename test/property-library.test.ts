@@ -54,16 +54,16 @@ const tokenData = (v: bigint) => ccc.hexFrom(ccc.numLeToBytes(v, 16));
 
 const REFUSALS = ["ScopeError", "SessionBalanceError", "SessionPolicyError"];
 /**
- * Plain errors the library lets through from CCC, seen in this run and reported
- * (round 2, 31 Oct): a refusal all the same, nothing is built or sent, but not
- * one a caller can tell by its class or `reason`.
- * - "Insufficient CKB": the key (or charger) cells hold more than the 61 CKB
- *   floor but not floor + fee; completeFeeChangeToOutput throws before the
- *   library's own "no-fee-cell" check.
- * - "number overflow": a token top-up of a payee cell whose amount plus the
- *   payment exceeds a u128 (tokenData in addTopUp).
+ * Plain errors the library lets through from CCC: none since the fixes of 31 Oct.
+ * Round 2 saw two, a refusal all the same (nothing built or sent) but not one a
+ * caller could tell by its class or `reason`, and both are now typed:
+ * - "Insufficient CKB" (key or charger cell above its floor but short of the
+ *   fee) is a SessionBalanceError "no-fee-cell";
+ * - "number overflow" (a token top-up taking the payee's cell past a u128 in
+ *   addTopUp) is a SessionBalanceError "no-payout-cell", or another cell is used.
+ * Any plain error now counts as UNEXPECTED and fails the run.
  */
-const KNOWN_PLAIN = [/^Insufficient CKB, need [0-9.]+ extra CKB$/, /^number overflow$/];
+const KNOWN_PLAIN: RegExp[] = [];
 
 /** What a scenario built, and which roles its transactions' cells play. */
 interface Built {
