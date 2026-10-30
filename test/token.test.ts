@@ -271,11 +271,14 @@ describe("recoverSessions with token sessions", () => {
       async *findCells() {
         yield ccc.Cell.from({ outPoint: { txHash: h("09"), index: 9 }, cellOutput: { lock: ownerLock, capacity: 100n * CKB }, outputData: "0x" });
       },
+      signTransaction: async (tx: ccc.Transaction) => tx,
+    } as unknown as ccc.Signer;
+    Object.assign(owner.client, {
       sendTransaction: async (tx: ccc.Transaction) => {
         sent.push(tx);
         return h("ee");
       },
-    } as unknown as ccc.Signer;
+    });
     vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
     vi.spyOn(ccc.Transaction.prototype, "addCellDepsOfKnownScripts").mockResolvedValue(undefined as never);
 
@@ -326,11 +329,14 @@ describe("recoverSessions with token sessions", () => {
       async *findCells() {
         yield at(9, ownerLock, 100n * CKB);
       },
+      signTransaction: async (tx: ccc.Transaction) => tx,
+    } as unknown as ccc.Signer;
+    Object.assign(owner.client, {
       sendTransaction: async (tx: ccc.Transaction) => {
         sent.push(tx);
         return h("ee");
       },
-    } as unknown as ccc.Signer;
+    });
     vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
     vi.spyOn(ccc.Transaction.prototype, "addCellDepsOfKnownScripts").mockResolvedValue(undefined as never);
 

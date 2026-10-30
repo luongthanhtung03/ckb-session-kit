@@ -19,25 +19,36 @@ const cell = (i: number, sessionKey: string, capacity: bigint) =>
     outputData: "0x",
   });
 
-/** An owner whose chain holds `cells`; `send` decides which transactions the node accepts. */
-function fakeOwner(cells: ccc.Cell[], send: (tx: ccc.Transaction) => boolean) {
+/**
+ * An owner whose chain holds `cells`; `send` decides which transactions the node
+ * accepts, and with `lostReply` the node takes them but the reply never arrives.
+ */
+function fakeOwner(cells: ccc.Cell[], send: (tx: ccc.Transaction) => boolean, o: { lostReply?: boolean; plain?: boolean } = {}) {
   const sent: ccc.Transaction[] = [];
+  const pool = new Set<string>();
+  const sendTransaction = async (tx: ccc.Transaction) => {
+    if (!send(tx)) throw new Error("dead input");
+    sent.push(tx);
+    pool.add(tx.hash());
+    if (o.lostReply) throw new Error("request timed out");
+    return tx.hash();
+  };
   const owner = {
     client: {
       async *findCells(key: { script: ccc.ScriptLike }) {
         const prefix = ccc.Script.from(key.script).args;
         for (const c of cells) if (c.cellOutput.lock.args.startsWith(prefix)) yield c;
       },
+      sendTransaction,
+      getTransaction: async (hash: ccc.HexLike) => (pool.has(ccc.hexFrom(hash)) ? { status: "pending" } : undefined),
     },
     getRecommendedAddressObj: async () => ({ script: ownerLock }),
     async *findCells() {
+      if (o.plain === false) return;
       yield ccc.Cell.from({ outPoint: op(9), cellOutput: { lock: ownerLock, capacity: 100n * CKB }, outputData: "0x" });
     },
-    sendTransaction: async (tx: ccc.Transaction) => {
-      if (!send(tx)) throw new Error("dead input");
-      sent.push(tx);
-      return h("e" + sent.length);
-    },
+    signTransaction: async (tx: ccc.Transaction) => tx,
+    sendTransaction,
   } as unknown as ccc.Signer;
   return { owner, sent };
 }
@@ -63,6 +74,21 @@ describe("recoverSessions", () => {
     );
     expect(await recoverSessions(owner, d)).toMatchObject({ recovered: 600n * CKB, cells: 2, failed: 1 });
     expect(sent).toHaveLength(2);
+  });
+
+  // Review, 28 Oct: a sweep the node took, whose reply was lost, is a success.
+  it("reports a sweep the node accepted as recovered when the reply times out", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const { owner, sent } = fakeOwner([cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)], () => true, { lostReply: true });
+    expect(await recoverSessions(owner, d)).toEqual({ txHashes: [sent[0].hash()], recovered: 600n * CKB, cells: 2, failed: 0 });
+    expect(sent).toHaveLength(1);
+  });
+
+  // Review, 28 Oct: a fault no retry can fix is thrown, not hidden behind one failed sweep per session.
+  it("throws when the owner has no plain cell, instead of retrying each session", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const { owner } = fakeOwner([cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)], () => true, { plain: false });
+    await expect(recoverSessions(owner, d)).rejects.toThrow(/plain cell to prove ownership/);
   });
 });
 

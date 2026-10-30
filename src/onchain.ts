@@ -639,7 +639,8 @@ export async function findOwnedSessionCells(
  * their own key, and spend it before the sweep lands, which would make a single
  * sweep fail. So if the one transaction is refused, each session (cells sharing a
  * session key) is swept on its own, one signature each: a cell someone else can
- * spend fails alone, and `failed` counts the sessions not recovered.
+ * spend fails alone, and `failed` counts the sessions not recovered. A fault no
+ * retry can fix (the owner holds no plain cell to prove ownership) is thrown.
  *
  * The key cell (the fee budget) is under the session key's own lock and cannot be
  * recovered without that key; keep it small.
@@ -652,9 +653,13 @@ export async function recoverSessions(
   const cells = await findOwnedSessionCells(owner, deployment);
   const total = (cs: ccc.Cell[]) => cs.reduce((sum, c) => sum + c.cellOutput.capacity, 0n);
   if (!cells.length) return { txHashes: [], recovered: 0n, cells: 0, failed: 0 };
+  // A fault no other set of cells can fix (no plain owner cell) is thrown, not
+  // retried once per session (review, 28 Oct).
+  const fixed = (e: unknown) => e instanceof SessionBalanceError || e instanceof SessionPolicyError;
   try {
     return { txHashes: [await ownerSweep(owner, deployment, cells)], recovered: total(cells), cells: cells.length, failed: 0 };
-  } catch {
+  } catch (e) {
+    if (fixed(e)) throw e;
     // Fall through: one session at a time.
   }
   const sessions = new Map<string, ccc.Cell[]>();
@@ -668,7 +673,8 @@ export async function recoverSessions(
       result.txHashes.push(await ownerSweep(owner, deployment, group));
       result.recovered += total(group);
       result.cells += group.length;
-    } catch {
+    } catch (e) {
+      if (fixed(e)) throw e;
       result.failed++;
     }
   }
@@ -716,7 +722,8 @@ export async function ownerSweep(
   for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {
     tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
     await tx.completeFeeBy(owner);
-    return owner.sendTransaction(tx);
+    // A sweep the node took but whose reply was lost is still the sweep (review, 28 Oct).
+    return signAndSend(owner, tx);
   }
   throw new SessionBalanceError("the owner needs one plain cell to prove ownership");
 }

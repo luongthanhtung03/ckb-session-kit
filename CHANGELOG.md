@@ -11,6 +11,10 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   blocked `closeSession` and `recoverSessions` of token sessions (no guard at all).
   One guard now serves sessions, recovery and subscriptions; it keeps cells created
   by the owner or the key first.
+- `recoverSessions`, `closeSession`, `cancelSubscription`: an owner sweep the node
+  accepted is reported as sent even when the reply times out (it skipped the
+  check `signAndSend` does). `recoverSessions` now throws when the owner holds no
+  plain cell, instead of reporting every session as failed.
 
 ## 1.0.0 (2026-10-27)
 

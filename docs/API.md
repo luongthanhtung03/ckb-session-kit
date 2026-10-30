@@ -81,8 +81,10 @@ throws `SessionBalanceError` instead: forget a key only after `keyTx` or
 ### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
 Device-loss recovery, with the wallet alone: finds every session cell this owner
 opened and sweeps them, in one transaction if it can, else one per session (so a
-planted cell spent ahead of the sweep fails alone). Key cells cannot be
-recovered without their key.
+planted cell spent ahead of the sweep fails alone). A sweep the node accepted
+counts as recovered even if its reply times out. Throws `SessionBalanceError`
+when the owner holds no plain cell to prove ownership, rather than reporting
+every session as failed. Key cells cannot be recovered without their key.
 
 ### `findSessionCells(session, client, deployment, binding) → SessionCells`
 The live session cells and key cells of one session, with their totals
