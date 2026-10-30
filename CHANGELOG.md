@@ -16,6 +16,13 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   demo's charge route answers it with 503 (the deployment's setup, not the
   subscription's state) instead of 409.
 
+### Fixed (audit round 2, 31 Oct)
+- Demo: enforced CSP now also sets `object-src 'none'`, `base-uri 'none'` and
+  `form-action 'self'`; the full policy (scripts, styles, images, testnet RPC and
+  JoyID aggregator only) is sent as `Content-Security-Policy-Report-Only`.
+- CI: GitHub actions pinned to commit SHAs, checkouts with
+  `persist-credentials: false`.
+
 ### Fixed (security audit, 30 Oct)
 - `recoverSessions`: when the one sweep is refused, sessions are now swept one
   session lock at a time (full lock hash), not one session key hash at a time. A
