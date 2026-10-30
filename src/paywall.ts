@@ -108,10 +108,13 @@ export async function verifyAccess(
   const value = (o: ccc.CellOutput, data: ccc.Hex): bigint =>
     !o.lock.eq(to) ? 0n : !token ? o.capacity : o.type?.eq(token) ? tokenAmount(data) : 0n;
 
+  // The rest at once, reusing the memo's input.
+  const inputs = await Promise.all(
+    tx.inputs.map((input, i) => (i === memoAt ? memoCell : client.getCell(input.previousOutput))),
+  );
   let payerInput = -1;
   let toIn = 0n;
-  for (let i = 0; i < tx.inputs.length; i++) {
-    const cell = await client.getCell(tx.inputs[i].previousOutput);
+  for (const [i, cell] of inputs.entries()) {
     if (!cell) return { ok: false, reason: "an input of the payment cannot be resolved" };
     if (payerInput < 0 && cell.cellOutput.lock.eq(payerLock)) payerInput = i;
     toIn += value(cell.cellOutput, cell.outputData);
