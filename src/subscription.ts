@@ -11,7 +11,6 @@ import {
   assertSigningLock,
   collect,
   keyCellFloor,
-  matureCells,
   ownerSweep,
   randomPick,
   SessionBalanceError,
@@ -300,29 +299,47 @@ export async function findSubscriptionCells(
   deployment: SessionLockDeployment,
   sub: Subscription,
 ): Promise<{ lock: ccc.Script; cells: ccc.Cell[]; balance: bigint; tokenBalance: bigint; nextChargeIn: bigint | undefined }> {
+  const { lock, cells, balance, tokenBalance, nextChargeIn } = await subscriptionState(client, deployment, sub);
+  return { lock, cells, balance, tokenBalance, nextChargeIn };
+}
+
+type Created = Awaited<ReturnType<ccc.Client["getTransaction"]>>;
+
+/**
+ * `findSubscriptionCells`, plus what it looked up on the way: the tip, and each
+ * cell's creating transaction and age (undefined while not committed), so a
+ * charge or a status fetches each of them once (review, 28 Oct).
+ */
+async function subscriptionState(client: ccc.Client, deployment: SessionLockDeployment, sub: Subscription) {
   const lock = subscriptionLock(deployment, sub);
   const token = tokenOf(sub);
   const cells = await subscriptionCells(client, lock, token);
   const balance = cells.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   const tokenBalance = token ? tokensIn(cells.map((c) => ({ type: c.cellOutput.type, data: c.outputData })), token) : 0n;
-  if (!cells.length) return { lock, cells, balance, tokenBalance, nextChargeIn: undefined };
-  const tip = await client.getTip();
-  let nextChargeIn: bigint | undefined;
+  const [tip, created] = await Promise.all([
+    client.getTip(),
+    Promise.all(cells.map((c): Promise<Created> => client.getTransaction(c.outPoint.txHash))),
+  ]);
+  const ages = created.map((res) => {
+    const born = res?.blockNumber;
+    return born === undefined || born === null ? undefined : tip - ccc.numFrom(born);
+  });
+  const waits = ages.map((age) => (age === undefined ? undefined : age >= sub.periodBlocks ? 0n : sub.periodBlocks - age));
   // The rate limit is per cell, so a cell older than the last charge's change (a
   // top-up) could pay a second price in the same period: wait out the newest
   // charge as well (review, 28 Oct).
+  const charged = await Promise.all(
+    created.map((res, i) => !!res && !!waits[i] && spentBy(client, res.transaction, sub.chargerLockHash)),
+  );
+  let nextChargeIn: bigint | undefined;
   let lastChargeWait = 0n;
-  for (const c of cells) {
-    const created = await client.getTransaction(c.outPoint.txHash);
-    const born = created?.blockNumber;
-    if (!created || born === undefined || born === null) continue; // not committed yet
-    const age = tip - ccc.numFrom(born);
-    const wait = age >= sub.periodBlocks ? 0n : sub.periodBlocks - age;
+  waits.forEach((wait, i) => {
+    if (wait === undefined) return; // not committed yet
     if (nextChargeIn === undefined || wait < nextChargeIn) nextChargeIn = wait;
-    if (wait > lastChargeWait && (await spentBy(client, created.transaction, sub.chargerLockHash))) lastChargeWait = wait;
-  }
+    if (charged[i] && wait > lastChargeWait) lastChargeWait = wait;
+  });
   if (nextChargeIn !== undefined && lastChargeWait > nextChargeIn) nextChargeIn = lastChargeWait;
-  return { lock, cells, balance, tokenBalance, nextChargeIn };
+  return { lock, cells, balance, tokenBalance, nextChargeIn, tip, created, ages };
 }
 
 /**
@@ -351,7 +368,7 @@ export async function chargeSubscription(
   const { script: payToLock } = await ccc.Address.fromString(opts.payTo, client);
   if (payToLock.hash() !== sub.payToLockHash) throw new SessionPolicyError("payTo is not the subscription's payout address");
 
-  const state = await findSubscriptionCells(client, deployment, sub);
+  const state = await subscriptionState(client, deployment, sub);
   if (!state.cells.length) throw new SessionBalanceError("no subscription cell: cancelled, or not committed yet");
   if (state.nextChargeIn !== 0n) {
     throw new SessionBalanceError(
@@ -387,7 +404,7 @@ export async function chargeSubscription(
 
   // Every mature cell, merged into one change: the rate limit is per cell, so
   // leaving one out would let it pay another price in the same period (code review, 26 Oct).
-  const taken = await matureCells(client, state.cells, sub.periodBlocks);
+  const taken = state.cells.filter((_, i) => (state.ages[i] ?? -1n) >= sub.periodBlocks);
   const ckbIn = taken.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   const since = relativeBlocksSince(sub.periodBlocks);
   tx.inputs.unshift(...taken.map((c) => ccc.CellInput.from({ previousOutput: c.outPoint, since })));
@@ -614,8 +631,10 @@ async function paymentOf(
   deployment: SessionLockDeployment,
   txHash: ccc.HexLike,
   sub: Subscription,
+  /** `txHash`'s response, when already fetched. */
+  fetched?: Created,
 ): Promise<Payment | string> {
-  const created = await client.getTransaction(txHash);
+  const created = fetched ?? (await client.getTransaction(txHash));
   if (!created || created.status !== "committed" || created.blockNumber === undefined || created.blockNumber === null) {
     return "the transaction that created the cell is not committed";
   }
@@ -710,12 +729,12 @@ export async function subscriptionStatus(
   if (!opening.tx.outputs.some((o) => o.lock.eq(lock))) return { ok: false, reason: "the opening created no cell under this subscription's lock" };
   if (!commitsToAccount(opening, sub, proof.account)) return { ok: false, reason: "the opening does not commit to this account" };
 
-  const { cells, balance, tokenBalance, nextChargeIn } = await findSubscriptionCells(client, deployment, sub);
-  const tip = await client.getTip();
+  const { cells, balance, tokenBalance, nextChargeIn, tip, created } = await subscriptionState(client, deployment, sub);
   let paidThroughBlock: bigint | undefined;
   const openHash = ccc.hexFrom(proof.openTx);
-  for (const c of cells) {
-    const p = await paymentOf(client, deployment, c.outPoint.txHash, sub);
+  const payments = await Promise.all(cells.map((c, i) => paymentOf(client, deployment, c.outPoint.txHash, sub, created[i])));
+  for (const [i, c] of cells.entries()) {
+    const p = payments[i];
     if (typeof p === "string") continue;
     // Only the proven opening or a charge renews; another payment to payTo that
     // also creates a cell here (a paid read, say) is not a period (review, 27 Oct).
