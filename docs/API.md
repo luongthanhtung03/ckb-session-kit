@@ -134,7 +134,11 @@ where `token` is `{ type, maxPerTx }`.
 
 ### `SessionBalanceError`
 Not enough in the session, its change, or its key cell, or a budget below what a
-cell occupies.
+cell occupies. `reason` (type `SessionBalanceReason`) is set when the cells missing
+are the paying side's own rather than the session's or subscription's state:
+`"no-fee-cell"` (no key cell, or no charger cell, that can pay the fee) or
+`"no-payout-cell"` (the recipient or `payTo` has no cell to top up). Match on it,
+not on the message, which may change. Other balance errors leave it undefined.
 
 ## The session lock
 

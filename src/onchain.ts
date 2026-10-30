@@ -44,10 +44,25 @@ export interface SessionCells {
   tokenBalance: bigint;
 }
 
+/**
+ * Why a `SessionBalanceError` was thrown, where a caller may need to tell it apart
+ * without matching the message (which may change):
+ * - `no-fee-cell`: the paying key (a session's key cell, a subscription's charger)
+ *   has no cell that can pay the fee.
+ * - `no-payout-cell`: the recipient (`payTo`) has no cell to top up.
+ *
+ * Neither is about the session's or the subscription's own balance or timing: the
+ * missing cells belong to the key's holder or the recipient (in a subscription,
+ * both are the creator's). Other balance errors have no `reason`.
+ */
+export type SessionBalanceReason = "no-fee-cell" | "no-payout-cell";
+
 export class SessionBalanceError extends Error {
-  constructor(message: string) {
+  readonly reason?: SessionBalanceReason;
+  constructor(message: string, reason?: SessionBalanceReason) {
     super(message);
     this.name = "SessionBalanceError";
+    if (reason) this.reason = reason;
   }
 }
 
@@ -472,7 +487,7 @@ export async function spendInSession(
   if (binding.recipientLockHash && toLock.hash() !== binding.recipientLockHash) {
     throw new ScopeError("recipient not in scope");
   }
-  if (!state.keyCells.length) throw new SessionBalanceError("no key cell left to pay fees");
+  if (!state.keyCells.length) throw new SessionBalanceError("no key cell left to pay fees", "no-fee-cell");
 
   const since = binding.minInterval > 0n ? relativeBlocksSince(binding.minInterval) : 0n;
   const tx = ccc.Transaction.from({ cellDeps: [sessionLockCellDep(deployment)] });
@@ -487,7 +502,7 @@ export async function spendInSession(
     ckbOut = request.amount ?? 0n;
     const paid = request.token !== undefined ? { token: tokenType, units: tokenOut } : { ckb: ckbOut };
     if (!(await addTopUp(tx, client, toLock, paid))) {
-      throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up");
+      throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up", "no-payout-cell");
     }
   } else if (request.token !== undefined) {
     tx.addOutput({ lock: toLock, type: tokenType, capacity: 0n }, tokenData(tokenOut)); // CCC sizes it
@@ -554,7 +569,7 @@ export async function spendInSession(
   await tx.completeFeeChangeToOutput(sessionSigner(session, client), tx.outputs.length - 1);
   // Below this, the key cell could no longer go back to the owner at the end.
   if (tx.outputs[tx.outputs.length - 1].capacity < keyCellFloor(binding.ownerLock)) {
-    throw new SessionBalanceError("the key cell cannot cover another fee; top it up");
+    throw new SessionBalanceError("the key cell cannot cover another fee; top it up", "no-fee-cell");
   }
   return signAndSend(sessionSigner(session, client), tx, request.beforeSend);
 }

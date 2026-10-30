@@ -289,6 +289,30 @@ describe("chargeSubscription", () => {
       chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true }),
     ).rejects.toThrow(SessionBalanceError);
   });
+
+  // 30 Oct: a creator's server tells its own missing cells (a fault to retry) from the
+  // subscription's state by a reason code, not by matching the message.
+  it("gives the creator's own missing cells a reason, and the subscription's state none", async () => {
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const lock = subscriptionLock(d, r.sub);
+    const reasonOf = async (cells: ccc.Cell[], born = 900n) => {
+      const { client } = fakeClient(cells, born);
+      const err = await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(SessionBalanceError);
+      return (err as SessionBalanceError).reason;
+    };
+    const fee = () => cellOf(r.chargerLock, 100n * CKB);
+    const payout = () => cellOf(r.payToLock, 200n * CKB);
+    expect(await reasonOf([cellOf(lock, 500n * CKB), payout()])).toBe("no-fee-cell");
+    expect(await reasonOf([cellOf(lock, 500n * CKB), fee()])).toBe("no-payout-cell");
+    expect(await reasonOf([cellOf(lock, 500n * CKB), payout(), fee()], 990n)).toBeUndefined(); // not a full period
+    expect(await reasonOf([cellOf(lock, 160n * CKB), payout(), fee()])).toBeUndefined(); // run dry
+    expect(await reasonOf([payout(), fee()])).toBeUndefined(); // cancelled
+  });
 });
 
 describe("verifySubscription", () => {
@@ -646,6 +670,16 @@ describe("token subscriptions", () => {
     it("refuses once the cell holds less than a price in tokens", async () => {
       const { result } = await charge((lock, token) => [tokenCell(lock, token, PRICE - 1n, 282n * CKB)]);
       await expect(result).rejects.toThrow(SessionBalanceError);
+    });
+
+    it("refuses a payTo with no cell of the token, with the reason no-payout-cell", async () => {
+      const r = await tokenRoles(fakeClient([]).client);
+      const lock = subscriptionLock(d, r.sub);
+      const { client } = fakeClient([tokenCell(lock, r.token, 30n * T, 282n * CKB), cellOf(r.payToLock, 200n * CKB), cellOf(r.chargerLock, 100n * CKB)]);
+      await expect(chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo })).rejects.toMatchObject({
+        name: "SessionBalanceError",
+        reason: "no-payout-cell",
+      });
     });
   });
 

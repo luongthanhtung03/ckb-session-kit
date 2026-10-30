@@ -5,6 +5,13 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
 ## Unreleased
 
+### Added
+- `SessionBalanceError.reason` (`SessionBalanceReason`): `"no-fee-cell"` or
+  `"no-payout-cell"` when the cells missing are the payer's or the recipient's own
+  (a charger with no fee cell, a `payTo` with no cell to top up), so a server can
+  tell them from the subscription's state without matching messages. The demo's
+  charge route now uses it.
+
 ### Fixed (code review, 28 Oct)
 - Token overflow guard: a planted cell of 2^128-1 free tokens could push the
   subscriber's own cell out of a cancel (the guard kept cells in indexer order), and

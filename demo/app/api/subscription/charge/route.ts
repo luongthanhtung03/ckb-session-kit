@@ -1,5 +1,11 @@
 import { ccc } from "@ckb-ccc/core";
-import { chargeSubscription, SessionBalanceError, SessionPolicyError, type SessionLockDeployment } from "ckb-session-kit";
+import {
+  chargeSubscription,
+  SessionBalanceError,
+  SessionPolicyError,
+  type SessionBalanceReason,
+  type SessionLockDeployment,
+} from "ckb-session-kit";
 import deploymentJson from "../../../../../deployment/testnet.json";
 import { CHARGER, PAY_TO } from "../../../subscribe/config";
 import { isAsset, isHash, termsFor } from "../../../subscribe/terms";
@@ -9,7 +15,7 @@ const client = new ccc.ClientPublicTestnet();
  * Balance errors about the creator's own cells (the charger's fee cell, the
  * payout cell to top up): a server fault, not the subscription's state (review, 28 Oct).
  */
-const CREATOR_FAULT = /^(the charger needs a plain cell|payTo has no)/;
+const CREATOR_FAULTS: readonly SessionBalanceReason[] = ["no-fee-cell", "no-payout-cell"];
 const deployment = deploymentJson as SessionLockDeployment;
 
 /**
@@ -42,7 +48,7 @@ export async function POST(request: Request) {
     return Response.json({ txHash });
   } catch (e) {
     // Not due yet, run dry, cancelled: the subscription's state, not a server fault.
-    const creatorFault = e instanceof SessionBalanceError && CREATOR_FAULT.test(e.message);
+    const creatorFault = e instanceof SessionBalanceError && !!e.reason && CREATOR_FAULTS.includes(e.reason);
     if (creatorFault) console.error(`charge: ${e.message}`);
     if (!creatorFault && (e instanceof SessionBalanceError || e instanceof SessionPolicyError)) {
       return Response.json({ error: e.message }, { status: 409 });

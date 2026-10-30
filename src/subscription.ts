@@ -235,7 +235,7 @@ export async function openSubscription(
   }
   // The first period, paid now.
   if (token) {
-    if (!(await addTopUp(tx, client, payToLock, { token, units: opts.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET);
+    if (!(await addTopUp(tx, client, payToLock, { token, units: opts.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET, "no-payout-cell");
     await tx.completeInputsByUdt(subscriber, token);
     const extra = (await tx.getInputsUdtBalance(client, token)) - tx.getOutputsUdtBalance(token);
     if (extra > 0n) tx.addOutput({ lock: subscriberLock, type: token }, tokenData(extra));
@@ -244,7 +244,7 @@ export async function openSubscription(
     if (!acp || !(await addTopUp(tx, client, payToLock, { ckb: opts.price }))) {
       tx.addOutput({ lock: payToLock, capacity: opts.price });
       if (tx.outputs[1].capacity !== opts.price) {
-        throw new SessionBalanceError(`payTo has no cell to top up, and a new one needs ${ccc.fixedPointToString(newCell)} CKB`);
+        throw new SessionBalanceError(`payTo has no cell to top up, and a new one needs ${ccc.fixedPointToString(newCell)} CKB`, "no-payout-cell");
       }
     }
   }
@@ -360,11 +360,11 @@ export async function chargeSubscription(
   const tx = ccc.Transaction.from({ cellDeps: [sessionLockCellDep(deployment)] });
   if (token) {
     if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("a token subscription needs an anyone-can-pay payTo");
-    if (!(await addTopUp(tx, client, payToLock, { token, units: sub.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET);
+    if (!(await addTopUp(tx, client, payToLock, { token, units: sub.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET, "no-payout-cell");
   } else if (opts.topUp) {
     if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("topUp needs an anyone-can-pay payTo");
     if (!(await addTopUp(tx, client, payToLock, { ckb: sub.price }))) {
-      throw new SessionBalanceError("payTo has no anyone-can-pay cell to top up");
+      throw new SessionBalanceError("payTo has no anyone-can-pay cell to top up", "no-payout-cell");
     }
   } else {
     tx.addOutput({ lock: payToLock, capacity: sub.price });
@@ -402,7 +402,7 @@ export async function chargeSubscription(
   // A random one, so charges of many subscriptions at once rarely collide (review, 28 Oct).
   const floor = keyCellFloor(chargerLock);
   const keyCell = randomPick((await collect(client, chargerLock)).filter((c) => c.cellOutput.capacity > floor));
-  if (!keyCell) throw new SessionBalanceError(`the charger needs a plain cell above ${ccc.fixedPointToString(floor)} CKB for fees`);
+  if (!keyCell) throw new SessionBalanceError(`the charger needs a plain cell above ${ccc.fixedPointToString(floor)} CKB for fees`, "no-fee-cell");
   tx.inputs.push(ccc.CellInput.from({ previousOutput: keyCell.outPoint }));
   tx.addOutput({ lock: chargerLock, capacity: 0n });
   await tx.completeFeeChangeToOutput(charger, tx.outputs.length - 1);

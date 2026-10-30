@@ -32,14 +32,18 @@ describe("POST /api/subscription/charge", () => {
   });
 
   // Review, 28 Oct: the creator's own missing cells are a server fault, worth a retry.
+  // Told apart by the error's reason, not its message (30 Oct).
   it.each([
-    ["no fee cell", "the charger needs a plain cell above 61 CKB for fees"],
-    ["no payout cell", "payTo has no anyone-can-pay cell to top up"],
-    ["no payout token cell", "payTo has no cell of this token to top up: create one (any amount, even 0) first"],
-  ])("answers 503 with retry when the creator has %s", async (_, message) => {
-    expect(await status(new SessionBalanceError(message))).toEqual({
+    ["no fee cell", "no-fee-cell"],
+    ["no payout cell", "no-payout-cell"],
+  ] as const)("answers 503 with retry when the creator has %s", async (_, reason) => {
+    expect(await status(new SessionBalanceError("any wording", reason))).toEqual({
       status: 503,
       body: { error: "could not charge right now", retry: true },
     });
+  });
+
+  it("answers 409 for a message that merely reads like a creator fault, without the reason", async () => {
+    expect(await status(new SessionBalanceError("payTo has no anyone-can-pay cell to top up"))).toMatchObject({ status: 409 });
   });
 });

@@ -223,6 +223,25 @@ describe("spendInSession in a token session", () => {
     ).rejects.toThrow(/rate limited/);
   });
 
+  // 30 Oct: the paying side's own missing cells carry a reason, so callers need not match messages.
+  it("gives a missing key cell or recipient cell a reason, and a short balance none", async () => {
+    const reasonOf = (p: Promise<unknown>) =>
+      p.then(
+        () => expect.unreachable(),
+        (e: SessionBalanceError) => (expect(e).toBeInstanceOf(SessionBalanceError), e.reason),
+      );
+    let s = await setup({ tokens: 100n * T, capacity: 300n * CKB, recipient: true });
+    s.cells.splice(s.cells.findIndex((c) => c.cellOutput.lock.eq(s.keyLock)), 1);
+    expect(await reasonOf(spendInSession(s.session, client, d, s.binding, { to: s.recipient, token: 3n * T, topUp: true }))).toBe("no-fee-cell");
+    vi.restoreAllMocks();
+    s = await setup({ tokens: 100n * T, capacity: 300n * CKB, recipient: true });
+    s.cells.splice(s.cells.findIndex((c) => c.cellOutput.type?.eq(s.type) && !c.cellOutput.lock.eq(s.lock)), 1);
+    expect(await reasonOf(spendInSession(s.session, client, d, s.binding, { to: s.recipient, token: 3n * T, topUp: true }))).toBe("no-payout-cell");
+    vi.restoreAllMocks();
+    s = await setup({ tokens: 2n * T, capacity: 250n * CKB, recipient: true });
+    expect(await reasonOf(spendInSession(s.session, client, d, s.binding, { to: s.recipient, token: 3n * T, topUp: true }))).toBeUndefined();
+  });
+
   it("refuses more tokens than the session holds", async () => {
     const { session, binding, recipient } = await setup({ tokens: 2n * T, capacity: 250n * CKB });
     await expect(
