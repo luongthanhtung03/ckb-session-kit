@@ -329,8 +329,7 @@ export async function findSubscriptionCells(
  * `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee comes from
  * one of the charger's own plain cells, which goes back to it smaller. Throws a
  * `SessionBalanceError` while no cell is a full period old or the last charge is
- * under one, or once what is left
- * cannot cover a price and still leave a cell behind.
+ * under one, or once what is left cannot cover a price and still leave a cell behind.
  *
  * In a token subscription the price is in token units and always tops up
  * `payTo`'s cell of the token (`topUp` is implied). The change keeps every
