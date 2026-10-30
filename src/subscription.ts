@@ -123,11 +123,26 @@ function tokensIn(cells: { type?: ccc.Script; data: ccc.HexLike }[], token: ccc.
   return cells.reduce((s, c) => (c.type?.eq(token) && ccc.bytesFrom(c.data).length >= 16 ? s + tokenAmount(c.data) : s), 0n);
 }
 
-/** Whether `tx` spends a cell under `lockHash`, looking its inputs up; false past `MAX_PAYMENT_INPUTS`. */
-async function spentBy(client: ccc.Client, tx: ccc.Transaction, lockHash: ccc.Hex): Promise<boolean> {
-  if (tx.inputs.length > MAX_PAYMENT_INPUTS) return false;
-  const inputs = await Promise.all(tx.inputs.map((i) => client.getCell(i.previousOutput)));
-  return inputs.some((c) => c?.cellOutput.lock.hash() === lockHash);
+/**
+ * The newest transaction that spent a cell under `lock`, with its age in blocks,
+ * looking back under `window` blocks (undefined if none did), from the indexer's
+ * history of the lock: a charge that took the whole balance leaves no change cell
+ * to tell it by (30 Oct). Transactions that only created cells under the lock
+ * (anyone can) are skipped without being fetched.
+ */
+async function lastSpend(
+  client: ccc.Client,
+  lock: ccc.Script,
+  tip: bigint,
+  window: bigint,
+): Promise<{ txHash: ccc.Hex; age: bigint } | undefined> {
+  for await (const t of client.findTransactionsByLock(lock, null, true, "desc")) {
+    const born = ccc.numFrom(t.blockNumber);
+    const age = tip > born ? tip - born : 0n; // the indexer may be a block past the tip read
+    if (age >= window) return undefined;
+    if (t.cells.some((c) => c.isInput)) return { txHash: t.txHash, age };
+  }
+  return undefined;
 }
 
 /** Whether `p` spends a cell under `lockHash`: who took part in the transaction. */
@@ -270,8 +285,8 @@ export async function openSubscription(
 /**
  * The live cells of a subscription, their balance (shannons) and token balance
  * (units; 0 without a token), and how many blocks until one can be charged: once
- * a cell is a period old and the last charge (a cell created by a transaction
- * spending the charger's cell) is too.
+ * a cell is a period old and the last charge (the newest transaction that spent
+ * a cell under the lock) is too.
  */
 export async function findSubscriptionCells(
   client: ccc.Client,
@@ -303,22 +318,22 @@ async function subscriptionState(client: ccc.Client, deployment: SessionLockDepl
     const born = res?.blockNumber;
     return born === undefined || born === null ? undefined : tip - ccc.numFrom(born);
   });
-  const waits = ages.map((age) => (age === undefined ? undefined : age >= sub.periodBlocks ? 0n : sub.periodBlocks - age));
-  // The rate limit is per cell, so a cell older than the last charge's change (a
-  // top-up) could pay a second price in the same period: wait out the newest
-  // charge as well (review, 28 Oct).
-  const charged = await Promise.all(
-    created.map((res, i) => !!res && !!waits[i] && spentBy(client, res.transaction, sub.chargerLockHash)),
-  );
   let nextChargeIn: bigint | undefined;
-  let lastChargeWait = 0n;
-  waits.forEach((wait, i) => {
-    if (wait === undefined) return; // not committed yet
+  for (const age of ages) {
+    if (age === undefined) continue; // not committed yet
+    const wait = age >= sub.periodBlocks ? 0n : sub.periodBlocks - age;
     if (nextChargeIn === undefined || wait < nextChargeIn) nextChargeIn = wait;
-    if (charged[i] && wait > lastChargeWait) lastChargeWait = wait;
-  });
-  if (nextChargeIn !== undefined && lastChargeWait > nextChargeIn) nextChargeIn = lastChargeWait;
-  return { lock, cells, balance, tokenBalance, nextChargeIn, tip, created, ages };
+  }
+  // The rate limit is per cell, so a cell older than the last charge (a top-up)
+  // could pay a second price in the same period: wait out the newest charge as
+  // well (review, 28 Oct). It is read from the lock's history, not from its change
+  // cell, which a charge of the whole balance does not leave (30 Oct). Any spend
+  // counts: in session mode only the charger can spend, and an owner sweep takes
+  // every cell, so whatever comes after it is younger than it anyway.
+  // One block more than a period: a status counts the period's last block as paid.
+  const spent = await lastSpend(client, lock, tip, sub.periodBlocks + 1n);
+  if (nextChargeIn !== undefined && spent && sub.periodBlocks - spent.age > nextChargeIn) nextChargeIn = sub.periodBlocks - spent.age;
+  return { lock, cells, balance, tokenBalance, nextChargeIn, tip, created, ages, spent };
 }
 
 /**
@@ -657,7 +672,10 @@ function commitsToAccount(p: Payment, sub: Subscription, account: string): boole
 }
 
 export interface SubscriptionStatus {
-  /** The block until which the subscriber has paid, from the newest paying cell; undefined when no cell is left. */
+  /**
+   * The block until which the subscriber has paid, from the newest paying cell or
+   * a charge that took the whole balance; undefined when neither is left.
+   */
   paidThroughBlock: bigint | undefined;
   tip: bigint;
   /** Whether the tip is within the paid period. */
@@ -700,16 +718,21 @@ export async function subscriptionStatus(
   if (!opening.tx.outputs.some((o) => o.lock.eq(lock))) return { ok: false, reason: "the opening created no cell under this subscription's lock" };
   if (!commitsToAccount(opening, sub, proof.account)) return { ok: false, reason: "the opening does not commit to this account" };
 
-  const { cells, balance, tokenBalance, nextChargeIn, tip, created } = await subscriptionState(client, deployment, sub);
+  const { cells, balance, tokenBalance, nextChargeIn, tip, created, spent } = await subscriptionState(client, deployment, sub);
   let paidThroughBlock: bigint | undefined;
   const openHash = ccc.hexFrom(proof.openTx);
-  const payments = await Promise.all(cells.map((c, i) => paymentOf(client, deployment, c.outPoint.txHash, sub, created[i])));
-  for (const [i, c] of cells.entries()) {
-    const p = payments[i];
-    if (typeof p === "string") continue;
+  const renews = (p: Payment | string, txHash: ccc.Hex): p is Payment =>
     // Only the proven opening or a charge renews; another payment to payTo that
     // also creates a cell here (a paid read, say) is not a period (review, 27 Oct).
-    if (c.outPoint.txHash !== openHash && !spends(p, sub.chargerLockHash)) continue;
+    typeof p !== "string" && (txHash === openHash || spends(p, sub.chargerLockHash));
+  const paying = cells.map((c, i) => ({ txHash: c.outPoint.txHash, fetched: created[i] }));
+  // A charge of the whole balance leaves no cell, but still paid for its period
+  // (30 Oct). Not a sweep: the subscriber's cancel spends no charger cell.
+  if (spent && !paying.some((c) => c.txHash === spent.txHash)) paying.push({ txHash: spent.txHash, fetched: undefined });
+  const payments = await Promise.all(paying.map((c) => paymentOf(client, deployment, c.txHash, sub, c.fetched)));
+  for (const [i, { txHash }] of paying.entries()) {
+    const p = payments[i];
+    if (!renews(p, txHash)) continue;
     const through = p.block + sub.periodBlocks;
     if (paidThroughBlock === undefined || through > paidThroughBlock) paidThroughBlock = through;
   }

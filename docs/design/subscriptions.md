@@ -306,3 +306,16 @@ listed first could push out the subscriber's own and the cancel swept only the
 planted one. The guard (`withinU128`, shared with sessions and `recoverSessions`)
 now keeps cells created by the subscriber or the charger first, then the smallest
 amounts.
+
+30 Oct: a charge that takes the whole balance (the last 153 CKB with a price of
+153 CKB or more, L1) leaves no change cell. The wait after the last charge was
+measured from that change cell, so a younger top-up left behind could be charged
+as soon as it matured, under a period after the last charge; and
+`subscriptionStatus`, which reads paid periods off live cells, ended access the
+moment the last period was paid. Both now read the last spend from the indexer's
+history of the subscription's lock (the newest transaction with an input under
+it, looking back one period): the charge waits a period from it, and the status
+counts it as paid when it spent a charger cell and paid `payTo` the price. Any
+spend counts for the wait, since only the charger can spend in session mode and
+an owner sweep takes every cell; a cancel is still the newest spend, so it still
+ends access at once. The lock is unchanged.

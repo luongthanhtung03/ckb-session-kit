@@ -18,16 +18,28 @@ const CKB = 100_000_000n;
 const h = (b: string) => ("0x" + b.repeat(32)) as ccc.Hex;
 const PERIOD = 20n;
 
-/** A testnet client whose chain is the given cells; the tip is block 1000, every cell born at `born`. */
+/** One transaction in a lock's indexer history: whether it spent a cell under the lock, or only created one. */
+type Touched = { txHash: ccc.Hex; blockNumber: bigint; spent: boolean };
+
+/**
+ * A testnet client whose chain is the given cells; the tip is block 1000, every cell
+ * born at `born`. `history` is what the indexer returns for any lock, newest first.
+ */
 function fakeClient(
   cells: ccc.Cell[],
   born = 900n,
   creating: ccc.Transaction | ((hash: string) => ccc.Transaction) = ccc.Transaction.default(),
+  history: Touched[] = [],
 ) {
   const sent: ccc.Transaction[] = [];
   const client = Object.assign(new ccc.ClientPublicTestnet(), {
     async *findCellsByLock(lock: ccc.ScriptLike) {
       for (const c of cells) if (c.cellOutput.lock.eq(ccc.Script.from(lock))) yield c;
+    },
+    async *findTransactionsByLock() {
+      for (const t of history) {
+        yield { txHash: t.txHash, blockNumber: t.blockNumber, txIndex: 0n, cells: [{ isInput: t.spent, cellIndex: 0n }] };
+      }
     },
     getCellLive: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
     getCell: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
@@ -252,8 +264,14 @@ describe("chargeSubscription", () => {
     const change = ccc.Cell.from({ outPoint: { txHash: CHARGED, index: 1 }, cellOutput: { lock, capacity: 300n * CKB }, outputData: "0x" });
     const topUp = cellOf(lock, 200n * CKB);
     const charge = ccc.Transaction.from({ inputs: [{ previousOutput: fee.outPoint }] });
-    const { client } = fakeClient([change, topUp, fee, cellOf(r.payToLock, 200n * CKB)], 900n, (hash) =>
-      hash === CHARGED ? charge : ccc.Transaction.default(),
+    const { client } = fakeClient(
+      [change, topUp, fee, cellOf(r.payToLock, 200n * CKB)],
+      900n,
+      (hash) => (hash === CHARGED ? charge : ccc.Transaction.default()),
+      [
+        { txHash: CHARGED, blockNumber: 990n, spent: true },
+        { txHash: topUp.outPoint.txHash, blockNumber: 900n, spent: false },
+      ],
     );
     const getTransaction = client.getTransaction.bind(client);
     // The charge's change is 10 blocks old; the top-up 100.
@@ -264,6 +282,37 @@ describe("chargeSubscription", () => {
     await expect(
       chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true }),
     ).rejects.toThrow(/next charge in 10 blocks/);
+  });
+
+  // 30 Oct: a charge of the whole balance leaves no change cell; the lock's history still dates it.
+  it("refuses while the last charge is under a period old, even when that charge left no change", async () => {
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const lock = subscriptionLock(d, r.sub);
+    const topUp = cellOf(lock, 200n * CKB); // 100 blocks old: mature on its own
+    const history = [
+      { txHash: h("1f"), blockNumber: 995n, spent: false }, // someone created a cell here: not a charge
+      { txHash: h("0f"), blockNumber: 990n, spent: true }, // the charge, which took a whole cell
+      { txHash: topUp.outPoint.txHash, blockNumber: 900n, spent: false },
+    ];
+    const { client, sent } = fakeClient([topUp, cellOf(r.chargerLock, 100n * CKB), cellOf(r.payToLock, 200n * CKB)], 900n, undefined, history);
+    const charger = new ccc.SignerCkbPrivateKey(client, keys.charger);
+    await expect(chargeSubscription(charger, d, r.sub, { payTo: r.payTo, topUp: true })).rejects.toThrow(/next charge in 10 blocks/);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("charges once the last spend is a full period old, without looking further back", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockResolvedValue([0, true] as never);
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const lock = subscriptionLock(d, r.sub);
+    const history = [
+      { txHash: h("0f"), blockNumber: 1000n - PERIOD, spent: true },
+      { txHash: h("1f"), blockNumber: 999n, spent: true }, // out of order: never reached
+    ];
+    const { client, sent } = fakeClient([cellOf(lock, 500n * CKB), cellOf(r.chargerLock, 100n * CKB), cellOf(r.payToLock, 200n * CKB)], 900n, undefined, history);
+    await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true });
+    expect(sent).toHaveLength(1);
   });
 
   // Review, 28 Oct: charges at once (many subscriptions, one charger) must not all pick the first fee cell.
@@ -408,7 +457,9 @@ describe("verifySubscription", () => {
 
 describe("subscriptionStatus (a server with no database)", () => {
   const OPEN = h("0a");
-  async function setup(opts: { liveCreatedBy?: "opening" | "recreate" | "read" | "charge"; memo?: string } = {}) {
+  async function setup(
+    opts: { liveCreatedBy?: "opening" | "recreate" | "read" | "charge" | "none"; memo?: string; history?: Touched[] } = {},
+  ) {
     const { client: c0 } = fakeClient([]);
     const r = await roles(c0);
     const lock = subscriptionLock(d, r.sub);
@@ -444,15 +495,26 @@ describe("subscriptionStatus (a server with no database)", () => {
       outputsData: ["0x", "0x"],
     });
     const CHARGE = h("0d");
-    const created = { recreate: RECREATE, read: READ, charge: CHARGE, opening: OPEN }[opts.liveCreatedBy ?? "opening"];
+    // A charge of the whole balance (a price of 153 CKB or more): no cell left under the lock.
+    const chargeAll = ccc.Transaction.from({
+      inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: fee.outPoint }],
+      outputs: [{ lock: r.payToLock, capacity: 210n * CKB }],
+      outputsData: ["0x"],
+    });
+    const CHARGE_ALL = h("0e");
+    // The subscriber's sweep: owner mode, no charger cell, nothing to payTo.
+    const cancel = ccc.Transaction.from({ inputs: [{ previousOutput: own.outPoint }], outputs: [{ lock: subscriberLock, capacity: 1000n * CKB }] });
+    const CANCEL = h("0f");
+    const created = { recreate: RECREATE, read: READ, charge: CHARGE, opening: OPEN, none: OPEN }[opts.liveCreatedBy ?? "opening"];
     const live = ccc.Cell.from({
       outPoint: { txHash: created, index: opts.liveCreatedBy === "charge" ? 1 : 0 },
       cellOutput: { lock, capacity: 173n * CKB },
       outputData: "0x",
     });
-    const txs: Record<string, ccc.Transaction> = { [RECREATE]: recreate, [READ]: read, [CHARGE]: charge };
-    const { client } = fakeClient([live, payIn, own, stranger, fee], 990n, (hash) => txs[hash] ?? opening);
-    return { status: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }) };
+    const txs: Record<string, ccc.Transaction> = { [RECREATE]: recreate, [READ]: read, [CHARGE]: charge, [CHARGE_ALL]: chargeAll, [CANCEL]: cancel };
+    const liveCells = opts.liveCreatedBy === "none" ? [] : [live];
+    const { client } = fakeClient([...liveCells, payIn, own, stranger, fee], 990n, (hash) => txs[hash] ?? opening, opts.history);
+    return { client, status: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }) };
   }
 
   it("is active through the opening's block plus one period, with the charges left", async () => {
@@ -483,6 +545,24 @@ describe("subscriptionStatus (a server with no database)", () => {
   it("gives no paid period for a cell the subscriber re-created to reset its age (review H2)", async () => {
     const { status } = await setup({ liveCreatedBy: "recreate" });
     expect(await status()).toMatchObject({ ok: true, status: { paidThroughBlock: undefined, active: false } });
+  });
+
+  // 30 Oct: the last charge of a 153-CKB-or-more price takes the whole cell; its period is still paid.
+  it("is active through a charge that took the whole balance, until a cancel ends it", async () => {
+    const charged = { txHash: h("0e"), blockNumber: 990n, spent: true };
+    expect(await (await setup({ liveCreatedBy: "none", history: [charged] })).status()).toEqual({
+      ok: true,
+      status: { paidThroughBlock: 990n + PERIOD, tip: 1000n, active: true, balance: 0n, chargesLeft: 0n, nextChargeIn: undefined },
+    });
+    // Its last block still counts, as a change cell's would.
+    const old = await setup({ liveCreatedBy: "none", history: [{ ...charged, blockNumber: 1000n - PERIOD }] });
+    const getTransaction = old.client.getTransaction.bind(old.client);
+    old.client.getTransaction = (async (hash: ccc.HexLike) => ({ ...(await getTransaction(hash)), blockNumber: 1000n - PERIOD })) as never;
+    expect(await old.status()).toMatchObject({ status: { paidThroughBlock: 1000n, active: true } });
+    const cancelled = [{ txHash: h("0f"), blockNumber: 995n, spent: true }, charged];
+    expect(await (await setup({ liveCreatedBy: "none", history: cancelled })).status()).toMatchObject({
+      status: { paidThroughBlock: undefined, active: false },
+    });
   });
 });
 

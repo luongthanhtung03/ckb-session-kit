@@ -231,7 +231,8 @@ and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). The fe
 comes from one of the charger's own plain cells. Throws `SessionBalanceError`
 before a full period (saying how many blocks are left), counted from the last
 charge as well as from each cell, so a top-up cannot pay a second price in the
-same period, and once what is left
+same period (the last charge is read from the lock's indexer history, so a
+charge that took the whole balance counts too), and once what is left
 cannot cover a price plus a cell. In a token subscription the price is in units
 and always tops up `payTo`'s token cell; every mature token cell is merged into
 one change that keeps all the CKB and exactly 16 data bytes.
@@ -261,13 +262,14 @@ For a creator's server with no database: the subscriber sends its lock hash, the
 opening's hash and its account id with every request. The opening must have paid
 the first price into a cell under exactly this subscription's lock and committed
 to `account`; then the live cells give `paidThroughBlock` (only cells created by a
-payment count), `active` (tip within the paid period), `chargesLeft` and
-`nextChargeIn`. Cancelling ends access at once. A token subscription counts its
+payment count, plus a last charge that took the whole balance and left no cell),
+`active` (tip within the paid period), `chargesLeft` and `nextChargeIn`.
+Cancelling ends access at once. A token subscription counts its
 payments in the token and adds `tokenBalance`; `chargesLeft` is then units / price.
 
 ### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, tokenBalance, nextChargeIn }`
 `nextChargeIn` is the number of blocks until a cell is a full period old and the
-last charge is too (0 = it can be charged now).
+last charge (the newest spend of a cell under the lock) is too (0 = it can be charged now).
 In a token subscription, only cells typed with the token count; `tokenBalance` is
 their units (0 for CKB), `balance` their shannons.
 

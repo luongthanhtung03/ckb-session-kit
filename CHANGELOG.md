@@ -12,6 +12,15 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   tell them from the subscription's state without matching messages. The demo's
   charge route now uses it.
 
+### Fixed (30 Oct)
+- `chargeSubscription` and `nextChargeIn` date the last charge from the
+  subscription lock's indexer history, not from its change cell: a charge of the
+  whole balance (the last 153 CKB with a price of 153 CKB or more) leaves no
+  change, so a younger top-up could pay a second price under a period later.
+- `subscriptionStatus` counts that last whole-balance charge as a paid period;
+  it used to end access as soon as the last period was paid. A cancel still ends
+  access at once.
+
 ### Fixed (code review, 28 Oct)
 - Token overflow guard: a planted cell of 2^128-1 free tokens could push the
   subscriber's own cell out of a cancel (the guard kept cells in indexer order), and
