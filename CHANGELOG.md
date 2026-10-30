@@ -26,6 +26,10 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   CKB `openSubscription` tops up a random payout cell, so concurrent charges and
   openings rarely compete for one cell.
 
+### Changed
+- `verifyAccess` resolves a payment's inputs in parallel once the memo check
+  passes; subscription charges and status fetch each creating transaction once.
+
 ## 1.0.0 (2026-10-27)
 
 First stable release. Everything below is on testnet, with a smoke script and explorer
