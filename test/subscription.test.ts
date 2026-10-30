@@ -751,5 +751,37 @@ describe("token subscriptions", () => {
       expect(tx.outputs[0].type?.eq(r.token)).toBe(true);
       expect(tx.outputsData[0]).toBe(units(30n * T));
     });
+
+    // Review, 28 Oct: which cells fit under u128 must not depend on indexer order.
+    it("cancel keeps the subscriber's own cell when a planted overflow cell comes first", async () => {
+      vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+      const r = await tokenRoles(fakeClient([]).client);
+      const lock = subscriptionLock(d, r.sub);
+      const own = cellOf(r.subscriberLock, 1000n * CKB);
+      const stranger = cellOf(ccc.Script.from({ ...r.payToLock, args: "0x" + "66".repeat(20) }), 500n * CKB);
+      const PLANT = h("0e");
+      const planted = ccc.Cell.from({
+        outPoint: { txHash: PLANT, index: 0 },
+        cellOutput: { lock, type: r.token, capacity: 142n * CKB },
+        outputData: units((1n << 128n) - 1n),
+      });
+      const live = ccc.Cell.from({
+        outPoint: { txHash: OPEN, index: 0 },
+        cellOutput: { lock, type: r.token, capacity: 282n * CKB },
+        outputData: units(30n * T),
+      });
+      const proof = cellOf(r.subscriberLock, 100n * CKB);
+      const creating = (hash: string) =>
+        ccc.Transaction.from({ inputs: [{ previousOutput: (hash === PLANT ? stranger : own).outPoint }] });
+      const { client, sent } = fakeClient([planted, live, own, stranger, proof], 990n, creating);
+      const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
+      vi.spyOn(subscriber, "findCells").mockImplementation(async function* () {
+        yield proof;
+      });
+      expect(await cancelSubscription(subscriber, d, r.sub)).toMatchObject({ refundedTokens: 30n * T });
+      const tx = sent[0];
+      expect(tx.inputs.some((i) => i.previousOutput.eq(live.outPoint))).toBe(true);
+      expect(tx.inputs.some((i) => i.previousOutput.eq(planted.outPoint))).toBe(false);
+    });
   });
 });

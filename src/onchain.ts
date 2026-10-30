@@ -128,6 +128,58 @@ export async function sessionLockOf(
   return sessionLockScript(deployment, params(session, await keyLockOf(session, client), binding));
 }
 
+const U128_MAX = (1n << 128n) - 1n;
+/** The most inputs a creating transaction may have for its origin to be looked up (each is an RPC call). */
+const MAX_ORIGIN_INPUTS = 32;
+
+/**
+ * Whether a session-lock cell was created by a transaction its owner or its
+ * session key took part in (an input under the lock hash in args bytes 0..32 or
+ * 32..64). Nobody else can sign for those, so a planted cell never passes.
+ */
+async function ownOrigin(client: ccc.Client, cell: ccc.Cell): Promise<boolean> {
+  const args = ccc.bytesFrom(cell.cellOutput.lock.args);
+  const own = [ccc.hexFrom(args.slice(0, 32)), ccc.hexFrom(args.slice(32, 64))];
+  const inputs = (await client.getTransaction(cell.outPoint.txHash))?.transaction.inputs ?? [];
+  if (!inputs.length || inputs.length > MAX_ORIGIN_INPUTS) return false;
+  const spent = await Promise.all(inputs.map((i) => client.getCell(i.previousOutput)));
+  return spent.some((c) => !!c && own.includes(c.cellOutput.lock.hash()));
+}
+
+/**
+ * `cells` less those whose token amounts would overflow a u128, per token type.
+ * Anyone can plant a cell holding 2^128-1 units of a free token under a session
+ * lock, and xUDT refuses a transaction whose inputs overflow, so taking every
+ * cell would block spends, closes, recovery, charges and cancels (review, 27 and
+ * 28 Oct). Which cells stay does not depend on indexer order: cells of the
+ * owner's or the key's own making first, then the smallest amounts. Without an
+ * overflow nothing is looked up and every cell stays, in order.
+ */
+export async function withinU128(client: ccc.Client, cells: ccc.Cell[]): Promise<ccc.Cell[]> {
+  const units = (c: ccc.Cell) =>
+    c.cellOutput.type && ccc.bytesFrom(c.outputData).length >= 16 ? tokenAmount(c.outputData) : 0n;
+  const byType = new Map<string, ccc.Cell[]>();
+  for (const c of cells) {
+    if (!units(c)) continue;
+    const key = c.cellOutput.type!.hash();
+    byType.set(key, [...(byType.get(key) ?? []), c]);
+  }
+  const dropped = new Set<ccc.Cell>();
+  for (const group of byType.values()) {
+    if (group.reduce((s, c) => s + units(c), 0n) <= U128_MAX) continue;
+    const own = await Promise.all(group.map((c) => ownOrigin(client, c)));
+    const ranked = group
+      .map((cell, i) => ({ cell, own: own[i], units: units(cell) }))
+      .sort((a, b) => (a.own !== b.own ? (a.own ? -1 : 1) : a.units < b.units ? -1 : a.units > b.units ? 1 : 0));
+    let sum = 0n;
+    for (const r of ranked) {
+      if (sum + r.units > U128_MAX) dropped.add(r.cell);
+      else sum += r.units;
+    }
+  }
+  return dropped.size ? cells.filter((c) => !dropped.has(c)) : cells;
+}
+
 /** Plain cells under `lock`; with `token`, also cells holding exactly that token. */
 export async function collect(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
@@ -146,7 +198,8 @@ export async function findSessionCells(
   const keyLock = await keyLockOf(session, client);
   const lock = sessionLockScript(deployment, params(session, keyLock, binding));
   const token = binding.token && ccc.Script.from(binding.token.type);
-  const [sessionCells, keyCells] = await Promise.all([collect(client, lock, token), collect(client, keyLock)]);
+  const [found, keyCells] = await Promise.all([collect(client, lock, token), collect(client, keyLock)]);
+  const sessionCells = await withinU128(client, found);
   const sum = (cells: ccc.Cell[]) => cells.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   const tokenBalance = sessionCells.reduce((s, c) => s + (c.cellOutput.type ? tokenAmount(c.outputData) : 0n), 0n);
   return { lock, keyLock, sessionCells, keyCells, balance: sum(sessionCells), feeBalance: sum(keyCells), tokenBalance };
@@ -553,7 +606,8 @@ export async function closeSession(
  * for a token session) are kept: a cell with malformed args would fail the lock
  * even in owner mode, and anyone can create one with this owner's hash as a prefix
  * to block a sweep. Likewise a typed cell is kept only if it holds the session's
- * own token in well-formed data; anything else could make the sweep fail.
+ * own token in well-formed data; anything else could make the sweep fail. Cells
+ * whose tokens would overflow a u128 together are left out (`withinU128`).
  *
  * Pass several deployments (`[TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]`)
  * to find sessions opened under earlier versions of the lock as well.
@@ -574,7 +628,7 @@ export async function findOwnedSessionCells(
       if (sweepable(cell)) cells.push(cell);
     }
   }
-  return cells;
+  return withinU128(owner.client, cells);
 }
 
 /**

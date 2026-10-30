@@ -86,13 +86,16 @@ recovered without their key.
 
 ### `findSessionCells(session, client, deployment, binding) → SessionCells`
 The live session cells and key cells of one session, with their totals
-(`balance`, `feeBalance`, and `tokenBalance` in a token session).
+(`balance`, `feeBalance`, and `tokenBalance` in a token session). Session cells
+whose tokens would overflow a u128 together (a planted cell of 2^128-1 free
+tokens) are left out, keeping the owner's and the key's own cells first.
 
 ### `findOwnedSessionCells(owner, deployments) → Cell[]`
 Every live, well-formed session cell whose args start with the owner's lock
 hash, found without any session key. Typed cells are kept only in token
 sessions, and only when they hold that session's token with well-formed data:
-anything else could make the sweep fail. Sweeps return tokens to the owner. `deployments` is one
+anything else could make the sweep fail; so could cells whose tokens overflow a
+u128 together, which are left out as in `findSessionCells`. Sweeps return tokens to the owner. `deployments` is one
 deployment or a list.
 
 ### `assertSigningLock(lock, client)`

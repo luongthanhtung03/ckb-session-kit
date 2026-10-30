@@ -17,6 +17,7 @@ import {
   signAndSend,
   tokenAmount,
   tokenData,
+  withinU128,
 } from "./onchain.js";
 import { SessionPolicyError } from "./session.js";
 
@@ -106,7 +107,8 @@ export function subscriptionMemo(account: string): ccc.Hex {
  * In a token subscription, the cells typed with exactly its token and holding at
  * least the 16-byte amount (the lock keeps a charge's change at exactly 16).
  * Plain CKB sent to the same lock holds no tokens and cannot pay a price; it is
- * left to `recoverSessions`.
+ * left to `recoverSessions`. Cells whose tokens would overflow a u128 are left out
+ * (`withinU128`).
  */
 async function subscriptionCells(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
@@ -114,34 +116,14 @@ async function subscriptionCells(client: ccc.Client, lock: ccc.Script, token?: c
     const type = cell.cellOutput.type;
     if (token ? type?.eq(token) && ccc.bytesFrom(cell.outputData).length >= 16 : !type) cells.push(cell);
   }
-  return cells;
+  // A planted cell of 2^128-1 free tokens would block charges and the cancel; the
+  // subscriber's and the charger's own cells are always kept.
+  return token ? withinU128(client, cells) : cells;
 }
 
 /** The token units in token cells (cells typed with `token`, with at least 16 data bytes). */
 function tokensIn(cells: { type?: ccc.Script; data: ccc.HexLike }[], token: ccc.Script): bigint {
   return cells.reduce((s, c) => (c.type?.eq(token) && ccc.bytesFrom(c.data).length >= 16 ? s + tokenAmount(c.data) : s), 0n);
-}
-
-const U128_MAX = (1n << 128n) - 1n;
-
-/**
- * Cells whose token amounts add up without overflowing a u128, in order; the rest
- * are left out. Anyone can plant a cell holding 2^128-1 units of a free token
- * under a subscription's lock, and xUDT refuses a transaction whose inputs
- * overflow, so taking every cell at once would block charges and the cancel
- * (review, 27 Oct). Only the planter's own tokens are left behind.
- */
-function fitting(cells: ccc.Cell[], token: ccc.Script | undefined): ccc.Cell[] {
-  if (!token) return cells;
-  const kept: ccc.Cell[] = [];
-  let sum = 0n;
-  for (const c of cells) {
-    const units = c.cellOutput.type?.eq(token) && ccc.bytesFrom(c.outputData).length >= 16 ? tokenAmount(c.outputData) : 0n;
-    if (sum + units > U128_MAX) continue;
-    sum += units;
-    kept.push(c);
-  }
-  return kept;
 }
 
 /** Whether `p` spends a cell under `lockHash`: who took part in the transaction. */
@@ -389,7 +371,7 @@ export async function chargeSubscription(
 
   // Every mature cell, merged into one change: the rate limit is per cell, so
   // leaving one out would let it pay another price in the same period (code review, 26 Oct).
-  const taken = fitting(await matureCells(client, state.cells, sub.periodBlocks), token);
+  const taken = await matureCells(client, state.cells, sub.periodBlocks);
   const ckbIn = taken.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   const since = relativeBlocksSince(sub.periodBlocks);
   tx.inputs.unshift(...taken.map((c) => ccc.CellInput.from({ previousOutput: c.outPoint, since })));
@@ -442,13 +424,12 @@ export async function cancelSubscription(
   const untyped = token ? await subscriptionCells(subscriber.client, subLock) : [];
   const all = [...cells, ...untyped];
   if (!all.length) return { refunded: 0n, nothingFound: true };
-  const sweep = fitting(all, token);
-  const txHash = await ownerSweep(subscriber, deployment, sweep);
-  const refunded = sweep.reduce((s, c) => s + c.cellOutput.capacity, 0n);
+  const txHash = await ownerSweep(subscriber, deployment, all);
+  const refunded = all.reduce((s, c) => s + c.cellOutput.capacity, 0n);
   return {
     txHash,
     refunded: token ? refunded : balance,
-    ...(token && { refundedTokens: tokensIn(sweep.map((c) => ({ type: c.cellOutput.type, data: c.outputData })), token) }),
+    ...(token && { refundedTokens: tokenBalance }),
   };
 }
 

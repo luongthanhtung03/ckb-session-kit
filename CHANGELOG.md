@@ -3,6 +3,15 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
+## Unreleased
+
+### Fixed (code review, 28 Oct)
+- Token overflow guard: a planted cell of 2^128-1 free tokens could push the
+  subscriber's own cell out of a cancel (the guard kept cells in indexer order), and
+  blocked `closeSession` and `recoverSessions` of token sessions (no guard at all).
+  One guard now serves sessions, recovery and subscriptions; it keeps cells created
+  by the owner or the key first.
+
 ## 1.0.0 (2026-10-27)
 
 First stable release. Everything below is on testnet, with a smoke script and explorer

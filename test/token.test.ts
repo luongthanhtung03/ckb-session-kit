@@ -287,6 +287,58 @@ describe("recoverSessions with token sessions", () => {
     expect(tx.outputs[0].type?.eq(token)).toBe(true);
     expect(tx.outputsData[0]).toBe(amount(100n));
   });
+
+  // Review, 28 Oct: planted cells whose tokens overflow a u128 with the owner's
+  // must not block the sweep, even when each is smaller than the owner's cell.
+  it("leaves out planted cells that would overflow the token sum, keeping the owner's own", async () => {
+    const token = await xudtOf(h("33"));
+    const lock = sessionLockScript(d, {
+      ownerLockHash: ownerLock.hash(),
+      sessionLockHash: h("b1"),
+      maxPerTx: 5n * CKB,
+      token: { typeHash: token.hash(), maxPerTx: 10n },
+    });
+    const strangerLock = ccc.Script.from({ codeHash: h("aa"), hashType: "type", args: "0x" + "66".repeat(20) });
+    const at = (i: number, l: ccc.Script, capacity: bigint, data: ccc.Hex = "0x", type?: ccc.Script) =>
+      ccc.Cell.from({ outPoint: { txHash: h("0" + i), index: i }, cellOutput: { lock: l, capacity, ...(type && { type }) }, outputData: data });
+    const half = 1n << 127n;
+    const planted = [at(1, lock, 142n * CKB, amount(half - 1n), token), at(2, lock, 142n * CKB, amount(half - 1n), token)];
+    const mine = at(3, lock, 300n * CKB, amount(half), token);
+    const ownCell = at(7, ownerLock, 500n * CKB);
+    const strangerCell = at(8, strangerLock, 500n * CKB);
+    const cells = [...planted, mine];
+    const sent: ccc.Transaction[] = [];
+    const owner = {
+      client: {
+        async *findCells(key: { script: ccc.ScriptLike }) {
+          const prefix = ccc.Script.from(key.script).args;
+          for (const c of cells) if (c.cellOutput.lock.args.startsWith(prefix)) yield c;
+        },
+        // The owner's cell was funded by the owner; the planted ones by a stranger.
+        getTransaction: async (hash: ccc.HexLike) => ({
+          transaction: ccc.Transaction.from({
+            inputs: [{ previousOutput: (ccc.hexFrom(hash) === h("03") ? ownCell : strangerCell).outPoint }],
+          }),
+        }),
+        getCell: async (op: ccc.OutPointLike) => [ownCell, strangerCell].find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
+      },
+      getRecommendedAddressObj: async () => ({ script: ownerLock }),
+      async *findCells() {
+        yield at(9, ownerLock, 100n * CKB);
+      },
+      sendTransaction: async (tx: ccc.Transaction) => {
+        sent.push(tx);
+        return h("ee");
+      },
+    } as unknown as ccc.Signer;
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    vi.spyOn(ccc.Transaction.prototype, "addCellDepsOfKnownScripts").mockResolvedValue(undefined as never);
+
+    expect(await recoverSessions(owner, d)).toMatchObject({ cells: 2, failed: 0 });
+    const [tx] = sent;
+    expect(tx.inputs.some((x) => x.previousOutput.eq(mine.outPoint))).toBe(true);
+    expect(tx.outputsData[0]).toBe(amount(half + half - 1n));
+  });
 });
 
 describe("matureCells", () => {

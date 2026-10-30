@@ -299,6 +299,10 @@ cell growth. Fixed in the library and the demo:
   let a stale lookup win.
 
 Not changed: the status and charge routes have no rate limit (the demo runs on
-testnet; a real creator would put its own limits in front), and a recoverSessions
-sweep is still one transaction per session, so a planted overflow cell makes that
-session fail in it (cancelSubscription recovers it).
+testnet; a real creator would put its own limits in front).
+
+Review, 28 Oct: the overflow guard kept cells in indexer order, so a planted cell
+listed first could push out the subscriber's own and the cancel swept only the
+planted one. The guard (`withinU128`, shared with sessions and `recoverSessions`)
+now keeps cells created by the subscriber or the charger first, then the smallest
+amounts.
