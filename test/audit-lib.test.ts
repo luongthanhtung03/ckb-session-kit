@@ -1,6 +1,6 @@
 /**
- * Library audit, 30 Oct. Each test here FAILS on the current src/ and shows one
- * finding; it should pass once the finding is fixed. Mocked chain only.
+ * Library audit, 30 Oct. Each test here failed before the fix and shows one
+ * finding; they pass since the fixes of 30 Oct. Mocked chain only.
  */
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
