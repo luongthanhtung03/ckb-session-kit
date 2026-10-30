@@ -62,7 +62,7 @@ async function setup(planted: number) {
   ]);
 
   let calls = 0;
-  routeClient.getTransaction = ((async (h: ccc.HexLike) => {
+  routeClient.getTransactionNoCache = ((async (h: ccc.HexLike) => {
     calls++;
     const transaction = txs.get(ccc.hexFrom(h));
     return transaction && { transaction, status: "committed", blockNumber: 990n };

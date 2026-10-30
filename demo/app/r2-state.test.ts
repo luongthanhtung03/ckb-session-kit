@@ -1,6 +1,7 @@
 /**
  * Audit round 2 (31 Oct): the demo's client code over time. Each test here
- * FAILS today and shows one finding. Mocked chain only.
+ * failed before the fix and shows one finding; they pass since the fixes of
+ * 31 Oct. Mocked chain only.
  */
 import { ccc } from "@ckb-ccc/core";
 import { describe, expect, it, vi } from "vitest";
@@ -61,7 +62,7 @@ describe("scanBoard: a transient miss is never looked at again", () => {
     expect(first.placements).toEqual([]);
     getTx.mockClear();
     await scanBoard(client, boardLock, board, first);
-    // The second poll should ask about it again; today it is skipped as seen.
+    // The second poll asks about it again (before the fix, it was skipped as seen).
     expect(getTx).toHaveBeenCalledWith(h("71"));
   });
 });

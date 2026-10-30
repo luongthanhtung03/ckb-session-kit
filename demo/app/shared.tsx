@@ -29,17 +29,15 @@ export function describeFailure(e: unknown): { level: "err"; text: string } {
 }
 
 /**
- * After a send failed: true only when the node is known never to have taken
- * `hash` (it has no record of it, or rejected it). An RPC error proves nothing,
- * so it gives false: whatever was recorded for the transaction is kept.
+ * After a send failed: true only when the node is known never to take `hash`:
+ * it rejected it, or has not known it for DROP_AFTER_MS since `since` (the
+ * paymentState rule). Just after a send, "unknown" or no record proves nothing:
+ * the node that took it may not have relayed it yet to the one asked (the public
+ * testnet client has two RPC hosts), so the payment or key is kept and the page
+ * keeps polling it (audit, 31 Oct). An RPC error proves nothing either: false.
  */
-export async function neverSent(client: ccc.Client, hash: string): Promise<boolean> {
-  try {
-    const res = await client.getTransaction(hash);
-    return !res || res.status === "rejected" || res.status === "unknown";
-  } catch {
-    return false;
-  }
+export async function neverSent(client: ccc.Client, hash: string, since: number = Date.now()): Promise<boolean> {
+  return (await paymentState(client, hash, since)) === "dropped";
 }
 
 /** How long a payment the node does not know may stay unknown before it counts as dropped. */
@@ -118,9 +116,10 @@ export const FUNDING_UNSURE =
 /**
  * Opens a session with its key saved before the funds are sent (`open` passes
  * `beforeSend` to openSession). If opening then fails, the key is forgotten only
- * when nothing was signed, or the node is known never to have taken the funding
- * transaction. Otherwise funds may still land under the key: the session comes
- * back with the error, and the page keeps it until close finds out.
+ * when nothing was signed, or the node rejected the funding transaction. A
+ * funding transaction the node does not know yet may still land (`neverSent`):
+ * the session comes back with the error, and the page keeps it, and polls the
+ * funding, until close finds out.
  */
 export async function openKept(
   client: ccc.Client,

@@ -181,10 +181,23 @@ export default function PayPerReadTokens() {
       setOwnerUnits(undefined);
       return;
     }
-    signer.getRecommendedAddressObj().then((a) => {
-      setOwnerAddress(a.toString());
-      setOwnerLock(a.script);
-    });
+    // A wallet switch while this resolves must not leave the old wallet's lock as
+    // the owner's (audit, 31 Oct): until the new one answers, there is none.
+    setOwnerAddress(undefined);
+    setOwnerLock(undefined);
+    setOwnerUnits(undefined);
+    let stale = false;
+    signer
+      .getRecommendedAddressObj()
+      .then((a) => {
+        if (stale) return;
+        setOwnerAddress(a.toString());
+        setOwnerLock(a.script);
+      })
+      .catch(() => undefined);
+    return () => {
+      stale = true;
+    };
   }, [signer]);
 
   const refresh = useCallback(async () => {
