@@ -5,6 +5,11 @@ import { CHARGER, PAY_TO } from "../../../subscribe/config";
 import { isAsset, isHash, termsFor } from "../../../subscribe/terms";
 
 const client = new ccc.ClientPublicTestnet();
+/**
+ * Balance errors about the creator's own cells (the charger's fee cell, the
+ * payout cell to top up): a server fault, not the subscription's state (review, 28 Oct).
+ */
+const CREATOR_FAULT = /^(the charger needs a plain cell|payTo has no)/;
 const deployment = deploymentJson as SessionLockDeployment;
 
 /**
@@ -37,7 +42,9 @@ export async function POST(request: Request) {
     return Response.json({ txHash });
   } catch (e) {
     // Not due yet, run dry, cancelled: the subscription's state, not a server fault.
-    if (e instanceof SessionBalanceError || e instanceof SessionPolicyError) {
+    const creatorFault = e instanceof SessionBalanceError && CREATOR_FAULT.test(e.message);
+    if (creatorFault) console.error(`charge: ${e.message}`);
+    if (!creatorFault && (e instanceof SessionBalanceError || e instanceof SessionPolicyError)) {
       return Response.json({ error: e.message }, { status: 409 });
     }
     return Response.json({ error: "could not charge right now", retry: true }, { status: 503 });
