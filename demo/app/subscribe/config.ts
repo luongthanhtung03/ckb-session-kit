@@ -2,11 +2,10 @@
 /**
  * The charger key's secp256k1 address. The server holds this key (CHARGER_KEY), so
  * it must be a key of its own holding only fee cells, never the creator's (security
- * audit, 30 Oct). Still the creator's key today: replace it with the address
- * `npm run setup:charger` prints (see config.test.ts).
+ * audit, 30 Oct). Made by `npm run setup:charger` on 31 Oct (see config.test.ts).
  */
 export const CHARGER =
-  "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfrks0ww06uv9pgqzwuajnq694mjncvctgqcjrs7";
+  "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsq0c0ucvmy9vmq7e6pt58tja0tw46kx44qg44ekz4";
 /**
  * Charges top up this anyone-can-pay address: the creator's key with one more
  * args byte, so a lock of its own, apart from the one paid reads top up. No

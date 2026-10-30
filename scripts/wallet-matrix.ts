@@ -37,9 +37,9 @@ import {
 const CKB = 100_000_000n;
 const explorer = (h: string) => `https://testnet.explorer.nervos.org/transaction/${h}`;
 const deployment = JSON.parse(readFileSync("deployment/testnet.json", "utf8")) as SessionLockDeployment;
-// The demo's creator: its anyone-can-pay cell takes the payments, its secp256k1 address charges.
+// The demo's creator: its anyone-can-pay cell takes the payments. The charger is a key of its own (31 Oct).
 const CREATOR_ACP = "ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vqfrks0ww06uv9pgqzwuajnq694mjncvctg0t589g";
-const CHARGER = "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfrks0ww06uv9pgqzwuajnq694mjncvctgqcjrs7";
+const CHARGER = "ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsq0c0ucvmy9vmq7e6pt58tja0tw46kx44qg44ekz4";
 
 const utf8OrBytes = (m: string | ccc.BytesLike) => (typeof m === "string" ? ccc.bytesFrom(m, "utf8") : ccc.bytesFrom(m));
 
