@@ -13,7 +13,13 @@ const dir = mkdtempSync(join(tmpdir(), "pack-check-"));
 const app = join(dir, "app");
 const sh = (cmd, cwd) => execSync(cmd, { cwd, stdio: ["ignore", "pipe", "inherit"] }).toString();
 try {
-  sh(`npm pack --pack-destination "${dir}"`, process.cwd());
+  const out = sh(`npm pack --json --pack-destination "${dir}"`, process.cwd());
+  // Only the compiled library and its docs ship: no source maps (they carry local
+  // paths), tests, fixtures, scripts, contracts or .env files (supply-chain audit, 31 Oct).
+  const shipped = JSON.parse(out.slice(out.indexOf("[\n")))[0].files.map((f) => f.path);
+  const allowed = /^(dist\/[\w-]+\.(js|d\.ts)|CHANGELOG\.md|LICENSE|README\.md|package\.json)$/;
+  const extra = shipped.filter((p) => !allowed.test(p));
+  if (extra.length) throw new Error(`the package would ship unexpected files: ${extra.join(", ")}`);
   const tgz = readdirSync(dir).find((f) => f.endsWith(".tgz"));
   mkdirSync(app);
   writeFileSync(join(app, "package.json"), JSON.stringify({ name: "consumer", private: true, type: "module" }));
