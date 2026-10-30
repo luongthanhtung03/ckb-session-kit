@@ -41,7 +41,10 @@ The owner's wallet funds a session cell (`opts.budget`) and a key cell
 to go back to the owner at the end, so by default it is a cell under the owner's
 lock plus 1 CKB (62 CKB for a secp256k1 owner, 64 for JoyID or Omnilock, whose
 cells need 63), and a smaller `feeBudget` is refused. `opts.minInterval` sets
-the on-chain rate limit in blocks. `opts.beforeSend(binding)` runs after the
+the on-chain rate limit in blocks. Set it whenever the scope has a recipient:
+the recipient rule covers outputs, not the fee, so without a rate limit a leaked
+key can still give up to `maxPerTx` to the miner in every block.
+`opts.beforeSend(binding)` runs after the
 transaction is signed and before it is sent: save the session there, so funds
 never sit under a key that exists nowhere. The binding carries `openTx`, the
 funding transaction's hash. Set `session.onchain = binding` afterwards. If the
@@ -60,7 +63,9 @@ The session key pays, no wallet involved. Checks the scope first (`ScopeError`),
 then the network checks it again in the lock. A plain payment creates a cell, so
 it is at least 61 CKB; `topUp: true` pays any amount into an existing
 anyone-can-pay cell of `to`. `memo` goes into the key cell's witness, which the
-key signs: see `verifyAccess`. Throws `SessionBalanceError` when the balance,
+key signs: see `verifyAccess`. The fee comes from the largest key cell, so a
+small cell someone sent to the key address does not get in the way. Throws
+`SessionBalanceError` when the balance,
 the change or the key cell would fall below what a cell needs (for the key
 cell: what it needs to go back to the owner). `beforeSend(txHash)` runs with
 the final hash before the payment is sent: record the payment there, so it is
@@ -83,8 +88,9 @@ throws `SessionBalanceError` instead: forget a key only after `keyTx` or
 
 ### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
 Device-loss recovery, with the wallet alone: finds every session cell this owner
-opened and sweeps them, in one transaction if it can, else one per session (so a
-planted cell spent ahead of the sweep fails alone). A sweep the node accepted
+opened and sweeps them, in one transaction if it can, else one per session lock
+(so a planted cell spent ahead of the sweep fails alone, even one carrying the
+victim's session key hash). A sweep the node accepted
 counts as recovered even if its reply times out. Throws `SessionBalanceError`
 when the owner holds no plain cell to prove ownership, rather than reporting
 every session as failed. Key cells cannot be recovered without their key.
@@ -98,7 +104,8 @@ tokens) are left out, keeping the owner's and the key's own cells first.
 ### `findOwnedSessionCells(owner, deployments) → Cell[]`
 Every live, well-formed session cell whose args start with the owner's lock
 hash, found without any session key. Typed cells are kept only in token
-sessions, and only when they hold that session's token with well-formed data:
+sessions, and only when they hold that session's token, a plain xUDT
+(`assertPlainXudt`'s rules), in exactly 16 bytes of data:
 anything else could make the sweep fail; so could cells whose tokens overflow a
 u128 together, which are left out as in `findSessionCells`. Sweeps return tokens to the owner. `deployments` is one
 deployment or a list.

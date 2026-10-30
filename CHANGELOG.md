@@ -16,6 +16,30 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   demo's charge route answers it with 503 (the deployment's setup, not the
   subscription's state) instead of 409.
 
+### Fixed (security audit, 30 Oct)
+- `recoverSessions`: when the one sweep is refused, sessions are now swept one
+  session lock at a time (full lock hash), not one session key hash at a time. A
+  planted cell under other args carrying the victim's public key hash (a foreign
+  type script the sweep cannot consume) joined the victim's group and blocked its
+  recovery on every retry. `findOwnedSessionCells` keeps a typed cell only if its
+  type is a plain xUDT on the network (`assertPlainXudt`'s rules) holding exactly
+  the 16-byte amount a session makes.
+- `spendInSession` pays the fee from the largest key cell (ties: lowest out
+  point), not the first one listed: a 61 CKB cell anyone sent to the key address,
+  or the old key cell beside a top-up, blocked every spend. Still one key cell in
+  and one smaller one out, as the lock requires.
+- `verifyAccess` and `checkPlacement` count only memos in witnesses a signature
+  covers: the first witness of each secp256k1 lock group, and any past the
+  inputs. The session cell's and an anyone-can-pay cell's witnesses are signed by
+  nobody, so whoever relayed a payment could add a memo there and void it for
+  good (or, on a CKB Place board, choose the pixels of a payment without one).
+  Several signed memos still fail. `placementMemo` takes the resolved inputs as
+  an optional third argument for the exact check; without them it is a prefilter.
+- Docs: with a recipient set, up to `max_per_tx` per transaction can still leave
+  as the miner fee (the recipient rule covers outputs only). The README and
+  `openSession` now say so and recommend a rate limit (`minInterval`) whenever a
+  recipient is set. The lock is unchanged.
+
 ### Fixed (30 Oct)
 - `chargeSubscription` and `nextChargeIn` date the last charge from the
   subscription lock's indexer history, not from its change cell: a charge of the

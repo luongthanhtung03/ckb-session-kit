@@ -141,7 +141,9 @@ this work on CKB:
   The anyone-can-pay lock accepts the top-up without the creator's signature.
 - **A stolen key can only pay the creator.** The session's recipient is the
   creator's anyone-can-pay address, so the session lock refuses any other output,
-  and `max_per_tx` caps each unlock.
+  and `max_per_tx` caps each unlock. The fee is not an output: up to `max_per_tx`
+  per transaction can still go to the miner, so give a session with a recipient a
+  rate limit (`minInterval`) too.
 
 ```ts
 const session = createSession({ expiresAt, scope: { maxPerTx: 5n * CKB, recipients: [creatorAcp] } });
@@ -355,7 +357,10 @@ Rust. A cell under it can be spent two ways:
   - **recipient allowlist** (optional) — payments may only go to one lock (plus
     change, the key cell, and the owner). The key cell may come back smaller
     (it pays the fee) but never larger, so the key cannot park session funds in
-    its own cell and pay anyone from there;
+    its own cell and pay anyone from there. The fee is not an output, so the
+    allowlist does not see it: a leaked key can still give up to `max_per_tx`
+    per transaction to the miner as fee, paying the recipient nothing. Set a
+    rate limit (`min_interval`) whenever you set a recipient;
   - **rate limit** (optional) — each session cell must have aged `min_interval`
     blocks before it can be spent again (relative `since`). The limit is **per
     cell**: with *n* session cells, the key can spend from each of them in the same
@@ -396,8 +401,11 @@ cell's balance caps the total at risk.
 
 The key cannot be revoked by expiry: after `expiresAt` it still satisfies the lock
 until the owner acts. Until then it can move at most `max_per_tx` per transaction,
-only to the recipient if one is set, and, with a rate limit, once per
-`min_interval` blocks per session cell. The owner should sweep at once:
+only to the recipient if one is set (or to the miner as fee: the recipient rule
+covers outputs, and the fee is not one), and, with a rate limit, once per
+`min_interval` blocks per session cell. Without a rate limit, a recipient does
+not slow a leaked key down: it can burn `max_per_tx` in fees every block. Set
+`min_interval` whenever you set a recipient. The owner should sweep at once:
 
 - with the key still at hand: `closeSession(wallet, session, deployment, binding)`;
 - without it (device lost or wiped): `recoverSessions(wallet, deployment)` finds

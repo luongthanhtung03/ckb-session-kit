@@ -1172,14 +1172,14 @@ describe.skipIf(skip)("session lock", () => {
     });
   });
 
-  // Audit, 30 Oct 2026. These pass: each shows what the lock accepts today, where the
-  // README's wording promises more than the lock checks.
+  // Audit, 30 Oct 2026. Accepted behaviour of the deployed lock, documented in the
+  // README ("If a session key leaks") and docs/API.md (`openSession`).
   describe("audit 30 Oct: what the recipient rule does not cover", () => {
     const scoped: Scope = { maxPerTx: 100n * CKB, recipient: true };
 
-    // README "If a session key leaks": "at most max_per_tx per transaction, only to the
-    // recipient if one is set". The fee is not an output, so the recipient rule never sees it.
-    it("AUDIT-1: a recipient-scoped session gives the whole max_per_tx to the miner, paying no recipient", async () => {
+    // The fee is not an output, so the recipient rule never sees it: up to max_per_tx can
+    // go to the miner. Accepted; the docs say so and recommend a rate limit with a recipient.
+    it("AUDIT-1 (accepted, documented): with a recipient, up to max_per_tx can still leave as the miner fee", async () => {
       await ok(scoped, [{ lock: "session", capacity: 500n * CKB }, KEY_CELL], [
         { lock: "session", capacity: 400n * CKB },
         KEY_CELL,
