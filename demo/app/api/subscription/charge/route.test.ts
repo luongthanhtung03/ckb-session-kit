@@ -1,5 +1,5 @@
 import { ccc } from "@ckb-ccc/core";
-import { SessionBalanceError } from "ckb-session-kit";
+import { SessionBalanceError, SessionPolicyError } from "ckb-session-kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHARGER } from "../../../subscribe/config";
 
@@ -41,6 +41,19 @@ describe("POST /api/subscription/charge", () => {
       status: 503,
       body: { error: "could not charge right now", retry: true },
     });
+  });
+
+  // 30 Oct: a PAY_TO that is not anyone-can-pay is the deployment's setup, not the subscription's.
+  it("answers 503 without retry when PAY_TO is not anyone-can-pay", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(await status(new SessionPolicyError("topUp needs an anyone-can-pay payTo", "payto-not-anyone-can-pay"))).toEqual({
+      status: 503,
+      body: { error: "charging is misconfigured on this deployment" },
+    });
+  });
+
+  it("answers 409 for other policy errors: a subscription made for another charger", async () => {
+    expect(await status(new SessionPolicyError("this signer is not the subscription's charger"))).toMatchObject({ status: 409 });
   });
 
   it("answers 409 for a message that merely reads like a creator fault, without the reason", async () => {

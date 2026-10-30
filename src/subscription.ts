@@ -374,10 +374,10 @@ export async function chargeSubscription(
 
   const tx = ccc.Transaction.from({ cellDeps: [sessionLockCellDep(deployment)] });
   if (token) {
-    if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("a token subscription needs an anyone-can-pay payTo");
+    if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("a token subscription needs an anyone-can-pay payTo", "payto-not-anyone-can-pay");
     if (!(await addTopUp(tx, client, payToLock, { token, units: sub.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET, "no-payout-cell");
   } else if (opts.topUp) {
-    if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("topUp needs an anyone-can-pay payTo");
+    if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("topUp needs an anyone-can-pay payTo", "payto-not-anyone-can-pay");
     if (!(await addTopUp(tx, client, payToLock, { ckb: sub.price }))) {
       throw new SessionBalanceError("payTo has no anyone-can-pay cell to top up", "no-payout-cell");
     }

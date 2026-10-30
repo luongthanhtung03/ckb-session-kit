@@ -40,10 +40,18 @@ export interface CreateOptions {
   randomBytes?: (n: number) => Uint8Array;
 }
 
+/**
+ * Why a policy error is the payer's own setup rather than the request: today only
+ * a `payTo` that is not anyone-can-pay, so a charge can never top it up.
+ */
+export type SessionPolicyReason = "payto-not-anyone-can-pay";
+
 export class SessionPolicyError extends Error {
-  constructor(message: string) {
+  readonly reason?: SessionPolicyReason;
+  constructor(message: string, reason?: SessionPolicyReason) {
     super(message);
     this.name = "SessionPolicyError";
+    if (reason) this.reason = reason;
   }
 }
 

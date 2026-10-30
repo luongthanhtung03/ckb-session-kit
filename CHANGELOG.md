@@ -11,6 +11,10 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   (a charger with no fee cell, a `payTo` with no cell to top up), so a server can
   tell them from the subscription's state without matching messages. The demo's
   charge route now uses it.
+- `SessionPolicyError.reason` (`SessionPolicyReason`): `"payto-not-anyone-can-pay"`
+  when a charge needs to top up `payTo` and `payTo` is not anyone-can-pay. The
+  demo's charge route answers it with 503 (the deployment's setup, not the
+  subscription's state) instead of 409.
 
 ### Fixed (30 Oct)
 - `chargeSubscription` and `nextChargeIn` date the last charge from the

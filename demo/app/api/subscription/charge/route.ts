@@ -50,6 +50,11 @@ export async function POST(request: Request) {
     // Not due yet, run dry, cancelled: the subscription's state, not a server fault.
     const creatorFault = e instanceof SessionBalanceError && !!e.reason && CREATOR_FAULTS.includes(e.reason);
     if (creatorFault) console.error(`charge: ${e.message}`);
+    // PAY_TO not anyone-can-pay: this deployment's setup, and a retry cannot fix it.
+    if (e instanceof SessionPolicyError && e.reason === "payto-not-anyone-can-pay") {
+      console.error(`charge: ${e.message}`);
+      return Response.json({ error: "charging is misconfigured on this deployment" }, { status: 503 });
+    }
     if (!creatorFault && (e instanceof SessionBalanceError || e instanceof SessionPolicyError)) {
       return Response.json({ error: e.message }, { status: 409 });
     }

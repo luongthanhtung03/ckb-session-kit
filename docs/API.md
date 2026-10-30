@@ -28,7 +28,10 @@ before any network call; the session lock checks again on-chain.
 
 ### `SessionPolicyError`
 Thrown by `createSession` for a policy it refuses, and by `onchainRecipient` for
-a scope the lock cannot enforce.
+a scope the lock cannot enforce. `reason` (type `SessionPolicyReason`) is
+`"payto-not-anyone-can-pay"` when a charge must top up `payTo` and `payTo` is not
+anyone-can-pay: the creator's setup, not the request. Other policy errors leave
+it undefined.
 
 ## On-chain sessions
 
