@@ -14,10 +14,12 @@ import {
   keyCellFloor,
   ownerSweep,
   randomPick,
+  rebuildOnDeadInputs,
   SessionBalanceError,
   signAndSend,
   tokenAmount,
   tokenData,
+  withoutDeadCached,
   withinU128,
 } from "./onchain.js";
 import { SessionPolicyError } from "./session.js";
@@ -120,9 +122,11 @@ async function subscriptionCells(
     const type = cell.cellOutput.type;
     if (token ? type?.eq(token) && ccc.bytesFrom(cell.outputData).length >= 16 : !type) cells.push(cell);
   }
+  // Cells only CCC's cache still lists, spent since by another client, would make a charge or a cancel fail.
+  const live = await withoutDeadCached(client, lock, cells);
   // A planted cell of 2^128-1 free tokens would block charges and the cancel; the
   // subscriber's and the charger's own cells are always kept.
-  return token ? withinU128(client, cells) : cells;
+  return token ? withinU128(client, live) : live;
 }
 
 /**
@@ -352,7 +356,7 @@ async function subscriptionState(client: ccc.Client, deployment: SessionLockDepl
   // Cells made by one transaction share one lookup.
   const byHash = new Map<ccc.Hex, Promise<Created>>();
   const creating = (h: ccc.Hex): Promise<Created> => {
-    if (!byHash.has(h)) byHash.set(h, client.getTransaction(h));
+    if (!byHash.has(h)) byHash.set(h, client.getTransactionNoCache(h)); // the node's answer, not the cache's
     return byHash.get(h)!;
   };
   const [tip, created] = await Promise.all([client.getTip(), Promise.all(cells.map((c) => creating(c.outPoint.txHash)))]);
@@ -389,12 +393,28 @@ async function subscriptionState(client: ccc.Client, deployment: SessionLockDepl
  * `payTo`'s cell of the token (`topUp` is implied). The change keeps every
  * shannon that came in (no CKB may leave) and the tokens less one price, in
  * exactly 16 data bytes.
+ *
+ * A charge the node rejects for a spent or unknown input is built and sent once
+ * more after clearing the client's cache (`rebuildOnDeadInputs`); `beforeSend`
+ * then runs again with the new hash.
  */
 export async function chargeSubscription(
   charger: ccc.Signer,
   deployment: SessionLockDeployment,
   sub: Subscription,
-  opts: { payTo: string; topUp?: boolean; beforeSend?: (txHash: ccc.Hex) => Promise<void> },
+  opts: ChargeOptions,
+): Promise<ccc.Hex> {
+  // Built on a cell another instance spent since: rebuilt once from live cells (audit, 31 Oct).
+  return rebuildOnDeadInputs(charger.client, () => chargeOnce(charger, deployment, sub, opts));
+}
+
+type ChargeOptions = { payTo: string; topUp?: boolean; beforeSend?: (txHash: ccc.Hex) => Promise<void> };
+
+async function chargeOnce(
+  charger: ccc.Signer,
+  deployment: SessionLockDeployment,
+  sub: Subscription,
+  opts: ChargeOptions,
 ): Promise<ccc.Hex> {
   const client = charger.client;
   assertTerms(sub);
@@ -479,7 +499,8 @@ async function feeCells(client: ccc.Client, lock: ccc.Script, floor: bigint): Pr
     if (++seen > FEE_CELL_SCAN || cells.length >= MAX_SUBSCRIPTION_CELLS) break;
     if (!cell.cellOutput.type && cell.outputData === "0x" && cell.cellOutput.capacity > floor) cells.push(cell);
   }
-  return cells;
+  // The change of this client's last charge, spent since by another instance, must not pay this one's fee.
+  return withoutDeadCached(client, lock, cells);
 }
 
 /**
@@ -683,7 +704,8 @@ async function paymentOf(
   /** `txHash`'s response, when already fetched. */
   fetched?: Created,
 ): Promise<Payment | string> {
-  const created = fetched ?? (await client.getTransaction(txHash));
+  // The node's answer, never CCC's cache: a cached "committed" outlives a reorg (audit, 31 Oct).
+  const created = fetched ?? (await client.getTransactionNoCache(txHash));
   if (!created || created.status !== "committed" || created.blockNumber === undefined || created.blockNumber === null) {
     return "the transaction that created the cell is not committed";
   }

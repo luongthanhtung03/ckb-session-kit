@@ -134,7 +134,10 @@ export async function verifyAccess(
   }
   if (!signed) return { ok: false, reason: "request not signed by the given key" };
 
-  const res = await client.getTransaction(proof.txHash);
+  // Not getTransaction: when the node no longer knows a transaction (reorged out,
+  // replaced by a conflicting spend), it answers from CCC's cache, where a payment
+  // once seen committed stays committed (audit, 31 Oct).
+  const res = await client.getTransactionNoCache(proof.txHash);
   if (!res) return { ok: false, reason: "payment not found" };
   if (res.status !== "committed") return { ok: false, reason: `payment is ${res.status}, not committed` };
   const tx = res.transaction;

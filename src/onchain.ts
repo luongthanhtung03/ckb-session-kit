@@ -233,7 +233,65 @@ export async function collect(client: ccc.Client, lock: ccc.Script, token?: ccc.
   for await (const cell of client.findCellsByLock(lock, null, true)) {
     if ((!cell.cellOutput.type && cell.outputData === "0x") || (token && plainTokenCell(cell, token))) cells.push(cell);
   }
-  return cells;
+  return withoutDeadCached(client, lock, cells);
+}
+
+/**
+ * `cells` (found under `lock`) less those only CCC's client cache vouches for
+ * that are gone. The cache lists the outputs of every transaction this client
+ * sent as live, ahead of the indexer's cells, and never drops them: once another
+ * tab, device or server instance spends them, every transaction built here on
+ * them would be rejected until a reload (audit, 31 Oct). A cached cell is kept
+ * while the transaction that made it is pending or proposed (a chain of
+ * payments faster than the indexer needs it), or once committed while the node
+ * says it is still live; it is dropped once the node no longer knows that
+ * transaction, or says the cell is spent. When the node cannot be asked, it is kept.
+ */
+export async function withoutDeadCached(client: ccc.Client, lock: ccc.Script, cells: ccc.Cell[]): Promise<ccc.Cell[]> {
+  if (!cells.length || !client.cache) return cells;
+  const cached = new Set<string>();
+  for await (const c of client.cache.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", withData: true })) {
+    cached.add(ccc.hexFrom(c.outPoint.toBytes()));
+  }
+  if (!cached.size) return cells;
+  const keep = await Promise.all(
+    cells.map(async (c) => {
+      if (!cached.has(ccc.hexFrom(c.outPoint.toBytes()))) return true;
+      try {
+        const status = (await client.getTransactionNoCache(c.outPoint.txHash))?.status;
+        if (status === "pending" || status === "proposed") return true;
+        if (status !== "committed") return false;
+        return !!(await client.getCellLive(c.outPoint, false, false));
+      } catch {
+        return true; // the node cannot be asked: a dead one is rejected, then rebuilt (rebuildOnDeadInputs)
+      }
+    }),
+  );
+  return cells.filter((_, i) => keep[i]);
+}
+
+/** Whether a send was rejected because an input is spent or unknown to the node. */
+export function deadInputs(e: unknown): boolean {
+  if (e instanceof ccc.ErrorClientResolveUnknown) return true;
+  const text = e instanceof ccc.ErrorClientBase ? `${e.message} ${e.data}` : e instanceof Error ? e.message : String(e);
+  return /\b(Dead|Unknown)\(OutPoint\(/.test(text);
+}
+
+/**
+ * Runs `build` (which builds and sends a transaction); if the node rejects it
+ * for a spent or unknown input, clears the client's cache and runs it once more,
+ * so it is built again from the cells live on-chain (audit, 31 Oct). A
+ * `beforeSend` inside then runs again, with the new transaction's hash: the
+ * first one was refused and will never commit.
+ */
+export async function rebuildOnDeadInputs<T>(client: ccc.Client, build: () => Promise<T>): Promise<T> {
+  try {
+    return await build();
+  } catch (e) {
+    if (!deadInputs(e) || !client.cache) throw e;
+    await client.cache.clear();
+    return build();
+  }
 }
 
 export async function findSessionCells(
@@ -464,16 +522,35 @@ function plainXudtFault(type: ccc.Script, xudt: XudtCode): string | undefined {
  *
  * `memo` is recorded in the witness of the session key's own input, which that
  * key's signature covers: the payment commits to it (see `verifyAccess`).
+ *
+ * If the node rejects the payment because an input is already spent (another
+ * tab or device paid from the same cells) or unknown, the client's cache is
+ * cleared and the payment is built and sent once more from the live cells;
+ * `beforeSend` then runs again with the new hash (`rebuildOnDeadInputs`).
  */
 export async function spendInSession(
   session: Session,
   client: ccc.Client,
   deployment: SessionLockDeployment,
   binding: OnChainBinding,
-  request:
-    | { to: string; amount: bigint; token?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> }
-    | { to: string; token: bigint; amount?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> },
+  request: SpendRequest,
   now: Date = new Date(),
+): Promise<ccc.Hex> {
+  // Built on a cell another tab spent since: rebuilt once from live cells (audit, 31 Oct).
+  return rebuildOnDeadInputs(client, () => spendOnce(session, client, deployment, binding, request, now));
+}
+
+type SpendRequest =
+  | { to: string; amount: bigint; token?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> }
+  | { to: string; token: bigint; amount?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> };
+
+async function spendOnce(
+  session: Session,
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+  request: SpendRequest,
+  now: Date,
 ): Promise<ccc.Hex> {
   const tokenType = binding.token && ccc.Script.from(binding.token.type);
   const tokenOut = request.token ?? 0n;
@@ -615,11 +692,36 @@ export async function matureCells(client: ccc.Client, cells: ccc.Cell[], blocks:
  * it. A key-cell failure is reported in `keyError`; the key stays usable for a retry.
  *
  * `nothingFound` means no cell is left under the session or the key: the key can
- * be forgotten. If the funding transaction (`binding.openTx`) is still in flight
- * or not yet indexed, this throws instead, so the key is never forgotten before
- * the funds it controls arrive.
+ * be forgotten. If the funding transaction (`binding.openTx`) is still in flight,
+ * or committed with an output under the session or the key the node still holds
+ * live (not indexed yet), this throws instead, so the key is never forgotten
+ * before the funds it controls arrive. Once the funding is committed and every
+ * one of those outputs is spent (a close whose reply was lost, another tab's
+ * close), it is `nothingFound` (audit, 31 Oct).
+ *
+ * `owner` must be the wallet that opened the session (its lock is
+ * `binding.ownerLock`): any other is refused with a `SessionPolicyError` before
+ * it is asked to sign anything.
  */
 export async function closeSession(
+  owner: ccc.Signer,
+  session: Session,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+): Promise<{ keyTx?: ccc.Hex; sweepTx?: ccc.Hex; keyError?: string; nothingFound?: true }> {
+  const client = owner.client;
+  const ownerLock = ccc.Script.from(binding.ownerLock);
+  // After a wallet switch, the connected wallet may not be the owner: it must not
+  // be shown a sweep of someone else's session to itself (audit, 31 Oct).
+  const signerLock = (await owner.getRecommendedAddressObj()).script;
+  if (signerLock.hash() !== ownerLock.hash()) {
+    throw new SessionPolicyError("this signer is not the session's owner: connect the wallet that opened it");
+  }
+  // Built on a cell another tab spent since: rebuilt once from live cells.
+  return rebuildOnDeadInputs(client, () => closeOnce(owner, session, deployment, binding));
+}
+
+async function closeOnce(
   owner: ccc.Signer,
   session: Session,
   deployment: SessionLockDeployment,
@@ -632,10 +734,24 @@ export async function closeSession(
 
   if (!state.sessionCells.length && !state.keyCells.length) {
     const open = binding.openTx && (await client.getTransaction(binding.openTx));
-    if (open && ["pending", "proposed", "committed"].includes(open.status)) {
-      throw new SessionBalanceError(
-        `the session's funding transaction is ${open.status === "committed" ? "not indexed yet" : open.status}; close again in a minute`,
+    if (binding.openTx && open && open.status === "committed") {
+      const openTx = binding.openTx;
+      // Nothing indexed under the session: the indexer lags, or every output the
+      // funding made under the session and the key is spent already. Ask the node.
+      const ours = (open.transaction?.outputs ?? [])
+        .map((o, index) => ({ o, index }))
+        .filter(({ o }) => o.lock.eq(state.lock) || o.lock.eq(state.keyLock));
+      if (!ours.length) {
+        throw new SessionBalanceError("the funding transaction made no cell under this session: is it the session's deployment?");
+      }
+      const live = await Promise.all(
+        ours.map(({ index }) => client.getCellLive({ txHash: openTx, index }, false, false)),
       );
+      if (live.every((c) => !c)) return { nothingFound: true };
+      throw new SessionBalanceError("the session's funding transaction is not indexed yet; close again in a minute");
+    }
+    if (open && (open.status === "pending" || open.status === "proposed")) {
+      throw new SessionBalanceError(`the session's funding transaction is ${open.status}; close again in a minute`);
     }
     return { nothingFound: true };
   }
@@ -648,8 +764,10 @@ export async function closeSession(
         inputs: state.keyCells.map((c) => ({ previousOutput: c.outPoint })),
         outputs: [{ lock: ownerLock, capacity: 0n }],
       });
-      await tx.completeFeeChangeToOutput(sessionSigner(session, client), 0);
-      result.keyTx = await sessionSigner(session, client).sendTransaction(tx);
+      const key = sessionSigner(session, client);
+      await tx.completeFeeChangeToOutput(key, 0);
+      // A key return the node took but whose reply was lost is still the key return.
+      result.keyTx = await signAndSend(key, tx);
     } catch (e) {
       result.keyError = e instanceof Error ? e.message : String(e);
     }

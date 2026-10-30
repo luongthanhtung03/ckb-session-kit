@@ -46,7 +46,7 @@ function fakeClient(
     getCellLive: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
     getCell: async (op: ccc.OutPointLike) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))),
     getTip: async () => 1000n,
-    getTransaction: async (hash: ccc.HexLike) => ({
+    getTransactionNoCache: async (hash: ccc.HexLike) => ({
       blockNumber: born,
       status: "committed",
       transaction: typeof creating === "function" ? creating(ccc.hexFrom(hash)) : creating,
@@ -275,9 +275,9 @@ describe("chargeSubscription", () => {
         { txHash: topUp.outPoint.txHash, blockNumber: 900n, spent: false },
       ],
     );
-    const getTransaction = client.getTransaction.bind(client);
+    const getTransaction = client.getTransactionNoCache.bind(client);
     // The charge's change is 10 blocks old; the top-up 100.
-    client.getTransaction = (async (hash: ccc.HexLike) => {
+    client.getTransactionNoCache = (async (hash: ccc.HexLike) => {
       const res = await getTransaction(hash);
       return ccc.hexFrom(hash) === CHARGED ? { ...res, blockNumber: 990n } : res;
     }) as never;
@@ -558,8 +558,8 @@ describe("subscriptionStatus (a server with no database)", () => {
     });
     // Its last block still counts, as a change cell's would.
     const old = await setup({ liveCreatedBy: "none", history: [{ ...charged, blockNumber: 1000n - PERIOD }] });
-    const getTransaction = old.client.getTransaction.bind(old.client);
-    old.client.getTransaction = (async (hash: ccc.HexLike) => ({ ...(await getTransaction(hash)), blockNumber: 1000n - PERIOD })) as never;
+    const getTransaction = old.client.getTransactionNoCache.bind(old.client);
+    old.client.getTransactionNoCache = (async (hash: ccc.HexLike) => ({ ...(await getTransaction(hash)), blockNumber: 1000n - PERIOD })) as never;
     expect(await old.status()).toMatchObject({ status: { paidThroughBlock: 1000n, active: true } });
     const cancelled = [{ txHash: h("0f"), blockNumber: 995n, spent: true }, charged];
     expect(await (await setup({ liveCreatedBy: "none", history: cancelled })).status()).toMatchObject({
@@ -993,7 +993,7 @@ describe("a lock flooded with planted cells", () => {
 
   it("checks each creating transaction once, however many cells it made", async () => {
     const { r, client } = await flooded(MAX_SUBSCRIPTION_CELLS);
-    const getTransaction = vi.spyOn(client, "getTransaction");
+    const getTransaction = vi.spyOn(client, "getTransactionNoCache");
     const getCell = vi.spyOn(client, "getCell");
     await subscriptionStatus(client, d, r.sub, { openTx: h("0a"), account: "alice" });
     // cellOf spreads its cells over 10 transaction hashes; the opening is one of them.

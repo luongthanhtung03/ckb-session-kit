@@ -6,7 +6,7 @@ import { createSession } from "../src/session.js";
 
 /**
  * Round 2 of the 30 Oct audit (browser side). These tests describe the wanted
- * behaviour and FAIL today; the fix makes them pass.
+ * behaviour; they failed before the fix and pass since the fixes of 31 Oct.
  *
  * R2-1. closeSession takes the connected wallet as the owner without checking it
  * against binding.ownerLock (cancelSubscription does check: "this signer is not
@@ -60,7 +60,7 @@ describe("R2-1: closeSession with a wallet that is not the session's owner", () 
       () => "asked wallet B to sign",
       (e: Error) => e.message,
     );
-    // Today: wallet B is handed a sweep that spends A's 200 CKB session cell
+    // Before the fix: wallet B was handed a sweep that spends A's 200 CKB session cell
     // (its change, filled in by completeFeeBy, goes to B's lock).
     const spent = signed.flatMap((t) => t.inputs.map((i) => i.previousOutput.txHash));
     expect(spent, "session cells wallet B was asked to sweep").not.toContain(h("01"));

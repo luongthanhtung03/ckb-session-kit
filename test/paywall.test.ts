@@ -37,7 +37,7 @@ async function setup(opts: { paid?: bigint; memo?: ccc.Hex; status?: string; pay
   });
   tx.setWitnessArgsAt(2, { inputType: opts.memo ?? MEMO, lock: "0x" + "00".repeat(65) });
 
-  client.getTransaction = (async () => ({ transaction: tx, status: opts.status ?? "committed" })) as never;
+  client.getTransactionNoCache = (async () => ({ transaction: tx, status: opts.status ?? "committed" })) as never;
   client.getCell = (async (op: ccc.OutPointLike) => {
     const i = Number(ccc.OutPoint.from(op).index);
     return ccc.Cell.from({ outPoint: prev(i), cellOutput: inputs[i], outputData: "0x" });
@@ -127,7 +127,7 @@ describe("verifyAccess", () => {
     ids.forEach((id, i) =>
       tx.setWitnessArgsAt(i + 1, { inputType: paymentMemo(`read:${id}`), lock: "0x" + "00".repeat(65) }),
     );
-    client.getTransaction = (async () => ({ transaction: tx, status: "committed" })) as never;
+    client.getTransactionNoCache = (async () => ({ transaction: tx, status: "committed" })) as never;
     client.getCell = (async (op: ccc.OutPointLike) => {
       const i = Number(ccc.OutPoint.from(op).index);
       return ccc.Cell.from({ outPoint: prev(i), cellOutput: inputs[i], outputData: "0x" });
@@ -219,7 +219,7 @@ describe("verifyAccess with a token price", () => {
       outputsData: [units(7n + paid), units(100n - paid), "0x"],
     });
     tx.setWitnessArgsAt(2, { inputType: MEMO, lock: "0x" + "00".repeat(65) });
-    client.getTransaction = (async () => ({ transaction: tx, status: "committed" })) as never;
+    client.getTransactionNoCache = (async () => ({ transaction: tx, status: "committed" })) as never;
     client.getCell = (async (op: ccc.OutPointLike) => {
       const i = Number(ccc.OutPoint.from(op).index);
       return ccc.Cell.from({ outPoint: prev(i), ...inputs[i] });

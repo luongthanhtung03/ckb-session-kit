@@ -1,8 +1,8 @@
 /**
  * Audit round 2 (31 Oct): state, concurrency and failure over time. Each test
- * here FAILS today and shows one finding. Mocked chain only; the CCC client is
- * real wherever its cache is part of the finding (only its *NoCache RPC calls
- * are replaced).
+ * here failed before the fix and shows one finding; they pass since the fixes
+ * of 31 Oct. Mocked chain only; the CCC client is real wherever its cache is
+ * part of the finding (only its *NoCache RPC calls are replaced).
  */
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,7 @@ function fakeChain(client: ccc.ClientPublicTestnet) {
     const script = ccc.Script.from(key.script);
     return { cells: chain.live.filter((x) => x.cellOutput.lock.eq(script)), lastCursor: "0x" };
   };
+  c.getCellLiveNoCache = async (op: ccc.OutPointLike) => chain.live.find((x) => x.outPoint.eq(ccc.OutPoint.from(op)));
   c.getTransactionNoCache = async (hash: ccc.HexLike) => {
     const r = chain.txs.get(ccc.hexFrom(hash));
     return r && ccc.ClientTransactionResponse.from(r);
@@ -78,6 +79,91 @@ describe("closeSession after the session is already empty on-chain", () => {
 
     // Everything has committed. Closing again must be able to finish.
     await expect(closeSession(owner, session, d, binding)).resolves.toEqual({ nothingFound: true });
+  });
+
+  it("still refuses while an output of the committed funding is live but not indexed yet", async () => {
+    const client = new ccc.ClientPublicTestnet();
+    const chain = fakeChain(client);
+    const ownerLock = await secpLock(client, "11");
+    const owner = new ccc.SignerCkbPrivateKey(client, "0x" + "42".repeat(32));
+    vi.spyOn(owner, "getRecommendedAddressObj").mockResolvedValue({ script: ownerLock } as never);
+    const session = createSession({ expiresAt: new Date(Date.now() + 3_600_000), scope: { maxPerTx: 5n * CKB } });
+    const binding: OnChainBinding = {
+      ownerLock: { codeHash: ownerLock.codeHash, hashType: ownerLock.hashType, args: ownerLock.args },
+      minInterval: 0n,
+      openTx: h("0f"),
+    };
+    const lock = await sessionLockOf(session, client, d, binding);
+    const keyLock = await keyLockOf(session, client);
+    const opening = ccc.Transaction.from({ outputs: [{ lock, capacity: 300n * CKB }, { lock: keyLock, capacity: 62n * CKB }], outputsData: ["0x", "0x"] });
+    chain.txs.set(h("0f"), { transaction: opening, status: "committed", blockNumber: 100n });
+    // The indexer lists nothing yet; the node holds the session cell live.
+    const sessionCell = ccc.Cell.from({ outPoint: { txHash: h("0f"), index: 0 }, cellOutput: opening.outputs[0], outputData: "0x" });
+    (client as unknown as Record<string, unknown>).getCellLiveNoCache = async (op: ccc.OutPointLike) =>
+      sessionCell.outPoint.eq(ccc.OutPoint.from(op)) ? sessionCell : undefined;
+    await expect(closeSession(owner, session, d, binding)).rejects.toThrow(/not indexed yet/);
+  });
+});
+
+describe("a payment rejected for a spent input", () => {
+  // The cache filter keeps a cached cell while the transaction that made it is
+  // pending; if another tab spent it meanwhile, the node rejects the payment.
+  it("is built once more from live cells after clearing the cache, with beforeSend told the new hash", async () => {
+    const client = new ccc.ClientPublicTestnet();
+    const chain = fakeChain(client);
+    const ownerLock = await secpLock(client, "11");
+    const to = ccc.Address.fromScript(await secpLock(client, "44"), client).toString();
+    const session = createSession({ expiresAt: new Date(Date.now() + 3_600_000), scope: { maxPerTx: 100n * CKB } });
+    const binding: OnChainBinding = {
+      ownerLock: { codeHash: ownerLock.codeHash, hashType: ownerLock.hashType, args: ownerLock.args },
+      minInterval: 0n,
+    };
+    const lock = await sessionLockOf(session, client, d, binding);
+    const keyLock = await keyLockOf(session, client);
+    const cell = (txHash: ccc.Hex, index: number, l: ccc.Script, capacity: bigint) =>
+      ccc.Cell.from({ outPoint: { txHash, index }, cellOutput: { lock: l, capacity }, outputData: "0x" });
+    chain.live = [cell(h("a1"), 0, lock, 400n * CKB), cell(h("a1"), 1, keyLock, 100n * CKB)];
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockImplementation(async function (this: ccc.Transaction) {
+      const keyIn = await client.getCell(this.inputs[this.inputs.length - 1].previousOutput);
+      this.outputs[this.outputs.length - 1].capacity = keyIn!.cellOutput.capacity - 1000n;
+      return true;
+    } as never);
+    vi.spyOn(ccc.SignerCkbPrivateKey.prototype, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
+    const sent: ccc.Transaction[] = [];
+    (client as unknown as Record<string, unknown>).sendTransactionNoCache = async (tx: ccc.TransactionLike) => {
+      const t = ccc.Transaction.from(tx);
+      sent.push(t);
+      const dead = t.inputs.find((i) => !chain.live.some((c) => c.outPoint.eq(i.previousOutput)));
+      if (dead) throw new Error(`TransactionFailedToResolve: Resolve failed Dead(OutPoint(${ccc.hexFrom(dead.previousOutput.toBytes())}))`);
+      return t.hash();
+    };
+
+    await spendInSession(session, client, d, binding, { to, amount: 61n * CKB });
+    // The first payment is still pending as far as the node says, but tab B spent its outputs.
+    chain.txs.set(sent[0].hash(), { transaction: sent[0], status: "pending" });
+    chain.live = [cell(h("b2"), 1, lock, 278n * CKB), cell(h("b2"), 2, keyLock, 100n * CKB - 2000n)];
+
+    const told: ccc.Hex[] = [];
+    const hash = await spendInSession(session, client, d, binding, { to, amount: 61n * CKB, beforeSend: async (x) => void told.push(x) });
+    expect(sent).toHaveLength(3); // the first payment, the rejected one, the rebuilt one
+    expect(hash).toBe(sent[2].hash());
+    expect(told).toEqual([sent[1].hash(), sent[2].hash()]);
+    expect(sent[2].inputs.every((i) => chain.live.some((c) => c.outPoint.eq(i.previousOutput)))).toBe(true);
+  });
+
+  it("is not rebuilt for any other rejection", async () => {
+    const client = new ccc.ClientPublicTestnet();
+    const clear = vi.spyOn(client.cache, "clear");
+    let runs = 0;
+    const { rebuildOnDeadInputs } = await import("../src/onchain.js");
+    await expect(
+      rebuildOnDeadInputs(client, async () => {
+        runs++;
+        throw new Error("TransactionFailedToVerify: script error");
+      }),
+    ).rejects.toThrow(/FailedToVerify/);
+    expect(runs).toBe(1);
+    expect(clear).not.toHaveBeenCalled();
   });
 });
 
