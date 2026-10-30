@@ -22,6 +22,9 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   stale tab) is refused with `SessionStoreConflict` instead of dropping the binding.
 - Demo: the charge route answers 503 with `retry` when the creator's own cells are
   missing (no fee cell for the charger, no payout cell to top up), not 409.
+- `chargeSubscription` pays its fee from a random one of the charger's cells, and a
+  CKB `openSubscription` tops up a random payout cell, so concurrent charges and
+  openings rarely compete for one cell.
 
 ## 1.0.0 (2026-10-27)
 

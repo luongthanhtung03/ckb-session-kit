@@ -164,6 +164,28 @@ describe("openSubscription", () => {
     expect(tx.inputs[0].previousOutput.eq(acpCell.outPoint)).toBe(true);
     expect(tx.getWitnessArgsAt(1)?.inputType).toBe(subscriptionMemo("alice"));
   });
+
+  // Review, 28 Oct: openings at once must not all compete for the first payout cell.
+  it("tops up a random one of payTo's cells", async () => {
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const subscriberLock = (await r.subscriber.getRecommendedAddressObj()).script;
+    const own = cellOf(subscriberLock, 1000n * CKB);
+    const first = cellOf(r.payToLock, 200n * CKB);
+    const last = cellOf(r.payToLock, 300n * CKB);
+    vi.spyOn(ccc.Transaction.prototype, "completeInputsByCapacity").mockImplementation(async function (this: ccc.Transaction) {
+      this.inputs.push(ccc.CellInput.from({ previousOutput: own.outPoint }));
+      return 1 as never;
+    });
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
+    const { client, sent } = fakeClient([own, first, last]);
+    const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
+    const charger = (await r.charger.getRecommendedAddressObj()).toString();
+    await openSubscription(subscriber, d, { charger, payTo: r.payTo, price: 10n * CKB, periodBlocks: PERIOD, budget: 173n * CKB });
+    expect(sent[0].inputs[0].previousOutput.eq(last.outPoint)).toBe(true);
+    expect(sent[0].outputs[1].capacity).toBe(310n * CKB);
+  });
 });
 
 describe("chargeSubscription", () => {
@@ -242,6 +264,21 @@ describe("chargeSubscription", () => {
     await expect(
       chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true }),
     ).rejects.toThrow(/next charge in 10 blocks/);
+  });
+
+  // Review, 28 Oct: charges at once (many subscriptions, one charger) must not all pick the first fee cell.
+  it("pays the fee from a random one of the charger's cells", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockResolvedValue([0, true] as never);
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
+    const { client: c0 } = fakeClient([]);
+    const r = await roles(c0);
+    const small = cellOf(r.chargerLock, 61n * CKB); // at the floor: cannot pay a fee
+    const first = cellOf(r.chargerLock, 100n * CKB);
+    const last = cellOf(r.chargerLock, 100n * CKB);
+    const { client, sent } = fakeClient([cellOf(subscriptionLock(d, r.sub), 500n * CKB), cellOf(r.payToLock, 200n * CKB), first, last, small]);
+    await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true });
+    const tx = sent[0];
+    expect(tx.inputs[tx.inputs.length - 1].previousOutput.eq(last.outPoint)).toBe(true);
   });
 
   it("refuses once what is left cannot cover a price and a cell", async () => {

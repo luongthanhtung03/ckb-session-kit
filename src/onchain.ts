@@ -180,6 +180,9 @@ export async function withinU128(client: ccc.Client, cells: ccc.Cell[]): Promise
   return dropped.size ? cells.filter((c) => !dropped.has(c)) : cells;
 }
 
+/** One of `cells` at random: payers or chargers at once then rarely compete for the same cell. */
+export const randomPick = <T>(cells: T[]): T | undefined => cells[Math.floor(Math.random() * cells.length)];
+
 /** Plain cells under `lock`; with `token`, also cells holding exactly that token. */
 export async function collect(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
@@ -458,7 +461,7 @@ export async function spendInSession(
     const targets = (await collect(client, toLock, tokenType)).filter((c) =>
       request.token !== undefined ? !!c.cellOutput.type : !c.cellOutput.type,
     );
-    const target = targets[Math.floor(Math.random() * targets.length)];
+    const target = randomPick(targets);
     if (!target) throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up");
     tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
     ckbOut = request.amount ?? 0n;

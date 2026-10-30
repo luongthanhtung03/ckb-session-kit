@@ -13,6 +13,7 @@ import {
   keyCellFloor,
   matureCells,
   ownerSweep,
+  randomPick,
   SessionBalanceError,
   signAndSend,
   tokenAmount,
@@ -138,8 +139,7 @@ const spends = (p: Payment, lockHash: ccc.Hex) => p.inputs.some((c) => c?.cellOu
 
 /** A cell of `token` under `payTo`'s anyone-can-pay lock to top up; random, so payers at once rarely collide. */
 async function tokenTarget(client: ccc.Client, payToLock: ccc.Script, token: ccc.Script): Promise<ccc.Cell> {
-  const targets = (await collect(client, payToLock, token)).filter((c) => !!c.cellOutput.type);
-  const target = targets[Math.floor(Math.random() * targets.length)];
+  const target = randomPick((await collect(client, payToLock, token)).filter((c) => !!c.cellOutput.type));
   if (!target) {
     throw new SessionBalanceError("payTo has no cell of this token to top up: create one (any amount, even 0) first");
   }
@@ -257,7 +257,8 @@ export async function openSubscription(
     const extra = (await tx.getInputsUdtBalance(client, token)) - tx.getOutputsUdtBalance(token);
     if (extra > 0n) tx.addOutput({ lock: subscriberLock, type: token }, tokenData(extra));
   } else {
-    const target = acp ? (await collect(client, payToLock))[0] : undefined;
+    // Random, like a token target: openings at once rarely compete for one cell (review, 28 Oct).
+    const target = acp ? randomPick(await collect(client, payToLock)) : undefined;
     if (target) {
       tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
       tx.addOutput({ lock: payToLock, capacity: target.cellOutput.capacity + opts.price });
@@ -372,8 +373,7 @@ export async function chargeSubscription(
     await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.AnyoneCanPay, ccc.KnownScript.XUdt);
   } else if (opts.topUp) {
     if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("topUp needs an anyone-can-pay payTo");
-    const targets = await collect(client, payToLock);
-    const target = targets[Math.floor(Math.random() * targets.length)];
+    const target = randomPick(await collect(client, payToLock));
     if (!target) throw new SessionBalanceError("payTo has no anyone-can-pay cell to top up");
     tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
     tx.addOutput({ lock: payToLock, capacity: target.cellOutput.capacity + sub.price });
@@ -411,8 +411,9 @@ export async function chargeSubscription(
   }
 
   // The charger's own cell authorises the charge and pays the fee; it comes back last, smaller.
+  // A random one, so charges of many subscriptions at once rarely collide (review, 28 Oct).
   const floor = keyCellFloor(chargerLock);
-  const keyCell = (await collect(client, chargerLock)).find((c) => c.cellOutput.capacity > floor);
+  const keyCell = randomPick((await collect(client, chargerLock)).filter((c) => c.cellOutput.capacity > floor));
   if (!keyCell) throw new SessionBalanceError(`the charger needs a plain cell above ${ccc.fixedPointToString(floor)} CKB for fees`);
   tx.inputs.push(ccc.CellInput.from({ previousOutput: keyCell.outPoint }));
   tx.addOutput({ lock: chargerLock, capacity: 0n });
