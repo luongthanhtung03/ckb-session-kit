@@ -6,6 +6,8 @@ import { SessionPolicyError } from "../src/session.js";
 import {
   cancelSubscription,
   chargeSubscription,
+  findSubscriptionCells,
+  MAX_SUBSCRIPTION_CELLS,
   subscriptionMemo,
   subscriptionStatus,
   openSubscription,
@@ -958,5 +960,78 @@ describe("token subscriptions", () => {
       expect(tx.inputs.some((i) => i.previousOutput.eq(live.outPoint))).toBe(true);
       expect(tx.inputs.some((i) => i.previousOutput.eq(planted.outPoint))).toBe(false);
     });
+  });
+});
+
+// Security audit, 30 Oct: anyone can create cells under a subscription's lock or
+// at the charger's address; a status or a charge must not read without bound.
+describe("a lock flooded with planted cells", () => {
+  async function flooded(count: number, extra: (r: Awaited<ReturnType<typeof roles>>) => ccc.Cell[] = () => []) {
+    const r = await roles(fakeClient([]).client);
+    const lock = subscriptionLock(d, r.sub);
+    const cells = Array.from({ length: count }, () => cellOf(lock, 173n * CKB));
+    return { r, cells, ...fakeClient([...cells, ...extra(r)]) };
+  }
+
+  it(`reads up to MAX_SUBSCRIPTION_CELLS (${MAX_SUBSCRIPTION_CELLS}) cells, and refuses one more rather than read part`, async () => {
+    const ok = await flooded(MAX_SUBSCRIPTION_CELLS);
+    expect((await findSubscriptionCells(ok.client, d, ok.r.sub)).cells).toHaveLength(MAX_SUBSCRIPTION_CELLS);
+    const over = await flooded(MAX_SUBSCRIPTION_CELLS + 1);
+    const err = await findSubscriptionCells(over.client, d, over.r.sub).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SessionPolicyError);
+    expect(err).toMatchObject({ reason: "too-many-cells" });
+  });
+
+  // The status side, with a valid opening, is in demo/app/api/subscription/route.test.ts.
+  it("refuses a charge over the cap, so no mature cell is left out to pay a second price", async () => {
+    const { r, client, sent } = await flooded(MAX_SUBSCRIPTION_CELLS + 1, (r) => [cellOf(r.chargerLock, 100n * CKB)]);
+    await expect(
+      chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true }),
+    ).rejects.toMatchObject({ reason: "too-many-cells" });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("checks each creating transaction once, however many cells it made", async () => {
+    const { r, client } = await flooded(MAX_SUBSCRIPTION_CELLS);
+    const getTransaction = vi.spyOn(client, "getTransaction");
+    const getCell = vi.spyOn(client, "getCell");
+    await subscriptionStatus(client, d, r.sub, { openTx: h("0a"), account: "alice" });
+    // cellOf spreads its cells over 10 transaction hashes; the opening is one of them.
+    expect(getTransaction.mock.calls.length).toBeLessThanOrEqual(10);
+    // The fake creating transaction pays payTo nothing: refused before its inputs are looked up.
+    expect(getCell).not.toHaveBeenCalled();
+  });
+
+  it("lets the subscriber cancel past the cap, sweeping every cell", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const n = MAX_SUBSCRIPTION_CELLS + 4;
+    const subscriberLock = (await new ccc.SignerCkbPrivateKey(fakeClient([]).client, keys.subscriber).getRecommendedAddressObj()).script;
+    const proof = cellOf(subscriberLock, 100n * CKB);
+    const { r, client, sent } = await flooded(n, () => [proof]);
+    const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
+    vi.spyOn(subscriber, "findCells").mockImplementation(async function* () {
+      yield proof;
+    });
+    expect(await cancelSubscription(subscriber, d, r.sub)).toMatchObject({ refunded: BigInt(n) * 173n * CKB });
+    expect(sent[0].inputs.length).toBeGreaterThanOrEqual(n);
+  });
+
+  it("reads a bounded number of the charger's cells to pick a fee cell", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockResolvedValue([0, true] as never);
+    const r = await roles(fakeClient([]).client);
+    const subCell = cellOf(subscriptionLock(d, r.sub), 500n * CKB);
+    const gifts = Array.from({ length: 500 }, () => cellOf(r.chargerLock, 100n * CKB));
+    const { client, sent } = fakeClient([subCell, cellOf(r.payToLock, 200n * CKB), ...gifts]);
+    let read = 0;
+    const find = client.findCellsByLock.bind(client);
+    client.findCellsByLock = (async function* (lock: ccc.ScriptLike, ...rest: unknown[]) {
+      for await (const c of (find as (...a: unknown[]) => AsyncGenerator<ccc.Cell>)(lock, ...rest)) {
+        if (c.cellOutput.lock.eq(r.chargerLock)) read++;
+        yield c;
+      }
+    }) as never;
+    await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true });
+    expect(sent).toHaveLength(1);
+    expect(read).toBeLessThanOrEqual(4 * MAX_SUBSCRIPTION_CELLS + 1);
   });
 });

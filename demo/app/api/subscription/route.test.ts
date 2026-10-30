@@ -106,4 +106,9 @@ describe("POST /api/subscription: RPC cost an outsider can trigger", () => {
     const { calls } = await setup(100);
     expect(calls).toBeLessThan(200);
   });
+
+  it("answers 409, not 402 or 200, once the lock holds more cells than the library reads", async () => {
+    const { status } = await setup(100);
+    expect(status).toBe(409);
+  });
 });

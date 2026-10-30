@@ -132,7 +132,7 @@ export default function Subscribe() {
       setStatus(data.status);
       setNotes(data.notes);
       setRefused(undefined);
-    } else if (res.status === 402) {
+    } else if (res.status === 402 || res.status === 409) {
       setStatus(undefined);
       setNotes(undefined);
       setRefused(data.error);
