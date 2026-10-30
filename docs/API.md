@@ -77,6 +77,13 @@ cell: what it needs to go back to the owner). `beforeSend(txHash)` runs with
 the final hash before the payment is sent: record the payment there, so it is
 never sent unrecorded.
 
+Cells that only the CCC client's cache still lists (outputs of this client's
+own earlier sends) are used only while the node still has them: once another
+tab or device has spent them, they are left out. If the node still rejects the
+payment for a spent or unknown input, the client's cache is cleared and the
+payment is built and sent once more from the live cells; `beforeSend` then runs
+again with the new hash (the first payment was refused and never commits).
+
 In a token session, `{ to, token }` pays `token` units instead of shannons:
 with `topUp: true` into the recipient's anyone-can-pay token cell (no CKB
 leaves the session), otherwise in a new token cell whose capacity (about 142
@@ -88,9 +95,14 @@ The owner sweeps the session cells (one signature), then the session key returns
 the key cell to the owner. If the key cell cannot be returned, `keyError` says
 why and the key should be kept for a retry. `nothingFound` means no cell is
 left under the session or the key, and the key can be forgotten. While the
-funding transaction (`binding.openTx`) is still pending or not yet indexed it
-throws `SessionBalanceError` instead: forget a key only after `keyTx` or
-`nothingFound`.
+funding transaction (`binding.openTx`) is still pending, or committed with an
+output under the session or the key that the node still holds live (not indexed
+yet), it throws `SessionBalanceError` instead: forget a key only after `keyTx`
+or `nothingFound`. Once the funding is committed and every one of those outputs
+is spent (a close whose reply was lost, or a close from another tab), it reports
+`nothingFound`. A key return the node took but whose reply was lost counts as
+`keyTx`. `owner` must be the wallet whose lock is `binding.ownerLock`: any other
+is refused with `SessionPolicyError` before it is asked to sign.
 
 ### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
 Device-loss recovery, with the wallet alone: finds every session cell this owner
@@ -224,7 +236,9 @@ cell's witnesses are signed by nobody, so a memo a relay adds there is ignored
 and cannot void the payment. With
 `token` (an xUDT type script) the price is in that token's units: only cells of
 exactly that type under `to` count, and CKB counts for nothing (nor tokens
-toward a CKB price).
+toward a CKB price). The payment is read with `getTransactionNoCache`: a payment
+the node no longer knows (reorged out, replaced) is "payment not found", never
+an answer from the CCC client's cache.
 
 ### Types: `AccessProof`, `AccessCheck`
 
@@ -278,7 +292,10 @@ same period (the last charge is read from the lock's indexer history, so a
 charge that took the whole balance counts too), and once what is left
 cannot cover a price plus a cell. In a token subscription the price is in units
 and always tops up `payTo`'s token cell; every mature token cell is merged into
-one change that keeps all the CKB and exactly 16 data bytes.
+one change that keeps all the CKB and exactly 16 data bytes. Like
+`spendInSession`, it leaves out cells only the client's cache still lists once
+the node has them spent, and is built once more after clearing the cache if the
+node rejects it for a spent or unknown input.
 
 ### `cancelSubscription(subscriber, deployment, subscription) → { txHash?, refunded, refundedTokens?, nothingFound? }`
 Owner-mode sweep of everything left; no creator involved, no wait. Tokens come
@@ -299,6 +316,8 @@ With `token`, the cell must be typed with exactly that token, with 160-byte args
 and paid means token units into `payTo`'s cells of the token, covering every token
 subscription the transaction creates for that address. Without `token`, a
 160-byte cell is refused, and the reverse. `tokenBalance` is returned for tokens.
+The creating transaction (here and in `subscriptionStatus`) is read with
+`getTransactionNoCache`, never from the CCC client's cache.
 
 ### `subscriptionStatus(client, deployment, subscription, { openTx, account }) → { ok, status: SubscriptionStatus }`
 For a creator's server with no database: the subscriber sends its lock hash, the

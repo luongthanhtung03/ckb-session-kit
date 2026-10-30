@@ -10,7 +10,6 @@ import deploymentJson from "../../../../../deployment/testnet.json";
 import { CHARGER, PAY_TO } from "../../../subscribe/config";
 import { isAsset, isHash, termsFor } from "../../../subscribe/terms";
 
-const client = new ccc.ClientPublicTestnet();
 /**
  * Balance errors about the creator's own cells (the charger's fee cell, the
  * payout cell to top up): a server fault, not the subscription's state (review, 28 Oct).
@@ -36,6 +35,10 @@ export async function POST(request: Request) {
   }
   if (!isHash(subscriber) || !isAsset(asset)) return Response.json({ error: "bad request" }, { status: 400 });
   const subscriberLockHash = subscriber.toLowerCase() as ccc.Hex;
+  // A client per request: CCC's cache lists the cells a client itself sent as
+  // live until it is cleared, and a warm instance would otherwise build the next
+  // charge on fee cells another instance has spent since (audit, 31 Oct).
+  const client = new ccc.ClientPublicTestnet();
   try {
     const charger = new ccc.SignerCkbPrivateKey(client, key);
     if ((await charger.getRecommendedAddress()) !== CHARGER) {

@@ -74,6 +74,13 @@ export default function Subscribe() {
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
   const charging = useRef(false);
+  /**
+   * Bumped whenever the wallet, the asset or what this browser keeps changes: a
+   * refresh started before then is dropped when it answers, so a slow answer
+   * about the last wallet never lands on screen after a switch or a disconnect
+   * (audit, 31 Oct).
+   */
+  const view = useRef(0);
 
   const push = (e: Omit<LogEntry, "at">) => setLog((l) => [{ at: new Date(), ...e }, ...l]);
   const price = asset === "token" ? TOKEN_PRICE : PRICE;
@@ -110,9 +117,17 @@ export default function Subscribe() {
     };
   }, [signer, client, asset]);
 
+  // Declared before the polling effect below, so a change is counted before the next refresh starts.
+  useEffect(() => {
+    view.current++;
+  }, [signer, client, sub, kept, asset]);
+
   const refresh = useCallback(async () => {
     if (!sub) return;
+    const at = view.current;
+    const stale = () => at !== view.current;
     const cells = await findSubscriptionCells(client, deployment, sub).catch(() => undefined);
+    if (stale()) return;
     if (cells) {
       setOnchain(asset === "token" ? cells.tokenBalance : cells.balance);
       setHasCells(cells.cells.length > 0);
@@ -126,8 +141,9 @@ export default function Subscribe() {
       method: "POST",
       body: JSON.stringify({ subscriber: sub.subscriberLockHash, openTx: kept.openTx, account: kept.account, asset }),
     }).catch(() => undefined);
-    if (!res) return;
-    const data = (await res.json()) as { status?: Status; notes?: Note[]; error?: string };
+    if (!res || stale()) return;
+    const data = (await res.json().catch(() => ({}))) as { status?: Status; notes?: Note[]; error?: string };
+    if (stale()) return;
     if (res.ok && data.status) {
       setStatus(data.status);
       setNotes(data.notes);
@@ -199,6 +215,17 @@ export default function Subscribe() {
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Nothing of this wallet's stays on screen once it is disconnected. */
+  function disconnectWallet() {
+    view.current++;
+    setStatus(undefined);
+    setNotes(undefined);
+    setRefused(undefined);
+    setOnchain(undefined);
+    setHasCells(false);
+    disconnect();
   }
 
   /** An opening that never landed (sent and lost, or refused): forget it and offer subscribing again. */
@@ -280,7 +307,7 @@ export default function Subscribe() {
               <dt>wallet</dt>
               <dd>
                 {address ? <a href={explorerAddr(address)}>{short(address, 12)}</a> : "…"}{" "}
-                <button className="link" onClick={disconnect}>
+                <button className="link" onClick={disconnectWallet}>
                   disconnect
                 </button>
               </dd>

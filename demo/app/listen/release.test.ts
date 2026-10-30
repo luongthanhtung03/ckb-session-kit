@@ -39,7 +39,7 @@ async function setup(opts: { label?: string; paid?: bigint; status?: string; to?
   tx.setWitnessArgsAt(2, { inputType: paymentMemo(opts.label ?? memoLabel("tide", 3)), lock: "0x" + "00".repeat(65) });
 
   let calls = 0;
-  client.getTransaction = (async () => (calls++, { transaction: tx, status: opts.status ?? "committed" })) as never;
+  client.getTransactionNoCache = (async () => (calls++, { transaction: tx, status: opts.status ?? "committed" })) as never;
   client.getCell = (async (op: ccc.OutPointLike) => {
     calls++;
     const i = Number(ccc.OutPoint.from(op).index);
@@ -129,7 +129,7 @@ describe("the segment route's gating", () => {
 
   it("answers 503 with retry, not 400, when the chain cannot be reached", async () => {
     const { client, claim } = await setup();
-    client.getTransaction = (async () => {
+    client.getTransactionNoCache = (async () => {
       throw new Error("request timed out");
     }) as never;
     const r = await release(client, await claim("tide", 3));

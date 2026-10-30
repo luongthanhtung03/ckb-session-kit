@@ -220,19 +220,24 @@ export function fakeClient(cells: Cells) {
   const find = async function* (key: Parameters<typeof filterCell>[0]) {
     for (const c of cells.live()) if (filterCell(key, c)) yield c;
   };
+  const getTransaction = async (hash: ccc.HexLike) => {
+    const age = cells.age(ccc.hexFrom(hash));
+    if (age === undefined) return undefined;
+    return { blockNumber: TIP - age, status: "committed", transaction: ccc.Transaction.default() };
+  };
+  const getCellLive = async (op: ccc.OutPointLike) => cells.get(op);
   const client = Object.assign(base, {
     findCells: find,
     findCellsOnChain: find,
     async *findTransactionsByLock() {},
     getCell: async (op: ccc.OutPointLike) => cells.get(op),
-    getCellLive: async (op: ccc.OutPointLike) => cells.get(op),
+    // The library asks the node, not CCC's cache, for these (audit round 2).
+    getCellLive,
+    getCellLiveNoCache: getCellLive,
     getTip: async () => TIP,
     getFeeRate: async () => 1000n,
-    getTransaction: async (hash: ccc.HexLike) => {
-      const age = cells.age(ccc.hexFrom(hash));
-      if (age === undefined) return undefined;
-      return { blockNumber: TIP - age, status: "committed", transaction: ccc.Transaction.default() };
-    },
+    getTransaction,
+    getTransactionNoCache: getTransaction,
     sendTransaction: async (tx: ccc.TransactionLike) => {
       const t = ccc.Transaction.from(tx);
       sent.push(t);
