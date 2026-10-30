@@ -9,7 +9,8 @@ export interface SessionStore {
   load(): Promise<Session | undefined>;
   /**
    * Stores `session`. Refuses (SessionStoreConflict) to replace a *different*
-   * session: its key may hold funds, and another tab may have just saved it.
+   * session: its key may hold funds, and another tab may have just saved it. Also
+   * refuses to replace the same session's on-chain binding with none.
    */
   save(session: Session): Promise<void>;
   /** Forgets `session`, only if it is still the stored one; another tab may have replaced it. */
@@ -36,6 +37,19 @@ function storedKey(raw: string | undefined): string | undefined {
   }
   if (typeof key !== "string") throw new Error(UNREADABLE);
   return key;
+}
+
+/**
+ * Throws SessionStoreConflict unless `session` may replace the stored value: a
+ * different key may hold funds, and a save of the same key without the on-chain
+ * binding (a stale tab that never saw the funding) would lose what finds them
+ * (review, 28 Oct).
+ */
+function assertReplaceable(raw: string | undefined, session: Session): void {
+  const held = storedKey(raw);
+  if (held === undefined) return;
+  if (held !== session.publicKey) throw new SessionStoreConflict();
+  if (!session.onchain && (JSON.parse(raw!) as StoredSession).onchain) throw new SessionStoreConflict();
 }
 
 /** JSON-safe form: bigints as decimal strings, dates as ISO strings. */
@@ -126,8 +140,7 @@ export function memoryStore(): SessionStore {
   return {
     load: async () => (value === undefined ? undefined : deserializeSession(value)),
     save: async (s) => {
-      const held = storedKey(value);
-      if (held !== undefined && held !== s.publicKey) throw new SessionStoreConflict();
+      assertReplaceable(value, s);
       value = serializeSession(s);
     },
     clear: async (s) => {
@@ -200,8 +213,7 @@ export function indexedDbStore(idb: IDBFactory = globalThis.indexedDB, key: stri
     save: async (session) => {
       const value = serializeSession(session);
       await update((raw) => {
-        const held = storedKey(raw);
-        if (held !== undefined && held !== session.publicKey) throw new SessionStoreConflict();
+        assertReplaceable(raw, session);
         return "put";
       }, value);
     },

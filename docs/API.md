@@ -335,8 +335,9 @@ A placement that cannot be encoded, or a board that does not fit the format
 
 ### `indexedDbStore(idb?, key?) → SessionStore`
 One session per `key` in IndexedDB. `save` refuses to replace a different
-stored session (`SessionStoreConflict`: another tab got there first); `clear(session)`
-forgets it only if it is still the stored one.
+stored session (`SessionStoreConflict`: another tab got there first), and to
+replace the same session's on-chain binding with none (a stale tab that never saw
+the funding); `clear(session)` forgets it only if it is still the stored one.
 
 ### `memoryStore() → SessionStore`
 The same contract in memory, for tests and servers.
@@ -347,7 +348,8 @@ JSON with bigints and dates preserved; a newer storage version is refused.
 ### Types: `SessionStore`
 
 ### `SessionStoreConflict`
-A different session is already stored under this key.
+A different session is already stored under this key, or the stored copy of
+this session has an on-chain binding the one being saved lacks.
 
 ## Off-chain transfers (v0.1)
 

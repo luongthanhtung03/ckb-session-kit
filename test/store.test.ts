@@ -78,6 +78,27 @@ describe("session storage", () => {
     expect((await tabA.load())?.privateKey).toBe(other.privateKey);
   });
 
+  // Review, 28 Oct: a stale tab that never saw the funding must not drop the binding
+  // that finds the funds under the key.
+  it.each([
+    ["memory", () => [memoryStore()].flatMap((s) => [s, s])],
+    ["IndexedDB, two tabs", () => { const idb = fakeIdb(); return [indexedDbStore(idb), indexedDbStore(idb)]; }],
+  ])("%s: a stale save of the same key does not drop its on-chain binding", async (_, stores) => {
+    const [tabA, tabB] = stores();
+    const bound = {
+      ...session,
+      onchain: {
+        ownerLock: { codeHash: ("0x" + "11".repeat(32)) as `0x${string}`, hashType: "type" as const, args: "0xabcd" as `0x${string}` },
+        minInterval: 0n,
+        openTx: ("0x" + "33".repeat(32)) as `0x${string}`,
+      },
+    };
+    await tabA.save(session);
+    await tabA.save(bound); // funded in tab A
+    await expect(tabB.save(session)).rejects.toBeInstanceOf(SessionStoreConflict); // tab B still holds the draft
+    expect((await tabA.load())?.onchain).toEqual(bound.onchain);
+  });
+
   it("refuses an invalid expiry date", () => {
     expect(() => createSession({ expiresAt: new Date(NaN), scope: { maxPerTx: 1n } }, { now })).toThrow(/valid date/);
   });

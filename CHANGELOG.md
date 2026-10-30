@@ -18,6 +18,8 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 - `chargeSubscription` waits a full period after the last charge, not only after
   the oldest cell: a top-up cell older than the last charge's change could pay a
   second price in the same period. `nextChargeIn` counts the same way.
+- Session stores: a save of the same key without the on-chain binding (from a
+  stale tab) is refused with `SessionStoreConflict` instead of dropping the binding.
 
 ## 1.0.0 (2026-10-27)
 
