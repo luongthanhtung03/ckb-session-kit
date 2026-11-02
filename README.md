@@ -306,6 +306,53 @@ Run on 14 Oct 2026:
 released by the demo's server route; at a 3-unit price the same payment is refused
 → [18 units back](https://testnet.explorer.nervos.org/transaction/0x3688288b9c49c771b85a38a80806f9fefead39b936caea92ecb97e6d4a3aa2ee).
 
+## Funding an app-built transaction
+
+Some apps build their own transaction: a crowdfunding pledge spends the
+campaign cell and creates a typed pledge cell and a receipt. The session can pay
+for it, with no wallet prompt: `fundInSession` adds session cells, one change
+cell and the key cell (which pays the fee) to the app's transaction, and
+`sendWithSession` builds, funds, signs with the session key and sends.
+
+```ts
+const session = createSession({ expiresAt, scope: { maxPerTx: pledge + 552n * CKB } }); // no recipients
+const { binding } = await openSession(wallet, session, TESTNET_DEPLOYMENT, { budget, minInterval: 0n });
+
+const hash = await sendWithSession(session, client, TESTNET_DEPLOYMENT, binding, async () => buildPledgeTx(), {
+  feeRate: 2000n,
+  check: (tx) => assertPledgeShape(tx), // the app's own rules on the finished transaction
+});
+```
+
+What it takes, and why:
+
+- **A session without a recipient.** The lock lets a recipient-scoped session
+  pay only its recipient and the owner, in plain cells, so a typed output to
+  another lock is refused on chain (errors 13 and 18). `fundInSession` refuses
+  such a session before anything is signed (`reason: "session-has-recipient"`).
+  Without a recipient, a leaked key can pay anyone, typed cells included, up to
+  `maxPerTx` per transaction: keep the budget small and the expiry short, and
+  show a Close button (see [If a session key leaks](#if-a-session-key-leaks)).
+- **`maxPerTx` covers everything the outputs hold beyond the app's inputs**,
+  not just the amount: for a CrowdCell pledge, the pledge plus the pledge
+  cell's storage (252 CKB) and the receipt's (300 CKB on testnet today), which
+  come back to the backer later. The fee comes from the key cell and never
+  counts.
+- **No wallet input.** A cell under the owner's lock would switch the lock to
+  owner mode and need the wallet's signature: refused
+  (`reason: "owner-lock-input"`).
+- **Races.** If the node refuses the transaction for one of the session's own
+  cells (another tab spent it), it is rebuilt and sent again. If it refuses it
+  for the app's own cell (another backer's pledge took the campaign cell first),
+  the error is thrown unchanged (`deadInputs(e)` is true) so the app can wait
+  for its cell to move and build again. The fee rate is never raised on a
+  retry, so a retry cannot replace another user's pending transaction.
+
+A CrowdCell pledge built this way passes CrowdCell's five live testnet scripts
+and the session lock in the CKB-VM (`test/fund-pledge-vm.test.ts`, after
+`npx tsx scripts/fetch-crowdcell.ts`). `npm run smoke:fund-pledge` runs it on
+testnet on a campaign of its own.
+
 ## Subscriptions
 
 The same lock with the roles moved: the subscriber owns the cell, the creator's

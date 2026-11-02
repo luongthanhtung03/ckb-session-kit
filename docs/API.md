@@ -35,7 +35,12 @@ more cells sit under a subscription's lock than a status or a charge reads
 (`MAX_SUBSCRIPTION_CELLS`); `"owner-lock-unsafe"` when an owner (or charger)
 lock can be unlocked without its holder's signature; `"owner-lock-unreviewed"`
 when it is a lock or configuration this kit has not reviewed (see
-`assertSigningLock`). Other policy errors leave it undefined.
+`assertSigningLock`). From `fundInSession`: `"session-has-recipient"` when the
+session has an on-chain recipient (it cannot fund outputs to other locks);
+`"owner-lock-input"` when the app's transaction spends a cell under the owner's
+lock (the lock would switch to owner mode and need the wallet);
+`"app-tx-shape"` when the app's transaction already holds session or key cells,
+or its inputs exceed its outputs. Other policy errors leave it undefined.
 
 ## On-chain sessions
 
@@ -115,6 +120,70 @@ with `topUp: true` into the recipient's anyone-can-pay token cell (no CKB
 leaves the session), otherwise in a new token cell whose capacity (about 142
 CKB) must fit in `maxPerTx`. Tokens always stay in the change; a CKB payment
 never burns them.
+
+### `fundInSession(session, client, deployment, binding, tx, { feeRate?, check?, now?, avoid? }) → FundedTransaction`
+Funds a transaction the app built itself (its own inputs, typed outputs, cell
+deps and witnesses) from the session, and signs nothing. It adds session cells
+as inputs after the app's, at most one plain change cell under the session lock,
+and the key cell, which comes back as the last output and pays the fee at
+`feeRate` (default `DEFAULT_FUND_FEE_RATE`). The app's inputs, witnesses (a
+`0x` witness at index 0 stays) and cell deps are kept where they are; `tx`
+itself is not changed. Checks, in the order the session lock makes them, all
+before anything is signed:
+
+1. the session is active (`ScopeError`), and has no on-chain recipient
+   (`SessionPolicyError`, reason `"session-has-recipient"`): a recipient-scoped
+   session can only pay its recipient and the owner, in plain cells, so it
+   cannot fund an output to another lock (lock error 13) or a typed one (18);
+2. no input of the app's is under the owner's lock (`"owner-lock-input"`): the
+   lock would run in owner mode and the wallet would have to sign. No input or
+   output is a session or key cell (`"app-tx-shape"`): the kit adds those;
+3. the session must cover the outputs' capacity less the app inputs'; over
+   `maxPerTx` it is a `ScopeError`. Plain session cells only (in a token
+   session the tokens stay put), mature ones under a rate limit, with `since`
+   set on them and not on the app's inputs. Change is none or a whole session
+   cell (121 CKB for a session without a recipient): it takes one more cell
+   rather than leave less, and throws `SessionBalanceError` when it cannot;
+4. the largest key cell pays the fee, so the fee never counts as outflow
+   (`SessionBalanceError` `"no-fee-cell"` when it cannot);
+5. `outflow` (session inputs less change, what the lock holds to `maxPerTx`) is
+   checked again, then the change rules (one plain cell), then `check(tx)`:
+   the app's own policy on the finished transaction. Throw there to refuse it.
+   It guards against app bugs; a leaked key is bounded only by the lock.
+
+`avoid` lists out points (`ccc.hexFrom(outPoint.toBytes())`) of session or key
+cells not to take. Returns `{ tx, outflow, sessionInputs }`, `sessionInputs`
+being the out points the kit added.
+
+### `sendWithSession(session, client, deployment, binding, build, { feeRate?, check?, now?, beforeSend?, retry? }) → txHash`
+`build()` → `fundInSession` → signed by the session key alone → sent. The key
+signs only its own cell; the session lock checks no signature, and an app input
+under a lock that needs none (a CrowdCell campaign cell) keeps its witness.
+
+It retries only when the node refuses the transaction naming one of the
+session's own cells (`Dead` or `Unknown` for a session or key cell this attempt
+added: another tab spent it). Then the client's cache is cleared, that cell is
+left out, and `build` runs again, with the backoff of `retry` (`RetryOptions`).
+Any other refusal is thrown unchanged, for the app's own loop: a dead input of
+the app's (another user took the cell it built on; `deadInputs(e)` is true) or
+an RBF refusal (`poolConflict(e)`), which names no cell. A send whose outcome is
+unknown is never retried. `beforeSend` runs with each attempt's hash.
+
+The fee rate is the same on every attempt: a retry at a higher rate could
+replace (RBF) another user's pending transaction on the same app cell.
+
+### `DEFAULT_FUND_FEE_RATE`
+2000 shannons per 1000 bytes: what `fundInSession` and `sendWithSession` use
+without `feeRate` (CrowdCell's pledge rate).
+
+### Types: `FundedTransaction`, `FundOptions`, `SendWithSessionOptions`
+`FundedTransaction` is `{ tx, outflow, sessionInputs }`. `FundOptions` and
+`SendWithSessionOptions` are the options above.
+
+### `deadInputs(error) → boolean`
+Whether a send was refused because an input is spent or unknown to the node
+(`Dead` or `Unknown` in the error). For `sendWithSession`, true on a refusal it
+rethrows means the app's own input was taken: wait for it to move and rebuild.
 
 ### `closeSession(owner, session, deployment, binding) → { sweepTx?, keyTx?, keyError?, nothingFound? }`
 The owner sweeps the session cells (one signature), then the session key returns
@@ -234,7 +303,7 @@ the same one. Throws `SessionPolicyError` `"payto-not-anyone-can-pay"` for any
 other address, `RangeError` for a count out of range.
 
 ### `RetryOptions`, `DEFAULT_RETRY`
-`{ attempts?, delayMs? }` for `spendInSession` and `chargeSubscription`.
+`{ attempts?, delayMs? }` for `spendInSession`, `sendWithSession` and `chargeSubscription`.
 `DEFAULT_RETRY` is `{ attempts: 3, delayMs: 1000 }`. The wait before attempt
 n + 1 is `delayMs × 2^(n-1)`, times a random 0.5 to 1.5. `attempts: 1` never
 retries.
