@@ -74,7 +74,8 @@ async function setup(planted: number) {
     return ccc.Cell.from({ outPoint: o, cellOutput: { lock: owner, capacity: 1000n * CKB }, outputData: "0x" });
   }) as never);
   routeClient.getTip = ((async () => (calls++, 1000n)) as never);
-  routeClient.findCellsByLock = ((async function* () {
+  // Subscription cells are listed with the indexer's type filter (findCells); the cells here are all plain.
+  routeClient.findCells = routeClient.findCellsByLock = ((async function* () {
     calls++;
     yield ccc.Cell.from({ outPoint: { txHash: openTx.hash(), index: 0 }, cellOutput: openTx.outputs[0], outputData: "0x" });
     for (let i = 0; i < planted; i++) {

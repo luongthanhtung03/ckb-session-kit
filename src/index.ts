@@ -42,6 +42,7 @@ export {
   blocksForSeconds,
   cancelSubscription,
   chargeSubscription,
+  clearPlantedCells,
 
   findSubscriptionCells,
   MAX_SUBSCRIPTION_CELLS,
