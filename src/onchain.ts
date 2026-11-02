@@ -340,12 +340,18 @@ export async function pickPayoutCell(
 /**
  * Plain cells under the recipient's `lock` (with `token`, cells holding exactly
  * that token), at most `MAX_PAYOUT_CELLS` of them from the first
- * `4 * MAX_PAYOUT_CELLS` listed: anyone can create cells under any lock.
+ * `4 * MAX_PAYOUT_CELLS` listed: anyone can create cells under any lock. The
+ * indexer lists only cells of that kind (no type and no data; or exactly the
+ * token, with a 16-byte amount), so cells of any other kind planted under an
+ * anyone-can-pay `lock` never push the real ones out of reach (review W6 L5).
  */
 async function payoutCells(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
   let seen = 0;
-  for await (const cell of client.findCellsByLock(lock, null, true)) {
+  const filter: ccc.ClientIndexerSearchKeyFilterLike = token
+    ? { script: token, scriptLenRange: [token.occupiedSize, token.occupiedSize + 1], outputDataLenRange: [16, 17] }
+    : { scriptLenRange: [0, 1], outputDataLenRange: [0, 1] };
+  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter, withData: true })) {
     if (++seen > 4 * MAX_PAYOUT_CELLS || cells.length >= MAX_PAYOUT_CELLS) break;
     if (token ? plainTokenCell(cell, token) : !cell.cellOutput.type && cell.outputData === "0x") cells.push(cell);
   }

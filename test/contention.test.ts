@@ -51,9 +51,21 @@ function fakeChain(client: ccc.ClientPublicTestnet) {
     poolChecks: 0,
   };
   const c = client as unknown as Record<string, unknown>;
+  // The indexer's filter, as CKB applies it to a lock search: the type script by
+  // prefix and by its length (33 + args bytes), and the data's length.
   c.findCellsPagedNoCache = async (k: ccc.ClientIndexerSearchKeyLike) => {
-    const script = ccc.Script.from(k.script);
-    return { cells: chain.live.filter((x) => x.cellOutput.lock.eq(script)), lastCursor: "0x" };
+    const key = ccc.ClientIndexerSearchKey.from(k);
+    const f = key.filter;
+    const inRange = (n: number, r?: [ccc.Num, ccc.Num]) => !r || (BigInt(n) >= r[0] && BigInt(n) < r[1]);
+    const cells = chain.live.filter((x) => {
+      if (!x.cellOutput.lock.eq(key.script)) return false;
+      const type = x.cellOutput.type;
+      if (f?.script && !(type && type.codeHash === f.script.codeHash && type.hashType === f.script.hashType && type.args.startsWith(f.script.args))) {
+        return false;
+      }
+      return inRange(type ? type.occupiedSize : 0, f?.scriptLenRange) && inRange(ccc.bytesFrom(x.outputData).length, f?.outputDataLenRange);
+    });
+    return { cells, lastCursor: "0x" };
   };
   c.getCellLiveNoCache = async (op: ccc.OutPointLike, _withData?: boolean, includeTxPool?: boolean) => {
     if (includeTxPool) {
@@ -161,9 +173,9 @@ describe("picking the creator's payout cell", () => {
   it(`reads at most MAX_PAYOUT_CELLS (${MAX_PAYOUT_CELLS}) of the recipient's cells`, async () => {
     const p = await paying(3 * MAX_PAYOUT_CELLS);
     let read = 0;
-    const find = p.client.findCellsByLock.bind(p.client);
-    p.client.findCellsByLock = (async function* (lock: ccc.ScriptLike, ...rest: unknown[]) {
-      for await (const c of (find as (...a: unknown[]) => AsyncGenerator<ccc.Cell>)(lock, ...rest)) {
+    const find = p.client.findCells.bind(p.client);
+    p.client.findCells = (async function* (key: ccc.ClientIndexerSearchKeyLike, ...rest: unknown[]) {
+      for await (const c of (find as (...a: unknown[]) => AsyncGenerator<ccc.Cell>)(key, ...rest)) {
         if (p.acpCells.some((a) => a.outPoint.eq(c.outPoint))) read++;
         yield c;
       }
@@ -171,6 +183,26 @@ describe("picking the creator's payout cell", () => {
     await spendInSession(p.session, p.client, d, p.binding, { to: p.to, amount: 1n * CKB, topUp: true });
     expect(p.sent).toHaveLength(1);
     expect(read).toBeLessThanOrEqual(MAX_PAYOUT_CELLS + 1);
+  });
+
+  // Review W6 L5: anyone can create cells under an anyone-can-pay payTo. Junk listed
+  // first (typed, or carrying data) must not push every real payout cell out of reach.
+  it("finds a payout cell behind any number of typed or data-carrying cells under payTo", async () => {
+    const p = await paying(2);
+    const junkType = ccc.Script.from({ codeHash: h("99"), hashType: "type", args: "0x" });
+    const junk = Array.from({ length: 8 * MAX_PAYOUT_CELLS }, (_, i) =>
+      ccc.Cell.from({
+        outPoint: { txHash: h("e" + (i % 10)), index: 100 + i },
+        cellOutput: { lock: p.acpCells[0].cellOutput.lock, capacity: 200n * CKB, ...(i % 2 ? { type: junkType } : {}) },
+        outputData: i % 2 ? "0x" : "0x01",
+      }),
+    );
+    // The real cells, re-created by earlier top-ups, are newer: listed after the junk.
+    const real = p.chain.live.filter((c) => p.acpCells.includes(c));
+    p.chain.live = [...p.chain.live.filter((c) => !p.acpCells.includes(c)), ...junk, ...real];
+    await spendInSession(p.session, p.client, d, p.binding, { to: p.to, amount: 1n * CKB, topUp: true });
+    expect(p.sent).toHaveLength(1);
+    expect(p.payoutIn(p.sent[0])).toBeDefined();
   });
 
   it("when the node cannot be asked, still picks a cell (the send then tells)", async () => {
