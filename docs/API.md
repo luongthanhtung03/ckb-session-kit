@@ -32,7 +32,10 @@ a scope the lock cannot enforce. `reason` (type `SessionPolicyReason`) is
 `"payto-not-anyone-can-pay"` when a charge must top up `payTo` and `payTo` is not
 anyone-can-pay: the creator's setup, not the request; `"too-many-cells"` when
 more cells sit under a subscription's lock than a status or a charge reads
-(`MAX_SUBSCRIPTION_CELLS`). Other policy errors leave it undefined.
+(`MAX_SUBSCRIPTION_CELLS`); `"owner-lock-unsafe"` when an owner (or charger)
+lock can be unlocked without its holder's signature; `"owner-lock-unreviewed"`
+when it is a lock or configuration this kit has not reviewed (see
+`assertSigningLock`). Other policy errors leave it undefined.
 
 ## On-chain sessions
 
@@ -62,6 +65,10 @@ Before building anything, `openSession` calls `assertCurrentDeployment`: a
 legacy deployment, `hashType: "data"`, or a deployment whose code cell is not
 live on the owner's network (or does not hash to `codeHash`) is refused with
 `SessionPolicyError`.
+
+The owner's lock must pass `assertSigningLock`. `opts.allowUnreviewedOwnerLock`
+lets an unreviewed one through with a warning. A recipient equal to the session
+key's own lock is refused too.
 
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
 cell also holds `amount` units of the xUDT `type` (taken from the owner's
@@ -133,13 +140,30 @@ anything else could make the sweep fail; so could cells whose tokens overflow a
 u128 together, which are left out as in `findSessionCells`. Sweeps return tokens to the owner. `deployments` is one
 deployment or a list.
 
-### `assertSigningLock(lock, client)`
-Throws `SessionPolicyError` unless the owner lock is known to sign the whole
-transaction: secp256k1 (single or multisig), JoyID, Nostr, PW lock, or Omnilock
-with a signature auth flag and no administrator or anyone-can-pay mode. The
-session lock trusts that an input under the owner's lock means the owner
-signed. `openSession` calls it; it also refuses a recipient equal to the
-session key's own lock.
+### `assertSigningLock(lock, client, opts?)`
+The session lock trusts that an input under the owner's lock means the owner
+signed, so the owner's lock must not open without that signature.
+`openSession` and `openSubscription` call it. It throws `SessionPolicyError`
+unless the lock is a configuration this kit has reviewed:
+
+- secp256k1-blake160; secp256k1 multisig (v1, v2), with or without a since;
+- Omnilock with auth flag 0x00-0x06 or 0x12 (CKB, Ethereum, EOS, Tron, Bitcoin,
+  Dogecoin, multisig, Ethereum with the message displayed), and no mode other
+  than time-lock or supply;
+- Nostr lock in signing mode (`args[0]` is 0);
+- JoyID (its code is closed; reviewed from its documentation).
+
+Refused always, reason `"owner-lock-unsafe"`: anyone-can-pay (both networks'
+deployments and the older ones pw-core lists), PW-Lock (its deployed build is
+anyone-can-pay), always-success, Omnilock in anyone-can-pay or administrator
+mode, and Nostr lock in proof of work mode (`args[0]` not 0).
+
+Anything else is refused with reason `"owner-lock-unreviewed"`: Omnilock auth
+0xFC-0xFE (they hand the check to another lock or code), other Omnilock auth
+flags or modes, the ckb-proxy-locks, unknown locks, and args the lock's own code
+would not accept. `opts.allowUnreviewedOwnerLock: true` (type
+`SigningLockOptions`) lets these through with a `console.warn`. Set it only once
+you have checked that the lock cannot open without its holder's signature.
 
 ### `assertPlainXudt(type, client)`
 Throws `SessionPolicyError` unless `type` is this network's xUDT with every
@@ -281,7 +305,9 @@ deployment of the lock or one whose code is not on the client's network
 (`assertCurrentDeployment`), a live subscription with exactly the same terms, and a
 price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
 of 153 CKB plus n prices pays n more periods. Keep a plain cell in the wallet:
-cancelling needs one. `budget` is required without `token`.
+cancelling needs one. `budget` is required without `token`. The subscriber's and
+the charger's locks must both pass `assertSigningLock`;
+`allowUnreviewedOwnerLock: true` lets unreviewed ones through with a warning.
 
 With `token: { type, amount }` (a plain xUDT; flags refused), the cell is typed
 with the token and holds `amount` units plus its own size (282 CKB; `budget` may

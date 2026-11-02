@@ -527,8 +527,16 @@ Consistent with the README's [Limits](../README.md#limits):
   (a fresh key from `createSession`), so it does not build such args, but a malicious app that builds its own opening transaction could, and
   the owner's wallet shows only an output under the session lock.
 - **Owner locks must need a signature.** The lock treats any input under the
-  owner's lock as the owner's consent; an anyone-can-pay owner lock would give
-  anyone owner mode. `openSession` refuses one; the lock itself cannot tell.
+  owner's lock as the owner's consent; an owner lock that opens without the
+  owner's signature would give anyone owner mode. `openSession` and
+  `openSubscription` accept only reviewed configurations (`assertSigningLock`):
+  secp256k1 and multisig, Omnilock with a signature auth flag and no
+  anyone-can-pay or administrator mode, the Nostr lock in signing mode, and
+  JoyID. Anyone-can-pay, PW-Lock (its deployed build is anyone-can-pay),
+  always-success and the Nostr lock in proof of work mode are refused always;
+  other locks need `allowUnreviewedOwnerLock`, which warns. Covered by
+  `test/owner-lock.test.ts`. The lock itself cannot tell. JoyID's code is not
+  public, so its entry rests on its documentation.
 - **Gaps in this evidence.** Errors 10, 11, 15 and 19 have not been sent to
   testnet; the token limit's rejection (20) has no raw node text. The lock smoke's
   rejections have the node's full text since the 28 Oct run.

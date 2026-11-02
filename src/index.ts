@@ -31,7 +31,7 @@ export {
   spendInSession,
   tokenAmount,
 } from "./onchain.js";
-export type { OnChainBinding, SessionBalanceReason, SessionCells, SessionWarning } from "./onchain.js";
+export type { OnChainBinding, SessionBalanceReason, SessionCells, SessionWarning, SigningLockOptions } from "./onchain.js";
 export {
   blocksForSeconds,
   cancelSubscription,

@@ -163,7 +163,9 @@ recipient is set, and cannot make the owner's sweep fail. Fixed before deploying
   known to sign the whole transaction (secp256k1, JoyID, Nostr, PW lock, and
   Omnilock with a signature auth flag and no administrator or anyone-can-pay
   mode); it was a blocklist. The owner must never sign an open transaction
-  with that lock.
+  with that lock. Narrowed on 2 Nov (mentor review 3): PW-Lock and the Nostr
+  lock in proof of work mode are refused, and unreviewed locks need
+  `allowUnreviewedOwnerLock`; see `assertSigningLock` in docs/API.md.
 - **Typed payments in plain sessions (L1).** With a recipient set, payments in a
   plain session must now be untyped too, as in token sessions.
 - **No failure before the owner-mode return (I3).** The key-cell capacity sum

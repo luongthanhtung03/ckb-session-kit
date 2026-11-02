@@ -145,9 +145,9 @@ describe("assertSigningLock", () => {
     for (const auth of ["fc", "fd", "fe"]) {
       await expect(assertSigningLock(await known(ccc.KnownScript.OmniLock, "0x" + auth + "11".repeat(20) + "00"), client)).rejects.toThrow(/does not verify/);
     }
-    await expect(assertSigningLock(await known(ccc.KnownScript.AlwaysSuccess, "0x"), client)).rejects.toThrow(/not one known/);
+    await expect(assertSigningLock(await known(ccc.KnownScript.AlwaysSuccess, "0x"), client)).rejects.toThrow(/always-success/);
     const unknown = ccc.Script.from({ codeHash: h("ab"), hashType: "data1", args: "0x" });
-    await expect(assertSigningLock(unknown, client)).rejects.toThrow(/not one known/);
+    await expect(assertSigningLock(unknown, client)).rejects.toThrow(/not one this kit has reviewed/);
   });
 
   it("refuses anyone-can-pay, and Omnilock in anyone-can-pay mode", async () => {

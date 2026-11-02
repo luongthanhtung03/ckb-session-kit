@@ -9,6 +9,7 @@ import {
   addTopUp,
   assertPlainXudt,
   assertSigningLock,
+  type SigningLockOptions,
   isAnyoneCanPay,
   keyCellFloor,
   ownerSweep,
@@ -233,7 +234,7 @@ export async function openSubscription(
     token?: { type: ccc.ScriptLike; amount: bigint };
     account?: string;
     beforeSend?: (sub: Subscription) => Promise<void>;
-  },
+  } & SigningLockOptions,
 ): Promise<{ txHash: ccc.Hex; subscription: Subscription }> {
   const client = subscriber.client;
   const token = opts.token && ccc.Script.from(opts.token.type);
@@ -244,12 +245,12 @@ export async function openSubscription(
     throw new SessionBalanceError("budget is required: the shannons the subscription cell holds");
   }
   const subscriberLock = (await subscriber.getRecommendedAddressObj()).script;
-  await assertSigningLock(subscriberLock, client);
+  await assertSigningLock(subscriberLock, client, opts);
   const [chargerLock, payToLock] = await Promise.all(
     [opts.charger, opts.payTo].map(async (a) => (await ccc.Address.fromString(a, client)).script),
   );
   // A charger lock that signs nothing would let anyone trigger charges (review M2).
-  await assertSigningLock(chargerLock, client);
+  await assertSigningLock(chargerLock, client, opts);
   const sub: Subscription = {
     subscriberLockHash: subscriberLock.hash(),
     chargerLockHash: chargerLock.hash(),

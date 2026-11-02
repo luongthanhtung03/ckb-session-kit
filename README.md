@@ -363,6 +363,30 @@ Ethereum wallets. Fixed, with a test built from the lock CCC derives for an
 Ethereum account. **JoyID** signs with a passkey and cannot be scripted; it was
 tested by hand in the demo (10 Oct).
 
+`openSession` and `openSubscription` check the owner's lock first
+(`assertSigningLock`). The session lock gives owner mode to any transaction that
+spends a cell under the owner's lock, so a lock that opens without the owner's
+signature would let anyone sweep every session. Since 2 Nov the check is a list
+of reviewed configurations:
+
+| Owner lock | Result |
+|---|---|
+| secp256k1 (CKB default), secp256k1 multisig, with or without a since | accepted |
+| Omnilock, auth 0x00-0x06 or 0x12, no mode or only time-lock or supply | accepted |
+| Nostr lock, signing mode (`args[0]` is 0) | accepted |
+| JoyID | accepted (its code is closed: reviewed from its documentation) |
+| Anyone-can-pay, PW-Lock, always-success | refused: they open with no signature |
+| Omnilock in anyone-can-pay or administrator mode | refused |
+| Nostr lock in proof of work mode (`args[0]` not 0) | refused: anyone who does the work can unlock it |
+| Omnilock auth 0xFC-0xFE, the proxy locks, any other lock | refused unless you pass `allowUnreviewedOwnerLock: true` |
+
+PW-Lock is refused because the build deployed on CKB is its anyone-can-pay
+variant: a transaction with no signature in the witness takes the payment path,
+whatever the args. MetaMask and other Ethereum wallets get an Omnilock (0x12)
+from CCC, which is accepted. `allowUnreviewedOwnerLock` lets an unreviewed lock
+through with a warning; use it only once you have checked that the lock cannot
+open without its holder's signature. It never lets a refused lock through.
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in
@@ -453,9 +477,11 @@ paying a higher fee, so sweep early, and resweep what is left. Keep budgets
 small: the budget is the most a session can ever lose.
 
 **Owner and session locks must need a signature.** The lock trusts that an input
-under the owner's lock means the owner signed. Plain secp256k1, JoyID and
-Omnilock are fine; an anyone-can-pay owner lock is not, since anyone may spend
-into it and would get owner mode.
+under the owner's lock means the owner signed. Plain secp256k1, JoyID, signing
+Omnilock and the Nostr lock in signing mode are fine; anyone-can-pay, PW-Lock and
+the Nostr lock in proof of work mode are not, since anyone could spend the
+owner's cell and get owner mode. See [which wallets can own a
+session](#which-wallets-can-own-a-session).
 
 A session-lock cell occupies 121 CKB (153 CKB with a recipient), so its balance
 and its change must stay above that.
@@ -568,8 +594,10 @@ What has and has not been shown on testnet is in
 - **An access proof does not expire.** It is a bearer token for one article:
   whoever holds the signed proof can fetch that article again. It cannot be
   used for another article or by another payment.
-- **Owner locks must need a signature.** An anyone-can-pay owner lock would give
-  anyone owner mode; `openSession` refuses one.
+- **Owner locks must need a signature.** An owner lock that opens without one
+  (anyone-can-pay, PW-Lock, Nostr in proof of work mode) would give anyone owner
+  mode; `openSession` refuses it, and refuses locks it has not reviewed unless
+  `allowUnreviewedOwnerLock` is set.
 - **Subscription periods are in blocks, and charges need the creator online.**
   The lock's rate limit is a block count, not a fixed duration: block time
   varies (see the [average block time](https://explorer.nervos.org/charts/average-block-time)), so a period is an
