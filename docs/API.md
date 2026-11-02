@@ -45,6 +45,11 @@ cells need 63), and a smaller `feeBudget` is refused. `opts.minInterval` sets
 the on-chain rate limit in blocks. Set it whenever the scope has a recipient:
 the recipient rule covers outputs, not the fee, so without a rate limit a leaked
 key can still give up to `maxPerTx` to the miner in every block.
+Without a rate limit (`minInterval` left out or 0), each spend is still held to
+`maxPerTx`, but spends can repeat in every block until the session is empty.
+`openSession` then raises a `SessionWarning` (`"no-rate-limit"`) before
+anything is signed: to `opts.onWarning(warning)` if given (throw there to stop
+the opening), otherwise to `console.warn`.
 `opts.beforeSend(binding)` runs after the
 transaction is signed and before it is sent: save the session there, so funds
 never sit under a key that exists nowhere. The binding carries `openTx`, the
@@ -169,6 +174,13 @@ CCC's "Insufficient CKB" when the cell holds its floor but not the fee) or
 `"no-payout-cell"` (the recipient or `payTo` has no cell to top up, or none of its
 token cells can take the payment without passing 2^128 - 1 units). Match on it,
 not on the message, which may change. Other balance errors leave it undefined.
+
+### `SessionWarning`
+`{ code, message }`, passed to `openSession`'s `opts.onWarning` before anything
+is signed. One code so far: `"no-rate-limit"`, for `minInterval` 0. The lock
+will enforce such a session as written; the warning says what that allows. Match
+on `code`, not on the message. Subscriptions do not warn: `openSubscription`
+refuses a period of 0.
 
 ## The session lock
 

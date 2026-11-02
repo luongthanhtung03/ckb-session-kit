@@ -67,6 +67,34 @@ export class SessionBalanceError extends Error {
   }
 }
 
+/**
+ * Something about a session's terms that the lock will enforce as written but that
+ * the owner may not have meant. `openSession` reports it before anything is signed
+ * (`opts.onWarning`, or `console.warn` without one).
+ * - `no-rate-limit`: `minInterval` is 0. Each spend is held to `maxPerTx`, but the
+ *   change of one spend can be spent again in the next block, so a leaked key can
+ *   repeat spends until the session is empty.
+ */
+export interface SessionWarning {
+  code: "no-rate-limit";
+  message: string;
+}
+
+/** The warnings for a session opened with these terms. */
+function sessionWarnings(minInterval: bigint, recipient: boolean): SessionWarning[] {
+  if (minInterval > 0n) return [];
+  return [
+    {
+      code: "no-rate-limit",
+      message:
+        "minInterval is 0: no rate limit. Each spend is held to maxPerTx, but spends can repeat every block " +
+        "until the session is empty, so a leaked key can drain the whole budget" +
+        (recipient ? " (with a recipient too: the fee is not an output, so up to maxPerTx can go to the miner each time)" : "") +
+        ". Set minInterval to limit how often the key can spend.",
+    },
+  ];
+}
+
 const KEY_CELL_MIN = 61n * 100_000_000n;
 /** What the key cell keeps above the cell it returns to the owner as, for fees. */
 const FEE_MARGIN = 1n * 100_000_000n;
@@ -420,6 +448,11 @@ export async function openSession(
     /** A token session: put `amount` units of the xUDT `type` in it, and let one spend move at most `maxPerTx`. */
     token?: { type: ccc.ScriptLike; amount: bigint; maxPerTx: bigint };
     beforeSend?: (binding: OnChainBinding) => Promise<void>;
+    /**
+     * Called before anything is signed, once per `SessionWarning`; throw to stop the
+     * opening. Without it, warnings go to `console.warn`.
+     */
+    onWarning?: (warning: SessionWarning) => void | Promise<void>;
   },
 ): Promise<{ txHash: ccc.Hex; binding: OnChainBinding }> {
   const client = owner.client;
@@ -457,6 +490,11 @@ export async function openSession(
   const keyLock = await keyLockOf(session, client);
   if (recipientLockHash === keyLock.hash()) {
     throw new SessionPolicyError("the recipient is the session key itself: it could then pay anyone");
+  }
+  // Before any signature, so the caller can still stop (review 2 Nov).
+  for (const w of sessionWarnings(binding.minInterval, recipientLockHash !== undefined)) {
+    if (opts.onWarning) await opts.onWarning(w);
+    else console.warn(`ckb-session-kit: ${w.message}`);
   }
   // Not a legacy lock, and its code is live on this network (audit round 2, 31 Oct).
   await assertCurrentDeployment(client, deployment);
