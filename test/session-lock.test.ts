@@ -81,6 +81,11 @@ interface Cell {
   typed?: boolean;
   /** Typed with the session's token, holding this amount (16-byte data unless `data` says otherwise). */
   token?: bigint;
+  /**
+   * With `token`: typed with the token's code and its args followed by these bytes
+   * (hex, no 0x), a look-alike the indexer's prefix match lists with the token (review W6 M1).
+   */
+  tokenArgsSuffix?: string;
   /** Raw cell data, overriding the amount encoding. */
   data?: string;
   /** Typed with the real Nervos DAO type script (deposit data, 8 zero bytes). Its code is not in the tx: run the session group only. */
@@ -190,9 +195,11 @@ function build(scope: Scope, inputs: Cell[], outputs: Cell[], opts: Options = {}
         ? asTt(ccc.Script.from(TYPE_ID))
         : c.typed
           ? asTt(anyType)
-          : c.token !== undefined
-            ? asTt(tokenType)
-            : undefined;
+          : c.token !== undefined && c.tokenArgsSuffix !== undefined
+            ? asTt(ccc.Script.from({ ...tokenType, args: tokenType.args + c.tokenArgsSuffix }))
+            : c.token !== undefined
+              ? asTt(tokenType)
+              : undefined;
   const dataOf = (c: Cell) =>
     ccc.hexFrom(c.data ?? (c.dao ? "0x" + "00".repeat(8) : c.token !== undefined ? "0x" + u128le(c.token) : "0x"));
   for (const c of inputs) {
@@ -814,6 +821,45 @@ describe.skipIf(skip)("session lock", () => {
           tokRecipient,
           [tokenCell("session", 100n * T), { lock: "owner", capacity: 61n * CKB }],
           [tokenCell("owner", 100n * T, 261n * CKB)],
+          xudt,
+        );
+      });
+
+      // Review W6 M1: the indexer lists cells by type-script args prefix. xUDT with a
+      // zero flags word ignores the bytes after it, and a zero amount needs no input,
+      // so anyone can plant such a look-alike under a session lock.
+      const lookalike = (lock: Cell["lock"], capacity: bigint, suffix = "00000000" + "01"): Cell => ({
+        lock,
+        capacity,
+        token: 0n,
+        tokenArgsSuffix: suffix,
+      });
+
+      it("anyone can create a zero-amount look-alike (token args, zero flags, extra bytes) under the lock", async () => {
+        await ok(
+          tokRecipient,
+          [{ lock: "recipient", capacity: 1000n * CKB }],
+          [lookalike("session", 300n * CKB), { lock: "recipient", capacity: 700n * CKB }],
+          xudt,
+        );
+      });
+
+      it("but cannot put tokens in one: xUDT refuses minting it without the issuer", async () => {
+        const { verifier } = build(
+          tokRecipient,
+          // Not the stranger: in this harness the stranger is the token's issuer.
+          [{ lock: "recipient", capacity: 1000n * CKB }],
+          [{ ...lookalike("session", 300n * CKB), token: 1n }, { lock: "recipient", capacity: 700n * CKB }],
+          xudt,
+        );
+        await verifier.verifyFailure(-52); // xUDT ERROR_AMOUNT
+      });
+
+      it("the owner sweeps look-alikes back, keeping their type (clearPlantedCells, cancelSubscription)", async () => {
+        await ok(
+          tokRecipient,
+          [lookalike("session", 300n * CKB), lookalike("session", 300n * CKB), { lock: "owner", capacity: 61n * CKB }],
+          [lookalike("owner", 300n * CKB), { lock: "owner", capacity: 361n * CKB - 1000n }],
           xudt,
         );
       });

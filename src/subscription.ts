@@ -14,6 +14,7 @@ import {
   keyCellFloor,
   ownerSweep,
   ownOrigin,
+  plainXudtFault,
   randomPick,
   completeFeeOrNoFeeCell,
   rebuildOnDeadInputs,
@@ -112,10 +113,13 @@ export function subscriptionMemo(account: string): ccc.Hex {
  * left to `recoverSessions`. Cells whose tokens would overflow a u128 are left out
  * (`withinU128`).
  *
- * The indexer filters by kind (no type script; or the token's type script, by
- * prefix), so cells of any other kind are never listed and never count toward
- * `cap`: anyone can create them, they cannot pay a price, and one with a type
- * script that refuses to be spent could never be cleared (mentor review, 2 Nov).
+ * The indexer filters by kind (`kindFilter`: no type script; or exactly the
+ * token's type script), so cells of any other kind are never listed and never
+ * count toward `cap`: anyone can create them, they cannot pay a price, and one
+ * with a type script that refuses to be spent could never be cleared (mentor
+ * review, 2 Nov). Only cells that are really of the kind count toward `cap`
+ * (review W6 M1), and the listing itself is read at most `RAW_READS * cap`
+ * deep, for an indexer that would list more than the filter asks.
  */
 async function subscriptionCells(
   client: ccc.Client,
@@ -125,18 +129,69 @@ async function subscriptionCells(
   cap?: number,
 ): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
-  let seen = 0;
-  const kind = token ? { script: token } : { scriptLenRange: [0, 1] as [number, number] };
-  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter: kind, withData: true })) {
-    if (cap !== undefined && ++seen > cap) throw tooManyCells(cap);
-    const type = cell.cellOutput.type;
-    if (token ? type?.eq(token) && ccc.bytesFrom(cell.outputData).length >= 16 : !type) cells.push(cell);
+  let read = 0;
+  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter: kindFilter(token), withData: true })) {
+    if (cap !== undefined && ++read > RAW_READS * cap) throw tooManyCells(cap);
+    if (!ofKind(cell, token)) continue;
+    if (cap !== undefined && cells.length >= cap) throw tooManyCells(cap);
+    cells.push(cell);
   }
   // Cells only CCC's cache still lists, spent since by another client, would make a charge or a cancel fail.
   const live = await withoutDeadCached(client, lock, cells);
   // A planted cell of 2^128-1 free tokens would block charges and the cancel; the
   // subscriber's and the charger's own cells are always kept.
   return token ? withinU128(client, live) : live;
+}
+
+/**
+ * The indexer filter for a subscription's own kind of cell under its lock: no
+ * type script, or exactly its token. The indexer matches a filter script by args
+ * prefix, and xUDT with a zero flags word ignores bytes after it, so anyone can
+ * create zero-amount cells of `xUDT(token.args ++ anything)` (review W6 M1);
+ * the length range (33 bytes plus the args, as the indexer and CCC count a
+ * script) leaves only the token itself, as CCC's `completeInputsByUdt` does.
+ */
+const kindFilter = (token?: ccc.Script): ccc.ClientIndexerSearchKeyFilterLike =>
+  token
+    ? { script: token, scriptLenRange: [token.occupiedSize, token.occupiedSize + 1] }
+    : { scriptLenRange: [0, 1] };
+
+/** Whether `cell` is of the subscription's kind: untyped, or typed with exactly `token` and holding its amount. */
+const ofKind = (cell: ccc.Cell, token?: ccc.Script) =>
+  token ? cell.cellOutput.type?.eq(token) === true && ccc.bytesFrom(cell.outputData).length >= 16 : !cell.cellOutput.type;
+
+/** Listed cells read per cell a scan may keep: only an indexer that ignored the filter would list other ones. */
+const RAW_READS = 8;
+
+/**
+ * Look-alikes of a token subscription's token under its lock (review W6 M1):
+ * cells typed with the token's code and args that start with the token's args
+ * but are longer. The subscription never makes them, so every one was planted.
+ * Only those an owner sweep can spend are kept: a plain xUDT (zero flags, so no
+ * extension script that could refuse the spend) holding an amount. At most
+ * `budget` listed cells are read when given; `more` says some were left unread.
+ */
+async function lookalikeCells(
+  client: ccc.Client,
+  lock: ccc.Script,
+  token: ccc.Script,
+  budget?: number,
+): Promise<{ cells: ccc.Cell[]; more: boolean }> {
+  const xudt = await client.getKnownScript(ccc.KnownScript.XUdt);
+  const cells: ccc.Cell[] = [];
+  let read = 0;
+  let more = false;
+  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter: { script: token }, withData: true })) {
+    if (budget !== undefined && ++read > budget) {
+      more = true;
+      break;
+    }
+    const type = cell.cellOutput.type;
+    if (!type || type.eq(token) || !type.args.startsWith(token.args) || type.codeHash !== token.codeHash || type.hashType !== token.hashType) continue;
+    if (plainXudtFault(type, xudt) !== undefined || ccc.bytesFrom(cell.outputData).length < 16) continue;
+    cells.push(cell);
+  }
+  return { cells: await withinU128(client, await withoutDeadCached(client, lock, cells)), more };
 }
 
 /**
@@ -579,7 +634,9 @@ export async function cancelSubscription(
   const tokenBalance = token ? tokensIn(cells.map((c) => ({ type: c.cellOutput.type, data: c.outputData })), token) : 0n;
   // A charger may leave a token subscription's last change untyped; its CKB is the subscriber's too (review, 27 Oct).
   const untyped = token ? await subscriptionCells(subscriber.client, subLock) : [];
-  const all = [...cells, ...untyped];
+  // Look-alikes of the token planted under the lock go back with the rest (review W6 M1).
+  const lookalikes = token ? (await lookalikeCells(subscriber.client, subLock, token)).cells : [];
+  const all = [...cells, ...untyped, ...lookalikes];
   if (!all.length) return { refunded: 0n, nothingFound: true };
   const txHash = await ownerSweep(subscriber, deployment, all);
   const refunded = all.reduce((s, c) => s + c.cellOutput.capacity, 0n);
@@ -608,9 +665,15 @@ const CLEAR_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
  * so their age and the payments that made them still count: access and the
  * charge schedule go on as before.
  *
- * Bounded: one call reads at most `4 * MAX_SUBSCRIPTION_CELLS` cells and looks
- * each creating transaction up once. `more` says cells were left unread: call
- * again once this sweep commits. Refused when none of the cells read is the
+ * In a token subscription, look-alikes of the token (cells typed with the
+ * token's code and longer args that start with the token's, which xUDT accepts
+ * and anyone can create with 0 units) are planted too, and swept the same way
+ * when an owner sweep can spend them (plain xUDT, no flags; review W6 M1).
+ *
+ * Bounded: one call keeps at most `4 * MAX_SUBSCRIPTION_CELLS` cells of the
+ * kind, reads at most twice as many listed cells for each of the two scans,
+ * and looks each creating transaction up once. `more` says cells were left
+ * unread: call again once this sweep commits. Refused when none of the cells read is the
  * subscription's own: cancel instead. `nothingFound` when nothing is planted.
  */
 export async function clearPlantedCells(
@@ -623,28 +686,22 @@ export async function clearPlantedCells(
   if (lock.hash() !== sub.subscriberLockHash) throw new SessionPolicyError("this signer is not the subscriber");
   const subLock = subscriptionLock(deployment, sub);
   const token = tokenOf(sub);
-  let cells: ccc.Cell[];
+  // At most CLEAR_SCAN cells of the kind, from at most twice as many listed (review W6 M1).
+  let cells: ccc.Cell[] = [];
   let more = false;
-  try {
-    cells = await subscriptionCells(client, subLock, token, CLEAR_SCAN);
-  } catch (e) {
-    if (!(e instanceof SessionPolicyError && e.reason === "too-many-cells")) throw e;
-    more = true;
-    cells = [];
-    for await (const cell of client.findCells({
-      script: subLock,
-      scriptType: "lock",
-      scriptSearchMode: "exact",
-      filter: token ? { script: token } : { scriptLenRange: [0, 1] },
-      withData: true,
-    })) {
-      if (cells.length >= CLEAR_SCAN) break;
-      const type = cell.cellOutput.type;
-      if (token ? type?.eq(token) && ccc.bytesFrom(cell.outputData).length >= 16 : !type) cells.push(cell);
+  let read = 0;
+  for await (const cell of client.findCells({ script: subLock, scriptType: "lock", scriptSearchMode: "exact", filter: kindFilter(token), withData: true })) {
+    if (cells.length >= CLEAR_SCAN || ++read > 2 * CLEAR_SCAN) {
+      more = true;
+      break;
     }
-    cells = await withoutDeadCached(client, subLock, cells);
-    if (token) cells = await withinU128(client, cells);
+    if (ofKind(cell, token)) cells.push(cell);
   }
+  cells = await withoutDeadCached(client, subLock, cells);
+  if (token) cells = await withinU128(client, cells);
+  // Look-alikes of the token are always planted; the scan reads past the token's own cells too.
+  const lookalikes = token ? await lookalikeCells(client, subLock, token, 2 * CLEAR_SCAN) : { cells: [], more: false };
+  if (lookalikes.more) more = true;
   // One look-up per creating transaction, however many cells it made.
   const origin = new Map<ccc.Hex, Promise<boolean>>();
   const own = (c: ccc.Cell) => {
@@ -654,9 +711,10 @@ export async function clearPlantedCells(
     return origin.get(h)!;
   };
   const mine = await Promise.all(cells.map(own));
-  const planted = cells.filter((_, i) => !mine[i]);
+  const plantedOfKind = cells.filter((_, i) => !mine[i]);
+  const planted = [...plantedOfKind, ...lookalikes.cells];
   if (!planted.length) return { swept: 0, refunded: 0n, more, ...(!more && { nothingFound: true as const }) };
-  if (!mine.some(Boolean)) {
+  if (!mine.some(Boolean) && plantedOfKind.length) {
     throw new SessionPolicyError("none of these cells is the subscription's own: cancel it instead (cancelSubscription)");
   }
   const txHash = await ownerSweep(subscriber, deployment, planted);

@@ -773,7 +773,7 @@ export async function assertPlainXudt(type: ccc.Script, client: ccc.Client): Pro
 type XudtCode = { codeHash: ccc.Hex; hashType: ccc.HashType };
 
 /** Why `type` is not a plain xUDT under the network's xUDT script `xudt`, or undefined if it is. */
-function plainXudtFault(type: ccc.Script, xudt: XudtCode): string | undefined {
+export function plainXudtFault(type: ccc.Script, xudt: XudtCode): string | undefined {
   if (type.codeHash !== xudt.codeHash || type.hashType !== xudt.hashType) {
     return "a token session holds an xUDT token; this type script is not xUDT";
   }
