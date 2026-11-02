@@ -44,11 +44,11 @@ The problem is not specific to that application.
 npm install ckb-session-kit
 ```
 
-[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v1.1.0, ESM, Node 20 or later
+[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v2.0.0, ESM, Node 20 or later
 and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
 [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
 
-New in 1.1.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
+New in 2.0.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
 
 - `openSession(owner, session, deployment, { ..., onWarning })`: called with a
   `SessionWarning` (`"no-rate-limit"`) before anything is signed; throw from it
