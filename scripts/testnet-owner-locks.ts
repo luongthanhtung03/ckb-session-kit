@@ -61,7 +61,6 @@ import {
   rpcUrl,
   sleep,
   smokeKeys,
-  SMOKE_KEY_FILE,
   startLog,
   sweepAll,
   type OwnerLockCase,
@@ -162,7 +161,7 @@ async function main(): Promise<void> {
   if (isDryRun(argv)) return printPlan(opts, "0x" + "07".repeat(32));
   const { funderKey, created } = smokeKeys();
   if (created) {
-    console.log(`created ${SMOKE_KEY_FILE} with two new testnet keys: fund the funder from https://faucet.nervos.org, then run again`);
+    console.log(`created .env.smoke (at the repository root) with two new testnet keys: fund the funder from https://faucet.nervos.org, then run again`);
     return;
   }
   const logFile = startLog("smoke-owner-locks");
