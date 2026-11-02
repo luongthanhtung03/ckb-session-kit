@@ -9,6 +9,7 @@ import {
   clearPlantedCells,
   chargeSubscription,
   findSubscriptionCells,
+  MAX_CREATED_HISTORY,
   MAX_SUBSCRIPTION_CELLS,
   subscriptionMemo,
   subscriptionStatus,
@@ -1312,6 +1313,39 @@ describe("third-party cells over the cap, without cancelling", () => {
     const { r, client, sent } = await setup(0, { history });
     await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true });
     expect(sent).toHaveLength(1);
+  });
+
+  // Review W6 M2: anyone can add transactions to the lock's history by creating
+  // cells under it. Those must not use up the budget for the spends that matter.
+  describe("a flooded transaction history (review W6 M2)", () => {
+    const created = (n: number, blockNumber = 995n): Touched[] =>
+      Array.from({ length: n }, (_, i) => ({ txHash: ("0x" + (0xa000 + i).toString(16).padStart(64, "0")) as ccc.Hex, blockNumber, spent: false }));
+    const charge = (r: Awaited<ReturnType<typeof setup>>) =>
+      chargeSubscription(new ccc.SignerCkbPrivateKey(r.client, keys.charger), d, r.r.sub, { payTo: r.r.payTo, topUp: true });
+
+    it("transactions that only created cells do not count toward the spends read (64 + 1 of them)", async () => {
+      const history = [...created(4 * MAX_SUBSCRIPTION_CELLS + 1), { txHash: CHARGE, blockNumber: 900n, spent: true }];
+      const s = await setup(0, { history });
+      await charge(s);
+      expect(s.sent).toHaveLength(1);
+    });
+
+    it("an entry older than the window is never counted (the check comes first)", async () => {
+      const spends: Touched[] = Array.from({ length: 4 * MAX_SUBSCRIPTION_CELLS }, () => ({ txHash: CLEAN, blockNumber: 995n, spent: true }));
+      const s = await setup(0, { history: [...spends, { txHash: CHARGE, blockNumber: 900n, spent: true }] });
+      await charge(s);
+      expect(s.sent).toHaveLength(1);
+    });
+
+    it("still refuses, never stops short, past the budgets: spends, then created-only entries", async () => {
+      const spends: Touched[] = Array.from({ length: 4 * MAX_SUBSCRIPTION_CELLS + 1 }, () => ({ txHash: CLEAN, blockNumber: 995n, spent: true }));
+      const a = await setup(0, { history: [...spends, { txHash: CHARGE, blockNumber: 994n, spent: true }] });
+      await expect(charge(a)).rejects.toMatchObject({ reason: "too-many-cells" });
+      expect(a.sent).toHaveLength(0);
+      const b = await setup(0, { history: [...created(MAX_CREATED_HISTORY + 1), { txHash: CHARGE, blockNumber: 994n, spent: true }] });
+      await expect(charge(b)).rejects.toMatchObject({ reason: "too-many-cells" });
+      expect(b.sent).toHaveLength(0);
+    });
   });
 
   it("counts a spend it cannot tell apart as a charge", async () => {

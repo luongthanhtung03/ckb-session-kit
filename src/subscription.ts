@@ -212,10 +212,33 @@ async function lookalikeCells(
  * or with `cancelSubscription`.
  */
 export const MAX_SUBSCRIPTION_CELLS = 16;
-/** The most transactions in a lock's recent history that `lastSpend` reads, on the same grounds. */
+/**
+ * The most transactions that spent a cell under the lock that `lastCharge` reads
+ * in the recent history (each is fetched, with its inputs), on the same grounds.
+ * Only the subscriber and the charger can make those.
+ */
 const MAX_HISTORY = 4 * MAX_SUBSCRIPTION_CELLS;
+/**
+ * The most transactions that only created cells under the lock that `lastCharge`
+ * pages past in the recent history (review W6 M2). Anyone can make those, but
+ * they are skipped without a fetch, so only the indexer's pages cost anything
+ * (`HISTORY_PAGE` entries each). Past it, a status or a charge is refused
+ * rather than stopping short of the last charge: blocking one period this way
+ * takes over 1024 transactions within it, each locking up at least a cell's
+ * size (153 CKB) under the subscription's lock.
+ */
+export const MAX_CREATED_HISTORY = 64 * MAX_SUBSCRIPTION_CELLS;
+/** Entries per indexer page when reading a lock's history. */
+const HISTORY_PAGE = 128;
 /** The charger's cells read when picking one to pay a charge's fee: any of them will do. */
 const FEE_CELL_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
+
+const tooManyTransactions = (cap: number) =>
+  new SessionPolicyError(
+    `over ${cap} recent transactions under this subscription's lock: refused rather than read in part; ` +
+      "they leave the window a period after they committed, or the subscriber can cancel",
+    "too-many-cells",
+  );
 
 const tooManyCells = (cap: number) =>
   new SessionPolicyError(
@@ -255,8 +278,12 @@ async function isCharge(client: ccc.Client, txHash: ccc.Hex, chargerLockHash: cc
  * no change cell to tell it by (30 Oct). `ownerAfter`: the subscriber spent
  * cells under the lock after it (a cancel, or a `clearPlantedCells`).
  * Transactions that only created cells under the lock (anyone can) are skipped
- * without being fetched. A subscriber's spend does not date the last charge: a
- * cleanup must not delay the next one (mentor review, 2 Nov).
+ * without being fetched, and counted under their own, larger budget
+ * (`MAX_CREATED_HISTORY`); only spends count toward `MAX_HISTORY`, and an
+ * entry older than the window is never counted (review W6 M2). Past either
+ * budget it refuses: stopping short could miss the last charge. A subscriber's
+ * spend does not date the last charge: a cleanup must not delay the next one
+ * (mentor review, 2 Nov).
  */
 async function lastCharge(
   client: ccc.Client,
@@ -265,15 +292,19 @@ async function lastCharge(
   tip: bigint,
   window: bigint,
 ): Promise<{ charge?: { txHash: ccc.Hex; age: bigint; fetched: Created }; ownerAfter: boolean }> {
-  let seen = 0;
+  let spends = 0;
+  let created = 0;
   let ownerAfter = false;
-  for await (const t of client.findTransactionsByLock(lock, null, true, "desc")) {
-    // Stopping short could miss the last charge and let a second one into the period: refuse instead.
-    if (++seen > MAX_HISTORY) throw tooManyCells(MAX_HISTORY);
+  for await (const t of client.findTransactionsByLock(lock, null, true, "desc", HISTORY_PAGE)) {
     const born = ccc.numFrom(t.blockNumber);
     const age = tip > born ? tip - born : 0n; // the indexer may be a block past the tip read
     if (age >= window) break;
-    if (!t.cells.some((c) => c.isInput)) continue;
+    // Stopping short could miss the last charge and let a second one into the period: refuse instead.
+    if (!t.cells.some((c) => c.isInput)) {
+      if (++created > MAX_CREATED_HISTORY) throw tooManyTransactions(MAX_CREATED_HISTORY);
+      continue;
+    }
+    if (++spends > MAX_HISTORY) throw tooManyTransactions(MAX_HISTORY);
     const { charge, fetched } = await isCharge(client, t.txHash, chargerLockHash);
     if (charge) return { charge: { txHash: t.txHash, age, fetched }, ownerAfter };
     ownerAfter = true;
