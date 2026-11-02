@@ -6,6 +6,20 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 ## Unreleased
 
 ### Added
+- `openSession` warns when a session has no rate limit (`minInterval` left out
+  or 0): every spend is within `maxPerTx`, but spends can repeat every block
+  until the session is empty. The warning (`SessionWarning`, code
+  `"no-rate-limit"`) goes to the new `opts.onWarning` before anything is
+  signed, which may throw to stop the opening, or to `console.warn` without one.
+  The demos' sessions open with no rate limit, so they now warn in the console.
+- 23 CKB-VM tests of aggregate outflow across inputs (mentor review, 2 Nov):
+  cells with the same args share one limit per transaction (CKB and token), a
+  subscription's merged cells pay one price, cells with other args are checked
+  on their own, and owner mode sweeps several cells at once. No fault found; the
+  lock is unchanged.
+- README and SECURITY-EVIDENCE: browser expiry revokes nothing on chain (funds
+  stay at risk until the owner's sweep is confirmed); a period is a block count,
+  not a fixed duration; the aggregate-outflow behaviour.
 - `SessionBalanceError.reason` (`SessionBalanceReason`): `"no-fee-cell"` or
   `"no-payout-cell"` when the cells missing are the payer's or the recipient's own
   (a charger with no fee cell, a `payTo` with no cell to top up), so a server can

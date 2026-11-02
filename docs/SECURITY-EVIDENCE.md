@@ -26,7 +26,7 @@ Labels used below:
 | Record | [`deployment/testnet.json`](../deployment/testnet.json) |
 | Source | [`contracts/session-lock/src/main.rs`](../contracts/session-lock/src/main.rs), last changed in commit `ba1fa58` (14 Oct 2026); deployment recorded in `46c71dc`. The file is unchanged from `ba1fa58` to the commit this report ships in |
 | Build | rustc 1.99.0, host `x86_64-pc-windows-gnu`, pinned in [`rust-toolchain.toml`](../contracts/session-lock/rust-toolchain.toml). sha256 of the binary `b08c5bfc4072440d72ea309f77af1418686ca03446558ba8c112bfe70ed09429` |
-| CKB-VM tests | [`test/session-lock.test.ts`](../test/session-lock.test.ts), 116 tests, all passing on 28 Oct 2026 against the binary above |
+| CKB-VM tests | [`test/session-lock.test.ts`](../test/session-lock.test.ts), 141 tests, all passing on 2 Nov 2026 against the binary above (116 on 28 Oct, 2 audit tests on 30 Oct, 23 aggregate-outflow tests on 2 Nov) |
 
 Rebuild and compare with the deployed code (Windows, repository root):
 
@@ -427,6 +427,46 @@ A Type ID collision (two live cells with the same Type ID) is refused by
 consensus, and the session lock is referenced by data hash, not by a Type ID, so
 no Type ID collision can change which code runs as it.
 
+**Aggregate outflow across inputs** (mentor review, 2 Nov 2026). Test names
+are under `aggregate outflow across inputs (review 2 Nov)`; run them with
+`npx vitest run test/session-lock.test.ts -t "aggregate"`. A script group is
+every input under the same lock script, so cells with the same args are checked
+together and cells with other args are other groups, each checked on its own
+against the whole transaction. Where a test checks two groups, it runs each
+group alone and states both outcomes. No case found a fault in the lock.
+
+| Case | Test | Outcome |
+|---|---|---|
+| `max_per_tx` taken from each of three same-args cells | "refuses max_per_tx taken from each of three cells (300 out, limit 100)" | refused, 12: the limit is per transaction, not per cell |
+| Two same-args cells taken whole, no change, 122 CKB with a limit of 100 | "refuses cells taken whole with no change when together they pass the limit" | refused, 12 |
+| Exactly `max_per_tx` across three cells merged into one change cell | "accepts exactly max_per_tx across three cells merged into one change cell" | accepted |
+| Token session: `max_per_tx_token` from each of two cells | "token session: refuses max_per_tx_token taken from each of two cells" | refused, 20 |
+| Token session: exactly `max_per_tx_token` across two cells | "token session: accepts exactly max_per_tx_token across two cells" | accepted |
+| `min_interval` 0: the change of a spend spent again at once | "min_interval 0: the change of a spend can be spent again at once, with no since" | accepted twice in a row; with `min_interval` 10, refused, 14. This is what the `no-rate-limit` warning is about |
+| One subscription: two mature cells merged, one price | "accepts two mature cells merged, one price in total" | accepted |
+| One subscription: one price from each of two mature cells | "refuses one price from each of two mature cells (two prices in one charge)" | refused, 12 |
+| One subscription: two prices as two outputs to the payout address | "refuses two prices paid as two outputs to the payout address" | refused, 12 |
+| One subscription: a young cell merged with a mature one | "refuses merging a young cell with a mature one" | refused, 14 |
+| Token subscription (real xUDT): two mature cells merged, one price | "accepts two mature token cells merged, one price in total, no CKB out" | accepted |
+| Token subscription (real xUDT): one price from each of two cells | "refuses one price from each of two mature token cells" | refused, 20 |
+| Two subscriptions (same charger and payout, two subscribers) charged in one transaction, with change | "two subscriptions charged in one transaction with change: both refuse, 13 (the other's change is anyone else)" | both groups refuse, 13. A creator sends one charge per subscriber |
+| Two subscriptions taken whole, each within its own price | "two subscriptions taken whole in one transaction, each within its own price: both accept" | both accept |
+| One subscription's unused price used to cover the other's overcharge | "no pooling: one subscription's unused price does not cover the other's overcharge" | the overcharged one refuses, 12; the other accepts |
+| A recipient-scoped session spent next to an unrestricted one that pays a stranger | "a recipient-scoped session spent next to an unrestricted one: the payment to a stranger is refused by the scoped one, 13" | the scoped one refuses, 13: its recipient rule covers every output of the transaction |
+| A rate-limited session's young cell spent next to a session with no rate limit | "an unrestricted sibling's rate limit of 0 does not lift this session's: its young cell is refused, 14" | the rate-limited one refuses, 14 |
+| Token: move tokens into a sibling token session with a looser limit | "token sessions: moving tokens into a looser sibling token session is outflow, 20" | refused, 20; the sibling (a top-up) accepts |
+| Owner sweeps three same-args cells: young, rate-limited, recipient-scoped | "sweeps three same-args cells in one transaction: young, rate-limited, recipient-scoped, no since" | accepted |
+| Subscriber cancels two subscription cells and a planted one | "a subscriber cancels with two subscription cells and a planted one, in one transaction" | accepted |
+| Recovery: two sessions of one owner (different args) swept together | "recovery sweeps two sessions with different args of one owner in one transaction (both groups accept)" | accepted |
+| One owner's input next to another owner's session cell | "one owner's input does not give owner mode to another owner's session in the same transaction" | the owner's session accepts; the other refuses, 11 |
+| Token subscription (real xUDT): cancel two token cells in one transaction | "the subscriber cancels two token cells of one subscription in one transaction, every token back" | accepted |
+
+Earlier tests already pinned part of this: "sums every session cell in the
+group", "rejects two mature cells in one transaction moving more than
+max_per_tx together", "sums tokens across every session cell in the group",
+"rejects one young cell merged with a mature one", and the "several session
+cells with different scopes" table above.
+
 **Oversized args**
 
 | Attack | Test | Outcome |
@@ -447,6 +487,7 @@ no Type ID collision can change which code runs as it.
 | Owner sweep, recovery, cancel | - | accepted (with decoy, keys lost) | - | yes |
 | Args, authorisation, overflow, token data | 10, 11, 15, 19 | not run | - | yes |
 | Adversarial cases (section 3, last part) | 10 to 18 | not run | - | yes, 42 tests |
+| Aggregate outflow across inputs | 11 to 14, 20 | not run | - | yes, 23 tests |
 | Expiry | - | not enforceable on chain | - | - |
 
 The 8 Oct deployment's lock smoke
@@ -461,8 +502,17 @@ Consistent with the README's [Limits](../README.md#limits):
 - **Not audited, testnet only.** The lock has had community and adversarial
   reviews, each finding fixed with a regression test, but no external audit.
 - **Expiry is not on chain.** A CKB script cannot prove that time has not
-  passed; `expiresAt` is checked in the browser. A leaked key stays valid until
-  the owner sweeps, within `max_per_tx`, the recipient and the rate limit.
+  passed; `expiresAt` is checked in the browser. Browser expiry does not revoke
+  the key's on-chain authority: a leaked key stays valid, within `max_per_tx`,
+  the recipient and the rate limit, and the funds stay at risk until the owner's
+  sweep (`closeSession` or `recoverSessions`) is confirmed.
+- **No rate limit means repeated spends.** With `min_interval` 0, every spend
+  is within `max_per_tx`, but spends can repeat every block until the cell is
+  empty (shown above). `openSession` warns (`SessionWarning`,
+  `"no-rate-limit"`); `openSubscription` refuses a period of 0.
+- **A period is a block count, not a fixed duration.** `min_interval` counts
+  blocks, and block time varies (see the
+  [average block time](https://explorer.nervos.org/charts/average-block-time)). `blocksForSeconds` gives an estimate.
 - **The rate limit is per cell.** The lock forbids splitting, but anyone may add
   cells under a session lock with their own money, giving the key more cells to
   spend from in the same block.

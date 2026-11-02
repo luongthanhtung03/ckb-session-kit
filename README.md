@@ -295,6 +295,13 @@ subscriber's money held; the creator's side did not, and the library now covers 
 - access follows payments, not the live cell, so re-creating the cell to reset its age gains nothing;
 - the opening commits to an account id (hashed) under the subscriber's signature, so nobody can present someone else's subscription.
 
+Several mature cells of one subscription can be merged in one charge, and
+together they still pay at most one price. Each subscription is checked on its
+own: two subscribers' cells charged in one transaction are refused (error 13),
+since each sees the other's change as a third party, so a creator sends one
+charge per subscriber. A subscriber's cancel sweeps every cell of the
+subscription in one transaction.
+
 A charge costs the session lock 20,999 cycles.
 
 `npm run smoke:subscription` runs it on testnet. Run on 26 Oct 2026:
@@ -366,7 +373,12 @@ Rust. A cell under it can be spent two ways:
 - **Session mode** — the transaction also spends the session key's *key cell*. The
   network then enforces, on-chain:
   - **outflow limit** — at most `max_per_tx` shannons leave per transaction, fees
-    included, so the fee cannot be used to drain the cell;
+    included, so the fee cannot be used to drain the cell. The limit is for all
+    the session's cells together: cells under the same lock (same args) are one
+    script group, so taking `max_per_tx` from each of three cells is refused.
+    Cells of another session or subscription (other args) are checked on their
+    own, against their own limit and recipient; one session's unused limit never
+    covers another's;
   - **recipient allowlist** (optional) — payments may only go to one lock (plus
     change, the key cell, and the owner). The key cell may come back smaller
     (it pays the fee) but never larger, so the key cannot park session funds in
@@ -377,7 +389,12 @@ Rust. A cell under it can be spent two ways:
   - **rate limit** (optional) — each session cell must have aged `min_interval`
     blocks before it can be spent again (relative `since`). The limit is **per
     cell**: with *n* session cells, the key can spend from each of them in the same
-    block. `openSession` creates one cell;
+    block. `openSession` creates one cell. With `min_interval` 0 there is no
+    rate limit: every spend is within `max_per_tx`, but spends can repeat in
+    every block until the cell is empty, and `openSession` warns
+    (`SessionWarning`, `"no-rate-limit"`). The interval is a number of blocks,
+    not a fixed time: block time varies (see the
+    [average block time](https://explorer.nervos.org/charts/average-block-time));
   - **no splitting** — a session spend may send at most one cell back to the
     session lock, so the key can merge session cells but never multiply them,
     which makes the per-cell rate limit a per-session one for sessions opened
@@ -392,13 +409,16 @@ Rust. A cell under it can be spent two ways:
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
 cryptography: **7.6 KB, no allocator, no C, 15,651 cycles per run** — about 0.9% of
-a session spend (29,031 on a token spend, 1.7%). 116 tests run it in the real CKB-VM, most asserting a specific
+a session spend (29,031 on a token spend, 1.7%). 141 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has
 passed (`since` is a lower bound) but never that it has not. Expiry is enforced
 in the browser; the owner can revoke on-chain at any moment, and the session
-cell's balance caps the total at risk.
+cell's balance caps the total at risk. **Expiry in the browser revokes nothing
+on chain.** After `expiresAt` the key still satisfies the lock, and the funds
+stay at risk until the owner's sweep (`closeSession` or `recoverSessions`)
+is confirmed.
 
 **Enforced where:**
 
@@ -413,11 +433,14 @@ cell's balance caps the total at risk.
 ### If a session key leaks
 
 The key cannot be revoked by expiry: after `expiresAt` it still satisfies the lock
-until the owner acts. Until then it can move at most `max_per_tx` per transaction,
+until the owner's sweep is confirmed on chain. The browser forgetting the key, or
+refusing to use it, does not change that. Until then it can move at most `max_per_tx` per transaction,
 only to the recipient if one is set (or to the miner as fee: the recipient rule
 covers outputs, and the fee is not one), and, with a rate limit, once per
-`min_interval` blocks per session cell. Without a rate limit, a recipient does
-not slow a leaked key down: it can burn `max_per_tx` in fees every block. Set
+`min_interval` blocks per session cell. Without a rate limit, a leaked key can
+repeat spends of `max_per_tx` in every block until the session is empty, each
+one within the limit; a recipient does not slow it down, since it can burn
+`max_per_tx` in fees every block. Set
 `min_interval` whenever you set a recipient. The owner should sweep at once:
 
 - with the key still at hand: `closeSession(wallet, session, deployment, binding)`;
@@ -524,8 +547,13 @@ What has and has not been shown on testnet is in
   reviews, each finding fixed with a regression test, but no external audit.
   Do not put mainnet funds behind it.
 - **Expiry is not on-chain.** A CKB script cannot prove that time has *not*
-  passed, so `expiresAt` is checked in the browser. A leaked key stays valid
-  until the owner sweeps; the session's balance is the most it can lose.
+  passed, so `expiresAt` is checked in the browser. Browser expiry does not
+  revoke the key's on-chain authority: a leaked key stays valid, and the funds
+  stay at risk, until the owner's sweep transaction is confirmed. The session's
+  balance is the most it can lose.
+- **No rate limit means repeated spends.** With `min_interval` 0, each spend
+  is within `max_per_tx`, but spends can repeat every block until the balance
+  is gone. `openSession` warns; set `minInterval`.
 - **The rate limit is per cell.** `openSession` makes one cell and the lock
   forbids splitting, but anyone adding more cells under the same session lock
   gives the key more cells to spend from (with their own money, never the owner's).
@@ -543,8 +571,9 @@ What has and has not been shown on testnet is in
 - **Owner locks must need a signature.** An anyone-can-pay owner lock would give
   anyone owner mode; `openSession` refuses one.
 - **Subscription periods are in blocks, and charges need the creator online.**
-  The lock's rate limit is a block count, so a period is an estimate of time
-  (`blocksForSeconds`). Nothing charges by itself: the creator's server must
+  The lock's rate limit is a block count, not a fixed duration: block time
+  varies (see the [average block time](https://explorer.nervos.org/charts/average-block-time)), so a period is an
+  estimate of time (`blocksForSeconds`). Nothing charges by itself: the creator's server must
   send each charge, one transaction per subscriber. Cancelling ends access at
   once, and the current period's price is not refunded.
 - **Sessions are not cheap to open.** A session cell occupies 121 CKB (153 with a
