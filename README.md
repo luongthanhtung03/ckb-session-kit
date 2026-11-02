@@ -189,8 +189,21 @@ then unlock articles for 1 CKB each with no popup.
 
 A session cell with a recipient occupies 153 CKB, so a 200 CKB session has 47 CKB
 to spend; the rest comes back on close. Each payment consumes one of the creator's
-cells, so readers paying at the same moment compete for them; the library picks
-one at random, and `npm run setup:creator` gives the demo's creator three.
+anyone-can-pay cells, so readers paying at the same moment compete for them. A
+top-up picks a confirmed cell that no transaction in the node's pool spends
+(`pickPayoutCell`; at most 4 cells checked, 64 read). If the node still refuses
+the payment for a spent cell, it is built again with another cell after a short
+wait, up to 3 attempts by default (`retry: { attempts, delayMs }`). A send whose
+outcome is unknown is never retried. When every cell is busy, nothing is sent
+and the error says `"payout-busy"`. Give a creator more cells with
+`createPayoutCells(funder, payTo, { count })`; `npm run setup:creator` gives the
+demo's creator eight.
+
+Chained payments (topping up a cell another payment created while that payment
+is still in the pool) are not used: if the first payment is dropped or slow to
+propagate, every payment built on it is stuck or dropped too, and a reader's
+session would wait on someone else's transaction. More cells and a pool-aware
+pick avoid that.
 
 ## Example: CKB Place, a pixel board on testnet
 
@@ -331,8 +344,12 @@ setup:charger` creates one in `.env.charger` (gitignored) and prints its address
 and the next steps; nothing is sent. A status or a charge reads at most
 `MAX_SUBSCRIPTION_CELLS` (16) cells under one subscription's lock and refuses
 beyond that (`SessionPolicyError`, reason `"too-many-cells"`), so planted cells
-cannot make one request cost thousands of RPC calls; the subscriber clears them
-by cancelling.
+cannot make one request cost thousands of RPC calls. Only cells of the
+subscription's kind count (plain CKB, or its token): the indexer leaves other
+cells out. The subscriber clears planted ones without cancelling:
+`clearPlantedCells(wallet, deployment, subscription)` sweeps every cell not made
+by the opening, a charge or the subscriber back to the subscriber, in one
+signature, and leaves the subscription's own cells as they are.
 
 ## Which wallets can own a session
 
