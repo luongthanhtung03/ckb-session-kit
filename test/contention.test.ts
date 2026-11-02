@@ -20,6 +20,7 @@ import {
   pickPayoutCell,
   poolConflict,
   rebuildOnDeadInputs,
+  SendOutcomeUnknownError,
   SessionBalanceError,
   sessionLockOf,
   spendInSession,
@@ -284,6 +285,29 @@ describe("a payment the node refuses for a spent payout cell", () => {
     await expect(
       spendInSession(p.session, p.client, d, p.binding, { to: p.to, amount: 1n * CKB, topUp: true, retry: { attempts: 5, delayMs: 0 } }),
     ).rejects.toThrow(/timeout/);
+    expect(p.sent).toHaveLength(1);
+  });
+
+  // Review W6 L4: a lost reply, a fallback node answering Dead (the first send
+  // committed), and a status lookup that fails too: the outcome is unknown.
+  it("never retries a refusal for a spent input when the status lookup fails as well", async () => {
+    const p = await paying(3);
+    p.node.reply = (t) => {
+      throw new Error(`Resolve failed Dead(OutPoint(${ccc.hexFrom(p.payoutIn(t)!.toBytes())}))`);
+    };
+    (p.client as unknown as Record<string, unknown>).getTransactionNoCache = async () => {
+      throw new Error("fetch failed");
+    };
+    const err = await spendInSession(p.session, p.client, d, p.binding, {
+      to: p.to,
+      amount: 1n * CKB,
+      topUp: true,
+      retry: { attempts: 5, delayMs: 0 },
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SendOutcomeUnknownError);
+    expect(err).toMatchObject({ txHash: p.sent[0].hash() });
+    expect((err as Error).message).not.toMatch(/Dead\(OutPoint/);
+    expect(String((err as { cause?: unknown }).cause)).toMatch(/Dead\(OutPoint/);
     expect(p.sent).toHaveLength(1);
   });
 

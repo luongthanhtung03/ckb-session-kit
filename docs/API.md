@@ -104,7 +104,10 @@ payout cell, after a wait. `retry` (`RetryOptions`) sets how many attempts in
 all (default 3) and the first wait (default 1000 ms, doubling, with jitter).
 `beforeSend` runs again with each new hash (a refused payment never commits).
 A send whose outcome is unknown (a timeout, a lost reply the node did not take)
-is never retried, so a payment is never sent twice.
+is never retried, so a payment is never sent twice. If the send fails and the
+status lookup fails too, it throws `SendOutcomeUnknownError` (never retried),
+even when the send's error was a refusal for a spent input: CCC sends again on
+a fallback node, which answers `Dead` once the first send has committed.
 
 In a token session, `{ to, token }` pays `token` units instead of shannons:
 with `topUp: true` into the recipient's anyone-can-pay token cell (no CKB
@@ -244,6 +247,12 @@ token cells can take the payment without passing 2^128 - 1 units) or
 `"payout-busy"` (every payout cell is being spent by another payment in the
 node's pool: nothing was sent; try again after a block). Match on it,
 not on the message, which may change. Other balance errors leave it undefined.
+
+### `SendOutcomeUnknownError`
+Thrown by a send (`spendInSession`, `chargeSubscription`, and every other call
+that signs and sends) when the node refused or did not answer and could not
+then be asked whether it has the transaction. It may still commit: look for
+`txHash` before paying again. `cause` is the send's own error. Never retried.
 
 ### `SessionWarning`
 `{ code, message }`, passed to `openSession`'s `opts.onWarning` before anything

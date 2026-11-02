@@ -113,10 +113,28 @@ export function keyCellFloor(ownerLock: ccc.ScriptLike): bigint {
 }
 
 /**
+ * A send failed and the node could not then be asked whether it has the
+ * transaction (review W6 L4): it may have been taken and committed. Never
+ * retried; `txHash` is the transaction to look for, and `cause` the send's own
+ * error. Its message never repeats the cause's, so nothing reads it as a
+ * refusal for a spent input.
+ */
+export class SendOutcomeUnknownError extends Error {
+  readonly txHash: ccc.Hex;
+  constructor(txHash: ccc.Hex, cause: unknown) {
+    super(`the send of ${txHash} failed and its status could not be looked up: it may still commit; check it before paying again`, { cause });
+    this.name = "SendOutcomeUnknownError";
+    this.txHash = txHash;
+  }
+}
+
+/**
  * Signs `tx`, hands its final hash to `beforeSend`, then sends it. The hash is
  * known before anything leaves, so a caller can record the payment or the key
  * against it first. If the send throws but the node did take the transaction (a
- * timeout on the reply, say), the hash is returned all the same.
+ * timeout on the reply, say), the hash is returned all the same. If the send
+ * throws and the status lookup fails too, a `SendOutcomeUnknownError` is thrown
+ * instead of the send's error, which `rebuildOnDeadInputs` never retries.
  */
 export async function signAndSend(
   signer: ccc.Signer,
@@ -129,7 +147,13 @@ export async function signAndSend(
   try {
     return await signer.client.sendTransaction(signed);
   } catch (e) {
-    const known = await signer.client.getTransaction(hash).catch(() => undefined);
+    let known: Awaited<ReturnType<ccc.Client["getTransaction"]>>;
+    try {
+      known = await signer.client.getTransaction(hash);
+    } catch {
+      // A lost reply, then a fallback node answering Dead because this one committed: not a refusal.
+      throw new SendOutcomeUnknownError(hash, e);
+    }
     if (known && ["pending", "proposed", "committed"].includes(known.status)) return hash;
     throw e;
   }
@@ -403,6 +427,7 @@ export async function withoutDeadCached(client: ccc.Client, lock: ccc.Script, ce
 
 /** Whether a send was rejected because an input is spent or unknown to the node. */
 export function deadInputs(e: unknown): boolean {
+  if (e instanceof SendOutcomeUnknownError) return false;
   if (e instanceof ccc.ErrorClientResolveUnknown) return true;
   const text = e instanceof ccc.ErrorClientBase ? `${e.message} ${e.data}` : e instanceof Error ? e.message : String(e);
   return /\b(Dead|Unknown)\(OutPoint\(/.test(text);
@@ -418,6 +443,7 @@ const errorText = (e: unknown) =>
  * (`PoolRejectedRBF`, -1111) unless it pays enough more to replace the other.
  */
 export function poolConflict(e: unknown): boolean {
+  if (e instanceof SendOutcomeUnknownError) return false;
   if (e instanceof ccc.ErrorClientRBFRejected) return true;
   if (e instanceof ccc.ErrorClientBase && e.code === -1111) return true;
   return /\b(RBFRejected|PoolRejectedRBF)\b/.test(errorText(e));
@@ -461,7 +487,10 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * Any other error is thrown at once. That includes a send whose outcome is
  * unknown (a timeout, a lost reply): `signAndSend` returns the hash when the
  * node did take the transaction, and otherwise throws the send's own error,
- * which is never retried, so nothing is ever paid twice. A `beforeSend` inside
+ * which is never retried, so nothing is ever paid twice. When the node cannot
+ * be asked either, a refusal for a spent input may only mean the first send
+ * committed (CCC retries a send on a fallback node): `signAndSend` then throws
+ * `SendOutcomeUnknownError`, never retried (review W6 L4). A `beforeSend` inside
  * runs again with each new transaction's hash: a refused one never commits.
  */
 export async function rebuildOnDeadInputs<T>(
