@@ -1,0 +1,37 @@
+> smoke-clear-planted (2026-11-02T14:43:11.107Z)
+
+subscriber: ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqf3zkscv3acyhndwm4h4pujvfk266l5kwqy0z494
+charger   : ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqd0jn9cjsag54tuwwznwt46gwgvjs90fdswlh5ty
+payout    : ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vqd0jn9cjsag54tuwwznwt46gwgvjs90fdspv3s7j
+planter   : ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqvrp643xs5f2d9258zszc8rugsduxm7nrg25q2z6 (third party)
+setup: a 100 CKB cell for the charger's fees
+  https://testnet.explorer.nervos.org/transaction/0x602b2c3bc5ba1ddff814f4bb7fac45448939d47b3123075437781fd798bbb29e
+funder balance 299394.9888286 CKB
+setup: the third party, 2510 CKB
+  https://testnet.explorer.nervos.org/transaction/0x3642d0aa354eb387913c2ad448dc45d13932106b2d5a4f34533b3bef54a1e225
+open: price 10 CKB, period 30 blocks, budget 163 CKB (one subscriber signature)
+  https://testnet.explorer.nervos.org/transaction/0x4dd14e967d0c56836ff613ef25bdaf3417bebcb8dfc869da962f538c3f8d3905
+status: active true, paid through block 22945437, next charge in 30 blocks (opened in block 22945407)
+plant: a third party creates 16 cells of 153 CKB (the least a cell under this lock holds) under the subscription's lock: 2448 CKB in all, 1 + 16 cells > 16
+  https://testnet.explorer.nervos.org/transaction/0x85f2664ed418be60fded6e99030a3f76feef20aee1fd664743ecb61f60e86214
+blocked: status
+  ✓ refused (too-many-cells): over 16 cells or recent transactions under this subscription's lock: refused rather than read in part; the subscriber can clear the planted cells (clearPlantedCells), or cancel
+blocked: charge
+  ✓ refused before anything was sent (too-many-cells)
+clear: the subscriber sweeps the planted cells to itself (clearPlantedCells, one signature, no cancel)
+  pass 1: 16 cell(s), 2448 CKB back to the subscriber
+  ✓ https://testnet.explorer.nervos.org/transaction/0x7c8fd82ecf418b56aa445da94173046c0bb7d95bacc36a6d186f1088c0de44ea
+active: status after the clear (tip 22945414)
+  ✓ active true, paid through block 22945437 (as before the planting), 1 charge(s) left
+  ✓ next charge in 23 blocks: dated from the opening (block 22945407), not from the clear (block 22945414, which would give 30)
+charge: 10 CKB to the creator once the period is over, charger key only
+  ✓ https://testnet.explorer.nervos.org/transaction/0xbbf18fb02252b70941a17b25abebf7740a7a9305fab8b1292906c032af52b4a7
+  charged in block 22945440: the period from the opening ended at 22945437; a charge dated by the clear could not come before 22945444 ✓ on time
+  planted in block 22945410, cleared in block 22945414
+cancel: the subscriber sweeps the rest back, 153 CKB
+  ✓ https://testnet.explorer.nervos.org/transaction/0x934bcc1765383ea7953dbfe527afc00a512e7fa7b189b26e0c75b4d5e84caf12
+sweep: the third party's change back to the funder, 61.99881364 CKB
+  https://testnet.explorer.nervos.org/transaction/0xa61616041b357727d3985081cafb483f2221b4692f6cc5b35d7a422ecefe4d02
+funder balance 299394.9888286 → 299374.98648045 CKB: spent 20.00234815 CKB in all (prices to the creator and fees)
+done: planted cells blocked status and charges; cleared by the subscriber alone; status active again, the next charge on time
+log: docs/evidence/2026-11-02-smoke-clear-planted.log

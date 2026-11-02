@@ -1,0 +1,89 @@
+> smoke-contention (2026-11-02T14:51:10.529Z)
+
+node: https://testnet.ckbapp.dev/ 0.210.0 (2592ddf 2026-09-17)
+  tx_pool_info: min_fee_rate 1000, min_rbf_rate 1500 shannons/KB: RBF on; 4 transactions pending
+creator: ckt1qq6pngwqn6e9vlm92th84rk0l4jp2h8lurchjmnwv8kq3rt5psf4vqd0jn9cjsag54tuwwznwt46gwgvjs90fdspv3s7j
+payers 4, rounds 2, payout cells wanted 8
+  payer 1: ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqvpy0f3rdy8ern605m7fcz7s7dw2r7arrclc2n5e
+  payer 2: ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfhue399srcu7y5lehz9l4zxudpsydtt8q7r24ue
+  payer 3: ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsq0k6txn55asa3szktmm426m5lrt935upzqkygudy
+  payer 4: ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsq0f5qdp200f7dztkz6ss4w4u5c4780rv2sx6x30u
+  probe  : ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqfkge0442ghexsz9mmqvv5ud8a8798qsggn4mmtm
+funder balance 299374.98648045 CKB
+cost: 1300 CKB lent and swept back; 0 new payout cell(s), 0 CKB kept by the creator; 9 CKB paid to the creator; plus fees
+setup: the creator already has 8 payout cells, reused
+setup: fund 4 payers (300 CKB each) and the probe (100), one transaction
+  https://testnet.explorer.nervos.org/transaction/0x6eec3496eef00f824ac300ab489173d48c54ff9abe8747d9b230e8e7f11f3cff
+open: each payer opens a 160 CKB session that can only pay the creator (no rate limit)
+  payer 1: https://testnet.explorer.nervos.org/transaction/0xb8e0eac2bbd2f32f89c7ca4966fc51cdacbd9216b7864ed508f5eee69b0a1036
+  payer 2: https://testnet.explorer.nervos.org/transaction/0x02e4533d19860a9e0d18fb0fc4b21af94a36879c62c353bcdcbf1691bf1bfd54
+  payer 3: https://testnet.explorer.nervos.org/transaction/0x668c02697e7d856bd92fa0b92576fca11f66791aa49000af914c29555258f61a
+  payer 4: https://testnet.explorer.nervos.org/transaction/0x56ac8dc1b750a6ac74f00840e83dde47e016e12451cc237f0ba0f5b70ea56bb4
+  warnings as expected: no-rate-limit
+round 1: 4 payers pay 1 CKB each into the creator at the same moment (8 payout cells)
+  payer 1: 1 send(s), 0 refused, 4 pool check(s) (0 spent in the pool)
+    attempt 1: cell 0x1b4754eb8bf083e399109ee96f7b0204f983d48ee332096bd0253d7cacc800a7:0, accepted
+    pool view of 0x1b4754eb8bf083e399109ee96f7b0204f983d48ee332096bd0253d7cacc800a7:0 (payment pending): include_tx_pool → unknown, without → live
+  payer 2: 2 send(s), 1 refused, 8 pool check(s) (2 spent in the pool)
+    attempt 1: cell 0xd1dab105cdf5c21118c420d7b09c0781213cfe214fd44bd7a76efef4e230059b:0, tx 0x55491c212aeb771de24ed8a2bbd577c8c3422988e7b5c0e3a3bf67c83197ee82 refused (rbf): vn code -1111: Client request error PoolRejectedRBF: RBF rejected: Tx's current fee is 29003, expect it to >= 30312 to replace old txs data RBFRejected("Tx's current fee is 29003, expect it to >= 30312 to replace old txs")
+    attempt 2: cell 0x4dd14e967d0c56836ff613ef25bdaf3417bebcb8dfc869da962f538c3f8d3905:1, accepted
+    pool view of 0x4dd14e967d0c56836ff613ef25bdaf3417bebcb8dfc869da962f538c3f8d3905:1 (payment pending): include_tx_pool → unknown, without → live
+  payer 3: 1 send(s), 0 refused, 4 pool check(s) (0 spent in the pool)
+    attempt 1: cell 0xd1dab105cdf5c21118c420d7b09c0781213cfe214fd44bd7a76efef4e230059b:0, accepted
+    pool view of 0xd1dab105cdf5c21118c420d7b09c0781213cfe214fd44bd7a76efef4e230059b:0 (payment pending): include_tx_pool → unknown, without → live
+  payer 4: 1 send(s), 0 refused, 4 pool check(s) (0 spent in the pool)
+    attempt 1: cell 0x0ece7162e5cc1104d02717488de8615e62d76cde741b862b9e347f8af3be40c1:0, accepted
+    pool view of 0x0ece7162e5cc1104d02717488de8615e62d76cde741b862b9e347f8af3be40c1:0 (payment pending): include_tx_pool → unknown, without → live
+  ✓ payer 1: https://testnet.explorer.nervos.org/transaction/0x604413fe047475c2947d33883f9db7a29d2e49e00df8dac551c9c1dd1a479f84
+  ✓ payer 3: https://testnet.explorer.nervos.org/transaction/0x1a57ed95420fba300460a9d1c2299fa538fd571cc4e0887f55a353d98dea8706
+  ✓ payer 2: https://testnet.explorer.nervos.org/transaction/0xe8794e002db4679b7b9d975b606d1a3a852992a79167b25319ea5629e7a8ed6d
+  ✓ payer 4: https://testnet.explorer.nervos.org/transaction/0x8c17f4d82dbe3944301a22e65506666f8f0fd4df295221ee24e77b638f7cb2f1
+  sent in 4.5 s; creator's anyone-can-pay balance 525 → 529 CKB
+  first picks: payers 2+3 on 0xd1dab105cdf5c21118c420d7b09c0781213cfe214fd44bd7a76efef4e230059b:0
+  retried to success: payer(s) 2
+  ✓ round 1: all 4 payments committed
+round 2: 4 payers pay 1 CKB each into the creator at the same moment (8 payout cells)
+  payer 1: 1 send(s), 0 refused, 4 pool check(s) (0 spent in the pool)
+    attempt 1: cell 0xe8794e002db4679b7b9d975b606d1a3a852992a79167b25319ea5629e7a8ed6d:0, accepted
+    pool view of 0xe8794e002db4679b7b9d975b606d1a3a852992a79167b25319ea5629e7a8ed6d:0 (payment ?): include_tx_pool → live, without → live
+  payer 2: 1 send(s), 0 refused, 4 pool check(s) (0 spent in the pool)
+    attempt 1: cell 0xb276294c11689b513fc405d593e39dee79e852e550ca10aefc02dbc76a1a4e91:0, accepted
+    pool view of 0xb276294c11689b513fc405d593e39dee79e852e550ca10aefc02dbc76a1a4e91:0 (payment pending): include_tx_pool → unknown, without → live
+  payer 3: 1 send(s), 0 refused, 4 pool check(s) (0 spent in the pool)
+    attempt 1: cell 0x25c81ca464bfc5f8e20b07a6654a6db3d2245565e2fe3b3c23ca2cd10c56bf04:0, accepted
+    pool view of 0x25c81ca464bfc5f8e20b07a6654a6db3d2245565e2fe3b3c23ca2cd10c56bf04:0 (payment pending): include_tx_pool → unknown, without → live
+  payer 4: 1 send(s), 0 refused, 4 pool check(s) (1 spent in the pool)
+    attempt 1: cell 0xbbf18fb02252b70941a17b25abebf7740a7a9305fab8b1292906c032af52b4a7:0, accepted
+    pool view of 0xbbf18fb02252b70941a17b25abebf7740a7a9305fab8b1292906c032af52b4a7:0 (payment pending): include_tx_pool → unknown, without → live
+  ✓ payer 3: https://testnet.explorer.nervos.org/transaction/0xf08fe0712da74fee817a7ea305f374b89ced32a63dcdd417b6a6b2bfc5f759bf
+  ✓ payer 1: https://testnet.explorer.nervos.org/transaction/0x6d84813fdaa5f5621104768224769292417496a62a18c92138bd6f4e9fdaf7a0
+  ✓ payer 4: https://testnet.explorer.nervos.org/transaction/0x74c8be219a596a3c0ce8149fb2bd68a4804635c3b1d95a340537f83a9052aa6e
+  ✓ payer 2: https://testnet.explorer.nervos.org/transaction/0xd359d94e7d1719bb04e9fb82aa7492bcad3566ebe8873008c6d38a99f6edc513
+  sent in 2.4 s; creator's anyone-can-pay balance 529 → 533 CKB
+  first picks: no two payers on one cell
+  ✓ round 2: all 4 payments committed
+clash: two top-ups of one payout cell, the second built by hand outside the library's pick
+  A, the funder tops up 0x05fadcc80b2a3b1e5ac7205c5c84eb95e7e6fda612591e07c81b35ec104de26d:0 by 1 CKB (fee rate 33222): https://testnet.explorer.nervos.org/transaction/0x008710e1eceed133fc9a54ccd5dc42852b64083b3ee97d3561749d499b28e446
+  pool view of 0x05fadcc80b2a3b1e5ac7205c5c84eb95e7e6fda612591e07c81b35ec104de26d:0 right after A was sent: get_live_cell include_tx_pool=true → live (A not in the pool yet); → unknown after 887 ms, false → live, A pending ✓
+  B, the probe tops up the same cell: tx 0x7a4f1a81e3e7fbd12398de60de50b30955ffcf81d41ea9c8df3f397958b96df1 (never committed)
+  ✓ refused by the node (rbf): vn code -1111: Client request error PoolRejectedRBF: RBF rejected: Tx's current fee is 18372, expect it to >= 19201 to replace old txs data RBFRejected("Tx's current fee is 18372, expect it to >= 19201 to replace old txs")
+    RBF is on at this node: a conflict is refused as an RBF replacement that pays too little; the library retries it (deadInputs/poolConflict)
+  ✓ A committed; 0x05fadcc80b2a3b1e5ac7205c5c84eb95e7e6fda612591e07c81b35ec104de26d:0 now: include_tx_pool → unknown, without → unknown
+sweep: sessions closed, everything back to the funder
+  payer 1 key cell back: https://testnet.explorer.nervos.org/transaction/0xc10d6f3888a0795e559d7374ce3cd0db52b58928fed307d7d7afe95c54ff0564
+  payer 1 session swept: https://testnet.explorer.nervos.org/transaction/0x3908abd11122c6f3efa81ce14e27abb6a3f725b5e87a0bc89908b737c159e0ce
+  payer 2 key cell back: https://testnet.explorer.nervos.org/transaction/0xc94debfca399f53140b5b01510263fbb9e8d4b770d9397395f6d00663609f6e2
+  payer 2 session swept: https://testnet.explorer.nervos.org/transaction/0xe34c39afa4acd98e9ebeaadd3fc95febcd5b5146f5e0a685aedb7be423cf2880
+  payer 4 key cell back: https://testnet.explorer.nervos.org/transaction/0x6c9c8c327a37f742f10033fd0599de5377a8491ce9aa889a7dd5e05996ef8f11
+  payer 4 session swept: https://testnet.explorer.nervos.org/transaction/0x6a422870be7c0da6dd3fbf315b2c2641e3cae5464e94db2dbe34f25cb66fd66b
+  payer 3 key cell back: https://testnet.explorer.nervos.org/transaction/0x14abe8554ed6a21bcf9c3910d86c47d9744f2b53bc330a38050b415cd189d8db
+  payer 3 session swept: https://testnet.explorer.nervos.org/transaction/0x9394d9448b1badaa0c1eb25fbc446f232aa57ad21b5a4bcb9262d3c728ceb768
+  payer 2 → funder, 297.99893356 CKB: https://testnet.explorer.nervos.org/transaction/0x789aeb08874e4c82984ecb5992a679d30be0a6ae61857bf91ff4015a3245739e
+  payer 1 → funder, 297.99893356 CKB: https://testnet.explorer.nervos.org/transaction/0xd4dcaafe6df6658c192e21f72f21b80b3a4e0fa285850fa2d912f0db275f0073
+  payer 4 → funder, 297.99893356 CKB: https://testnet.explorer.nervos.org/transaction/0xb30abedf109a1b02d2d8c3d981de1877a3757a8332fac5bc7be83401999c06d3
+  payer 3 → funder, 297.99893356 CKB: https://testnet.explorer.nervos.org/transaction/0x3149aab08c27eab482eb9ada759ad987e5ca30a2bca0bf2e5f1d944d4002c65f
+  probe → funder, 100 CKB: https://testnet.explorer.nervos.org/transaction/0x6b37ffe34e75a8d9a18d12bd31a2cef7e9ad1d14f180d07b2fd1a6bb06c49de9
+funder balance 299374.98648045 → 299365.9810107 CKB: spent 9.00546975 CKB in all
+summary: 2 round(s) of 4 simultaneous payments; 1 first-pick collision(s), 1 payment(s) retried to success; clash: B refused as rbf, retried by the library
+done: every simultaneous payment committed; the node's refusal of a double top-up is one the library retries
+log: docs/evidence/2026-11-02-smoke-contention.log

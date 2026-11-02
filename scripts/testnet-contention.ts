@@ -72,10 +72,13 @@ import {
   type ContentionOptions,
   type PayerRound,
   type RoundAnalysis,
+  sleep,
   smokeKeys,
   SMOKE_KEY_FILE,
 } from "./testnet-lib.js";
 
+/** How long the pool view may lag a sent transaction before the check fails. */
+const POOL_VIEW_WAIT_MS = 5_000;
 const deployment = JSON.parse(readFileSync("deployment/testnet.json", "utf8")) as SessionLockDeployment;
 const fmt = (n: bigint) => ccc.fixedPointToString(n);
 
@@ -346,12 +349,21 @@ async function conflict(
   const a = await topUp(funder);
   const hashA = await client.sendTransaction(a);
   console.log(`  A, the funder tops up ${cell} by 1 CKB (fee rate ${feeRate}): ${explorer(hashA)}`);
-  const pending = await liveStatus(url, target.outPoint);
+  // The node verifies a sent transaction before it enters the pool, so for a moment the pool view
+  // still shows its inputs live. Measure that window: a pick inside it is what the retry covers.
+  const sentAt = Date.now();
+  let pending = await liveStatus(url, target.outPoint);
+  const firstView = pending.withPool;
+  while (pending.withPool === "live" && Date.now() - sentAt < POOL_VIEW_WAIT_MS) {
+    await sleep(100);
+    pending = await liveStatus(url, target.outPoint);
+  }
   const statusA = (await client.getTransaction(hashA))?.status;
   const poolOk = statusA === "committed" || pending.withPool !== "live";
   console.log(
-    `  pool view of ${cell} while A is ${statusA}: get_live_cell include_tx_pool=true → ${pending.withPool}, ` +
-      `false → ${pending.withoutPool} ${poolOk ? "✓" : "✗ (a pick would take this cell)"}`,
+    `  pool view of ${cell} right after A was sent: get_live_cell include_tx_pool=true → ${firstView}` +
+      (firstView === "live" ? ` (A not in the pool yet); → ${pending.withPool} after ${Date.now() - sentAt} ms` : "") +
+      `, false → ${pending.withoutPool}, A ${statusA} ${poolOk ? "✓" : "✗ (a pick would take this cell)"}`,
   );
 
   const b = await topUp(probe);
