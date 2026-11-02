@@ -17,12 +17,19 @@ optional. Some calls that 1.0.0 accepted are now refused, on purpose:
   other than time-lock (0x04) and supply (0x08), secp256k1, multisig or Nostr
   locks with args their code would not accept, and any unknown lock
   (`reason: "owner-lock-unreviewed"`). Pass `allowUnreviewedOwnerLock: true`
-  once you have checked the lock to get the 1.0.0 behaviour back, with a warning.
+  once you have checked the lock to get the 1.0.0 behaviour back, with a warning;
+  for the creator's charger lock in `openSubscription`, pass
+  `allowUnreviewedChargerLock: true`.
+- Anyone-can-pay, PW-Lock and always-success referenced by data hash
+  (`data`, `data1`, `data2`) are refused like their type-hash versions.
+- A send whose outcome cannot be checked throws `SendOutcomeUnknownError`
+  (with the tx hash); it is never retried, so check the hash before resending.
 - `openSession` and `openSubscription` refuse `TESTNET_LEGACY_DEPLOYMENTS`,
   `hashType: "data"`, and a deployment whose cell dep does not hold its code on
   the client's network (one `getCellLive` per client and deployment).
 - `closeSession` refuses a signer whose lock is not the session's owner lock.
-- `openSession` with no rate limit calls `console.warn` (or `opts.onWarning`).
+- `openSession` with no rate limit, or `minInterval` 1, calls `console.warn`
+  (or `opts.onWarning`).
 - `SessionPolicyError` and `SessionBalanceError` carry a `reason`; code that
   matched error messages should match `reason` instead.
 
