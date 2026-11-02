@@ -3,7 +3,38 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
-## Unreleased
+## 2.0.0 (2026-11-XX)
+
+### Upgrading from 1.0.0
+Every 1.0.0 export is still there with the same signature; new parameters are
+optional. Some calls that 1.0.0 accepted are now refused, on purpose:
+- `assertSigningLock`, `openSession`, `openSubscription` refuse an owner (or
+  charger) lock that opens with no signature: PW-Lock (its deployed build is
+  anyone-can-pay) and the Nostr lock in proof of work mode
+  (`reason: "owner-lock-unsafe"`; no option lets these through). Sessions
+  already open under such a lock should be closed or recovered now.
+- They also refuse configurations not reviewed: Omnilock auth 0x07 or mode bits
+  other than time-lock (0x04) and supply (0x08), secp256k1, multisig or Nostr
+  locks with args their code would not accept, and any unknown lock
+  (`reason: "owner-lock-unreviewed"`). Pass `allowUnreviewedOwnerLock: true`
+  once you have checked the lock to get the 1.0.0 behaviour back, with a warning;
+  for the creator's charger lock in `openSubscription`, pass
+  `allowUnreviewedChargerLock: true`.
+- Anyone-can-pay, PW-Lock and always-success referenced by data hash
+  (`data`, `data1`, `data2`) are refused like their type-hash versions.
+- A send whose outcome cannot be checked throws `SendOutcomeUnknownError`
+  (with the tx hash); it is never retried, so check the hash before resending.
+- `openSession` and `openSubscription` refuse `TESTNET_LEGACY_DEPLOYMENTS`,
+  `hashType: "data"`, and a deployment whose cell dep does not hold its code on
+  the client's network (one `getCellLive` per client and deployment).
+- `closeSession` refuses a signer whose lock is not the session's owner lock.
+- `openSession` with no rate limit, or `minInterval` 1, calls `console.warn`
+  (or `opts.onWarning`).
+- `SessionPolicyError` and `SessionBalanceError` carry a `reason`; code that
+  matched error messages should match `reason` instead.
+
+The wallet matrix's locks (secp256k1, Omnilock 0x12 / Bitcoin / Dogecoin,
+Nostr signing mode, JoyID) all pass unchanged.
 
 ### Fixed (Week 6 adversarial review, 2 Nov)
 - Token subscriptions: look-alike cells typed `xUDT(token.args ++ extra)`
