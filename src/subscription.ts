@@ -9,6 +9,7 @@ import {
   addTopUp,
   assertPlainXudt,
   assertSigningLock,
+  checkSigningLock,
   type SigningLockOptions,
   isAnyoneCanPay,
   keyCellFloor,
@@ -389,6 +390,8 @@ export async function openSubscription(
     token?: { type: ccc.ScriptLike; amount: bigint };
     account?: string;
     beforeSend?: (sub: Subscription) => Promise<void>;
+    /** Let an unreviewed charger lock through, with a warning (`allowUnreviewedOwnerLock` covers the subscriber's own lock only). */
+    allowUnreviewedChargerLock?: boolean;
   } & SigningLockOptions,
 ): Promise<{ txHash: ccc.Hex; subscription: Subscription }> {
   const client = subscriber.client;
@@ -404,8 +407,13 @@ export async function openSubscription(
   const [chargerLock, payToLock] = await Promise.all(
     [opts.charger, opts.payTo].map(async (a) => (await ccc.Address.fromString(a, client)).script),
   );
-  // A charger lock that signs nothing would let anyone trigger charges (review M2).
-  await assertSigningLock(chargerLock, client, opts);
+  // A charger lock that signs nothing would let anyone trigger charges (review M2). Its own
+  // opt-in: opting in for the subscriber's wallet does not waive review of the creator's lock (review W6 I1).
+  await checkSigningLock(chargerLock, client, !!opts.allowUnreviewedChargerLock, {
+    whose: "the charger's lock",
+    can: "charge a subscription",
+    optIn: "allowUnreviewedChargerLock",
+  });
   const sub: Subscription = {
     subscriberLockHash: subscriberLock.hash(),
     chargerLockHash: chargerLock.hash(),

@@ -224,4 +224,21 @@ describe("the opt-in through openSession and openSubscription", () => {
       reason: "owner-lock-unsafe",
     });
   });
+
+  // Review W6 I1: opting in for one's own wallet does not waive review of the creator's charger lock.
+  it("openSubscription takes a separate opt-in for the charger's lock", async () => {
+    const subscriber = new Owner(await known(ccc.KnownScript.Secp256k1Blake160, "0x" + "11".repeat(20)));
+    const acp = ccc.Address.fromScript(await known(ccc.KnownScript.AnyoneCanPay, "0x" + "77".repeat(20)), client).toString();
+    const charger = ccc.Address.fromScript(unreviewed, client).toString();
+    const terms = { charger, payTo: acp, price: 10n * CKB, periodBlocks: 20n, budget: 500n * CKB };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(openSubscription(subscriber, d, { ...terms, allowUnreviewedOwnerLock: true })).rejects.toMatchObject({
+      reason: "owner-lock-unreviewed",
+      message: expect.stringMatching(/charger/),
+    });
+    // With the charger's own opt-in, the lock check passes (and warns); what fails next is the funding.
+    const err = await openSubscription(subscriber, d, { ...terms, allowUnreviewedChargerLock: true }).catch((e: unknown) => e);
+    expect(err).not.toMatchObject({ reason: "owner-lock-unreviewed" });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/charger/));
+  });
 });

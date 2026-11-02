@@ -435,7 +435,7 @@ Rust. A cell under it can be spent two ways:
     block. `openSession` creates one cell. With `min_interval` 0 there is no
     rate limit: every spend is within `max_per_tx`, but spends can repeat in
     every block until the cell is empty, and `openSession` warns
-    (`SessionWarning`, `"no-rate-limit"`). The interval is a number of blocks,
+    (`SessionWarning`, `"no-rate-limit"`; also for `min_interval` 1, almost the same). The interval is a number of blocks,
     not a fixed time: block time varies (see the
     [average block time](https://explorer.nervos.org/charts/average-block-time));
   - **no splitting** — a session spend may send at most one cell back to the

@@ -74,9 +74,10 @@ export class SessionBalanceError extends Error {
  * Something about a session's terms that the lock will enforce as written but that
  * the owner may not have meant. `openSession` reports it before anything is signed
  * (`opts.onWarning`, or `console.warn` without one).
- * - `no-rate-limit`: `minInterval` is 0. Each spend is held to `maxPerTx`, but the
- *   change of one spend can be spent again in the next block, so a leaked key can
- *   repeat spends until the session is empty.
+ * - `no-rate-limit`: `minInterval` is 0 (or 1, almost the same: review W6 I3). Each
+ *   spend is held to `maxPerTx`, but the change of one spend can be spent again in
+ *   the next block (with 1, a block later), so a leaked key can repeat spends until the
+ *   session is empty.
  */
 export interface SessionWarning {
   code: "no-rate-limit";
@@ -85,12 +86,14 @@ export interface SessionWarning {
 
 /** The warnings for a session opened with these terms. */
 function sessionWarnings(minInterval: bigint, recipient: boolean): SessionWarning[] {
-  if (minInterval > 0n) return [];
+  if (minInterval > 1n) return [];
   return [
     {
       code: "no-rate-limit",
       message:
-        "minInterval is 0: no rate limit. Each spend is held to maxPerTx, but spends can repeat every block " +
+        (minInterval === 0n
+          ? "minInterval is 0: no rate limit. Each spend is held to maxPerTx, but spends can repeat every block "
+          : "minInterval is 1: almost no rate limit. Each spend is held to maxPerTx, but spends can repeat one block apart ") +
         "until the session is empty, so a leaked key can drain the whole budget" +
         (recipient ? " (with a recipient too: the fee is not an output, so up to maxPerTx can go to the miner each time)" : "") +
         ". Set minInterval to limit how often the key can spend.",
@@ -637,17 +640,26 @@ export async function assertSigningLock(
   client: ccc.Client,
   opts: SigningLockOptions = {},
 ): Promise<void> {
+  return checkSigningLock(lock, client, !!opts.allowUnreviewedOwnerLock, OWNER_ROLE);
+}
+
+/** Whose lock `checkSigningLock` checks, for its messages, and the opt-in that lets an unreviewed one through. */
+export type SigningRole = { whose: string; can: string; optIn: string };
+const OWNER_ROLE: SigningRole = { whose: "the owner's lock", can: "own a session", optIn: "allowUnreviewedOwnerLock" };
+
+/** `assertSigningLock` for any role: a subscription's charger lock is checked the same way (review M2), with its own opt-in. */
+export async function checkSigningLock(lock: ccc.Script, client: ccc.Client, allowUnreviewed: boolean, role: SigningRole): Promise<void> {
   const unsafe = (why: string) => {
-    throw new SessionPolicyError(`the owner's lock ${why}: it cannot own a session`, "owner-lock-unsafe");
+    throw new SessionPolicyError(`${role.whose} ${why}: it cannot ${role.can}`, "owner-lock-unsafe");
   };
   const unreviewed = (why: string) => {
-    const message = `the owner's lock ${why}`;
-    if (opts.allowUnreviewedOwnerLock) {
-      console.warn(`ckb-session-kit: ${message}; allowed by allowUnreviewedOwnerLock`);
+    const message = `${role.whose} ${why}`;
+    if (allowUnreviewed) {
+      console.warn(`ckb-session-kit: ${message}; allowed by ${role.optIn}`);
       return;
     }
     throw new SessionPolicyError(
-      `${message}, so it cannot own a session unless you review it and pass allowUnreviewedOwnerLock`,
+      `${message}, so it cannot ${role.can} unless you review it and pass ${role.optIn}`,
       "owner-lock-unreviewed",
     );
   };

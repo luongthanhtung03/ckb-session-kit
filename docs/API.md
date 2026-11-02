@@ -50,7 +50,8 @@ the recipient rule covers outputs, not the fee, so without a rate limit a leaked
 key can still give up to `maxPerTx` to the miner in every block.
 Without a rate limit (`minInterval` left out or 0), each spend is still held to
 `maxPerTx`, but spends can repeat in every block until the session is empty.
-`openSession` then raises a `SessionWarning` (`"no-rate-limit"`) before
+`minInterval` 1 is almost the same (a spend one block after another).
+`openSession` then raises a `SessionWarning` (`"no-rate-limit"`) for 0 or 1 before
 anything is signed: to `opts.onWarning(warning)` if given (throw there to stop
 the opening), otherwise to `console.warn`.
 `opts.beforeSend(binding)` runs after the
@@ -256,7 +257,7 @@ then be asked whether it has the transaction. It may still commit: look for
 
 ### `SessionWarning`
 `{ code, message }`, passed to `openSession`'s `opts.onWarning` before anything
-is signed. One code so far: `"no-rate-limit"`, for `minInterval` 0. The lock
+is signed. One code so far: `"no-rate-limit"`, for `minInterval` 0 or 1. The lock
 will enforce such a session as written; the warning says what that allows. Match
 on `code`, not on the message. Subscriptions do not warn: `openSubscription`
 refuses a period of 0.
