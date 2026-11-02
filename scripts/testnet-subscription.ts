@@ -33,37 +33,12 @@ import {
   verifySubscription,
   type SessionLockDeployment,
 } from "../src/index.js";
+import { balanceOf, CKB, committed, explorer, fund, waitBlocks as waitFor } from "./testnet-lib.js";
 
-const CKB = 100_000_000n;
 const PRICE = 10n * CKB;
 const PERIOD = 10n;
 const ACCOUNT = "smoke-test";
-const explorer = (h: string) => `https://testnet.explorer.nervos.org/transaction/${h}`;
 const deployment = JSON.parse(readFileSync("deployment/testnet.json", "utf8")) as SessionLockDeployment;
-
-async function committed(client: ccc.Client, hash: ccc.Hex): Promise<void> {
-  for (let i = 0; i < 180; i++) {
-    if ((await client.getTransaction(hash))?.status === "committed") return;
-    await new Promise((r) => setTimeout(r, 5000));
-  }
-  throw new Error(`not committed after 15 minutes: ${explorer(hash)}`);
-}
-
-async function balanceOf(client: ccc.Client, lock: ccc.Script): Promise<bigint> {
-  let total = 0n;
-  for await (const cell of client.findCellsByLock(lock, null, true)) total += cell.cellOutput.capacity;
-  return total;
-}
-
-async function fund(from: ccc.Signer, lock: ccc.Script, capacity: bigint, what: string): Promise<void> {
-  console.log(`setup: ${what}`);
-  const tx = ccc.Transaction.from({ outputs: [{ lock, capacity }] });
-  await tx.completeInputsByCapacity(from);
-  await tx.completeFeeBy(from);
-  const hash = await from.sendTransaction(tx);
-  console.log(`  ${explorer(hash)}`);
-  await committed(from.client, hash);
-}
 
 async function main(): Promise<void> {
   const funderKey = process.env.FUNDER_KEY;
@@ -163,15 +138,8 @@ async function main(): Promise<void> {
 }
 
 /** Waits until a subscription cell is at least `blocks` old (0 = a full period). */
-async function waitBlocks(client: ccc.Client, sub: Parameters<typeof findSubscriptionCells>[2], blocks: bigint): Promise<void> {
-  // Testnet blocks can slow to minutes each (26 Oct): wait up to an hour.
-  for (let i = 0; i < 720; i++) {
-    const { nextChargeIn } = await findSubscriptionCells(client, deployment, sub);
-    if (nextChargeIn !== undefined && (blocks === 0n ? nextChargeIn === 0n : sub.periodBlocks - nextChargeIn >= blocks)) return;
-    await new Promise((r) => setTimeout(r, 5000));
-  }
-  throw new Error("the subscription cell did not age in an hour");
-}
+const waitBlocks = (client: ccc.Client, sub: Parameters<typeof findSubscriptionCells>[2], blocks: bigint) =>
+  waitFor(client, deployment, sub, blocks);
 
 /**
  * A charge built by hand with since = 1 block, before the period is over. Outflow
