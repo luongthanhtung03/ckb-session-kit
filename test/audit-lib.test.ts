@@ -178,6 +178,7 @@ describe("spendInSession: the key cell that pays the fee", () => {
     vi.spyOn(client, "findCellsByLock").mockImplementation(async function* (l: ccc.ScriptLike) {
       for (const c of cells) if (c.cellOutput.lock.eq(l)) yield c;
     } as never);
+    vi.spyOn(client, "getCellLive").mockImplementation(async (op) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))));
     // A fee of 1000 shannons, taken from the key cell the transaction spends.
     vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockImplementation(async function (
       this: ccc.Transaction,

@@ -5,7 +5,32 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
 ## Unreleased
 
-### Changed (mentor review 3, 2 Nov)
+### Added (mentor review, tracker #47, 2 Nov)
+- Payout cell contention. A top-up (`spendInSession` with `topUp`,
+  `chargeSubscription`, `openSubscription`) picks the recipient's cell with
+  `pickPayoutCell`: confirmed cells first, shuffled, and the first free one of
+  up to `MAX_POOL_CHECKS` (4) cells checked with `get_live_cell` and
+  `include_tx_pool`, so a cell another payment in the node's pool spends is
+  skipped. At most `MAX_PAYOUT_CELLS` (64) of the recipient's cells are read.
+- `spendInSession` and `chargeSubscription` take `retry: { attempts, delayMs }`
+  (`RetryOptions`, `DEFAULT_RETRY`: 3 attempts, 1000 ms doubling, with jitter).
+  A send the node refuses for a spent input (`Dead`, `Unknown`, or an RBF
+  refusal, `poolConflict`) is built again with another payout cell; the cell a
+  `Dead` refusal names is not picked again. It used to be retried once, with no
+  wait, and only with a client cache. A send whose outcome is unknown is still
+  never retried.
+- `SessionBalanceError` reason `"payout-busy"`: every payout cell checked is
+  spent in the pool and none is left. Nothing is sent; it is retried like a
+  refusal. The demo's charge route answers it with 503 and retry.
+- `createPayoutCells(funder, payTo, { count, capacity?, token? })` gives an
+  anyone-can-pay address more cells to top up. `npm run setup:creator` uses it
+  and now gives the demo's creator eight cells (was three).
+- `clearPlantedCells(subscriber, deployment, subscription)`: the subscriber
+  sweeps cells a third party created under the subscription's lock back to
+  itself, keeping the subscription's own cells, so it no longer has to cancel
+  and open again past `MAX_SUBSCRIPTION_CELLS`.
+
+### Changed (mentor review, 2 Nov)
 - `assertSigningLock` accepts only reviewed owner lock configurations:
   secp256k1, multisig (v1, v2), Omnilock with auth 0x00-0x06 or 0x12 and no
   mode other than time-lock or supply, the Nostr lock in signing mode
@@ -23,6 +48,13 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   code would not accept, multisig v2 beta) are refused with
   `reason: "owner-lock-unreviewed"`. Omnilock auth 0x07 and unknown Omnilock mode
   bits used to pass.
+- Subscription cells are listed with the indexer's type filter (no type, or the
+  subscription's token), so cells under any other type script no longer count
+  toward `MAX_SUBSCRIPTION_CELLS`.
+- The last charge is the newest spend with an input under the charger's lock,
+  not any spend: a `clearPlantedCells` does not delay the next charge. A spend
+  that cannot be told apart still counts as a charge.
+- Chained payments are not used; the README says why.
 
 ### Added
 - `openSession` warns when a session has no rate limit (`minInterval` left out

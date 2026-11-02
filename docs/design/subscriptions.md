@@ -141,7 +141,7 @@ cell (only possible when the whole cell is at most the price). `budget` of
 | Creator refuses to let the subscriber leave | Owner mode needs no creator signature |
 | Subscriber cancels right after being served | Inherent to pre-paid service: the creator charges at the start of a period, not the end |
 | Creator charges just before a cancel lands | Inherent; at most one price, since a period has passed |
-| Anyone adds a fresh cell under the same lock | Harmless: it only adds funds; `chargeSubscription` takes mature cells only (as `spendInSession` does since 14 Oct). Over `MAX_SUBSCRIPTION_CELLS` (16) such cells, a status or a charge is refused rather than read in part (30 Oct); the subscriber cancels and re-opens |
+| Anyone adds a fresh cell under the same lock | Harmless: it only adds funds; `chargeSubscription` takes mature cells only (as `spendInSession` does since 14 Oct). Over `MAX_SUBSCRIPTION_CELLS` (16) such cells of the subscription's kind, a status or a charge is refused rather than read in part (30 Oct); the subscriber sweeps them back with `clearPlantedCells` and keeps the subscription (2 Nov) |
 | Subscriber's wallet is a lock that signs nothing | `assertSigningLock`, as for sessions |
 
 ## Open questions for review
@@ -361,3 +361,40 @@ RPC calls per request to an unauthenticated route. Now:
   is refused before any of its inputs is looked up.
 - The charge picks its fee cell from the first 64 cells under the charger's lock
   (at most 16 that qualify): any one of them pays a fee.
+
+## Mentor review, 2 Nov 2026: planted cells without cancelling
+
+Cancelling and opening again was the only way past the cap. Now:
+- **Only the subscription's kind counts.** A status, a charge and a cancel list
+  cells with the indexer's type filter: no type script for a CKB subscription,
+  the token's type script for a token one. A cell under any other type script is
+  never listed. It could not pay a price anyway, and one whose type script
+  refuses to be spent could never be swept, so it would have blocked the
+  subscription for good.
+- **`clearPlantedCells`.** The subscriber sweeps planted cells of the
+  subscription's kind back to itself in owner mode, one signature. A cell stays
+  when the transaction that made it is the opening (`openTx`) or spent a cell
+  under the subscriber's or the charger's lock (`ownOrigin`, as `withinU128`
+  uses). Nobody else can sign for those. The subscription's own cells are not
+  touched: their age, and the payments that made them, still give access and the
+  charge schedule. One call reads at most 64 cells and fetches each creating
+  transaction once; `more` says to call again after it commits.
+- **Only the charger's spends date the last charge.** The cleanup spends cells
+  under the lock, and the old rule (any spend is a charge) would have pushed the
+  next charge a full period back. Now a spend is a charge when an input is under
+  the charger's lock (the last input first: a charge puts the charger's cell
+  there). A spend that cannot be told (not found, over 32 inputs) still counts as
+  a charge: that can only delay a charge, never allow two in a period. This costs
+  one transaction look-up and usually one input look-up per status, more only
+  after the subscriber's own spends.
+- **A cancel still ends access at once.** A subscriber's spend after the last
+  charge stops a charge that took the whole balance from counting as a paid
+  period. `clearPlantedCells` refuses when none of the cells is the
+  subscription's own, so it never ends a period by itself.
+
+Trade-off: the bound on reads is unchanged (16 cells of the kind, 64 recent
+transactions), so a third party can still block status and charges for a while,
+at a cost of at least 153 CKB per plain cell (282 per token cell), which the
+subscriber then keeps. Planted creations still count toward the 64 recent
+transactions until they are a period old. The cleanup's own reads are the
+subscriber's, bounded per call.
