@@ -2,9 +2,6 @@
 // rejection texts, derived keys, and each script's --dry-run (no key, no network).
 import { ccc } from "@ckb-ccc/core";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MAX_SUBSCRIPTION_CELLS, SessionPolicyError, subscriptionLock, TESTNET_DEPLOYMENT } from "../src/index.js";
 import {
@@ -23,9 +20,14 @@ import {
   ownerLockOptions,
   ownerLockVerdict,
   rpcUrl,
+  SMOKE_KEY_FILE,
   smokeKeys,
   type PayerRound,
 } from "../scripts/testnet-lib.js";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 describe("script options", () => {
   it("contention: defaults, flags over env, bounds", () => {
@@ -226,5 +228,27 @@ describe("--dry-run", () => {
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/rounds \(--rounds= or ROUNDS\) must be an integer from 1 to 5, got 9/);
+  });
+});
+
+// Review W6 I4: the key file is this repository's .env.smoke (gitignored), wherever
+// a script is run from, never one in the current directory.
+describe(".env.smoke", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+  it("lives at the repository root, not in the current directory", () => {
+    expect(isAbsolute(SMOKE_KEY_FILE)).toBe(true);
+    expect(SMOKE_KEY_FILE).toBe(join(root, ".env.smoke"));
+  });
+
+  it("is read from the path given, whatever the current directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "smoke-"));
+    const file = join(dir, ".env.smoke");
+    const k = (b: string) => "0x" + b.repeat(64);
+    writeFileSync(file, `FUNDER_KEY=${k("1")}
+CREATOR_KEY=${k("2")}
+`);
+    expect(smokeKeys({}, file)).toEqual({ funderKey: k("1"), creatorKey: k("2"), created: false });
+    expect(readFileSync(file, "utf8")).toContain("FUNDER_KEY");
   });
 });

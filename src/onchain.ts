@@ -74,9 +74,10 @@ export class SessionBalanceError extends Error {
  * Something about a session's terms that the lock will enforce as written but that
  * the owner may not have meant. `openSession` reports it before anything is signed
  * (`opts.onWarning`, or `console.warn` without one).
- * - `no-rate-limit`: `minInterval` is 0. Each spend is held to `maxPerTx`, but the
- *   change of one spend can be spent again in the next block, so a leaked key can
- *   repeat spends until the session is empty.
+ * - `no-rate-limit`: `minInterval` is 0 (or 1, almost the same: review W6 I3). Each
+ *   spend is held to `maxPerTx`, but the change of one spend can be spent again in
+ *   the next block (with 1, a block later), so a leaked key can repeat spends until the
+ *   session is empty.
  */
 export interface SessionWarning {
   code: "no-rate-limit";
@@ -85,12 +86,14 @@ export interface SessionWarning {
 
 /** The warnings for a session opened with these terms. */
 function sessionWarnings(minInterval: bigint, recipient: boolean): SessionWarning[] {
-  if (minInterval > 0n) return [];
+  if (minInterval > 1n) return [];
   return [
     {
       code: "no-rate-limit",
       message:
-        "minInterval is 0: no rate limit. Each spend is held to maxPerTx, but spends can repeat every block " +
+        (minInterval === 0n
+          ? "minInterval is 0: no rate limit. Each spend is held to maxPerTx, but spends can repeat every block "
+          : "minInterval is 1: almost no rate limit. Each spend is held to maxPerTx, but spends can repeat one block apart ") +
         "until the session is empty, so a leaked key can drain the whole budget" +
         (recipient ? " (with a recipient too: the fee is not an output, so up to maxPerTx can go to the miner each time)" : "") +
         ". Set minInterval to limit how often the key can spend.",
@@ -113,10 +116,28 @@ export function keyCellFloor(ownerLock: ccc.ScriptLike): bigint {
 }
 
 /**
+ * A send failed and the node could not then be asked whether it has the
+ * transaction (review W6 L4): it may have been taken and committed. Never
+ * retried; `txHash` is the transaction to look for, and `cause` the send's own
+ * error. Its message never repeats the cause's, so nothing reads it as a
+ * refusal for a spent input.
+ */
+export class SendOutcomeUnknownError extends Error {
+  readonly txHash: ccc.Hex;
+  constructor(txHash: ccc.Hex, cause: unknown) {
+    super(`the send of ${txHash} failed and its status could not be looked up: it may still commit; check it before paying again`, { cause });
+    this.name = "SendOutcomeUnknownError";
+    this.txHash = txHash;
+  }
+}
+
+/**
  * Signs `tx`, hands its final hash to `beforeSend`, then sends it. The hash is
  * known before anything leaves, so a caller can record the payment or the key
  * against it first. If the send throws but the node did take the transaction (a
- * timeout on the reply, say), the hash is returned all the same.
+ * timeout on the reply, say), the hash is returned all the same. If the send
+ * throws and the status lookup fails too, a `SendOutcomeUnknownError` is thrown
+ * instead of the send's error, which `rebuildOnDeadInputs` never retries.
  */
 export async function signAndSend(
   signer: ccc.Signer,
@@ -129,7 +150,13 @@ export async function signAndSend(
   try {
     return await signer.client.sendTransaction(signed);
   } catch (e) {
-    const known = await signer.client.getTransaction(hash).catch(() => undefined);
+    let known: Awaited<ReturnType<ccc.Client["getTransaction"]>>;
+    try {
+      known = await signer.client.getTransaction(hash);
+    } catch {
+      // A lost reply, then a fallback node answering Dead because this one committed: not a refusal.
+      throw new SendOutcomeUnknownError(hash, e);
+    }
     if (known && ["pending", "proposed", "committed"].includes(known.status)) return hash;
     throw e;
   }
@@ -316,12 +343,18 @@ export async function pickPayoutCell(
 /**
  * Plain cells under the recipient's `lock` (with `token`, cells holding exactly
  * that token), at most `MAX_PAYOUT_CELLS` of them from the first
- * `4 * MAX_PAYOUT_CELLS` listed: anyone can create cells under any lock.
+ * `4 * MAX_PAYOUT_CELLS` listed: anyone can create cells under any lock. The
+ * indexer lists only cells of that kind (no type and no data; or exactly the
+ * token, with a 16-byte amount), so cells of any other kind planted under an
+ * anyone-can-pay `lock` never push the real ones out of reach (review W6 L5).
  */
 async function payoutCells(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
   let seen = 0;
-  for await (const cell of client.findCellsByLock(lock, null, true)) {
+  const filter: ccc.ClientIndexerSearchKeyFilterLike = token
+    ? { script: token, scriptLenRange: [token.occupiedSize, token.occupiedSize + 1], outputDataLenRange: [16, 17] }
+    : { scriptLenRange: [0, 1], outputDataLenRange: [0, 1] };
+  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter, withData: true })) {
     if (++seen > 4 * MAX_PAYOUT_CELLS || cells.length >= MAX_PAYOUT_CELLS) break;
     if (token ? plainTokenCell(cell, token) : !cell.cellOutput.type && cell.outputData === "0x") cells.push(cell);
   }
@@ -403,6 +436,7 @@ export async function withoutDeadCached(client: ccc.Client, lock: ccc.Script, ce
 
 /** Whether a send was rejected because an input is spent or unknown to the node. */
 export function deadInputs(e: unknown): boolean {
+  if (e instanceof SendOutcomeUnknownError) return false;
   if (e instanceof ccc.ErrorClientResolveUnknown) return true;
   const text = e instanceof ccc.ErrorClientBase ? `${e.message} ${e.data}` : e instanceof Error ? e.message : String(e);
   return /\b(Dead|Unknown)\(OutPoint\(/.test(text);
@@ -418,6 +452,7 @@ const errorText = (e: unknown) =>
  * (`PoolRejectedRBF`, -1111) unless it pays enough more to replace the other.
  */
 export function poolConflict(e: unknown): boolean {
+  if (e instanceof SendOutcomeUnknownError) return false;
   if (e instanceof ccc.ErrorClientRBFRejected) return true;
   if (e instanceof ccc.ErrorClientBase && e.code === -1111) return true;
   return /\b(RBFRejected|PoolRejectedRBF)\b/.test(errorText(e));
@@ -461,7 +496,10 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * Any other error is thrown at once. That includes a send whose outcome is
  * unknown (a timeout, a lost reply): `signAndSend` returns the hash when the
  * node did take the transaction, and otherwise throws the send's own error,
- * which is never retried, so nothing is ever paid twice. A `beforeSend` inside
+ * which is never retried, so nothing is ever paid twice. When the node cannot
+ * be asked either, a refusal for a spent input may only mean the first send
+ * committed (CCC retries a send on a fallback node): `signAndSend` then throws
+ * `SendOutcomeUnknownError`, never retried (review W6 L4). A `beforeSend` inside
  * runs again with each new transaction's hash: a refused one never commits.
  */
 export async function rebuildOnDeadInputs<T>(
@@ -524,28 +562,43 @@ export type SigningLockOptions = {
   /**
    * Let a lock this kit has not reviewed own a session, with a `console.warn`.
    * Use it only after checking yourself that the lock cannot be unlocked without
-   * the owner's signature. A lock known to unlock without it is refused anyway.
+   * the owner's signature. A lock known to unlock without it is refused anyway
+   * (the deployed anyone-can-pay, PW-Lock and always-success code, under any
+   * hash_type; see `assertSigningLock`).
    */
   allowUnreviewedOwnerLock?: boolean;
 };
 
 /**
- * Code hashes of locks that open without any signature, on mainnet and testnet,
- * refused whatever the client's network: anyone-can-pay (RFC 0026, and the older
+ * Locks that open without any signature, on mainnet and testnet, refused
+ * whatever the client's network: anyone-can-pay (RFC 0026, and the older
  * deployments pw-core lists as anyone-can-pay), PW-Lock (the deployed build is
  * lay2dev/pw-lock's `secp256k1_keccak256_sighash_all_acpl`: with no signature in
  * the witness it takes the anyone-can-pay path, whatever its args) and
  * always-success (ckb-proxy-locks).
+ *
+ * `type`: the type-id code hash the script is deployed under (hash_type `type`).
+ * `data`: the hash of the binary itself, refused under every data hash_type
+ * (`data`, `data1`, `data2`): the same code referenced by its data hash opens
+ * the same way (review W6 L6). The data hashes are those of the code cells CCC
+ * lists for each script on testnet and mainnet, read on 2 Nov 2026.
  */
-const SIGNATURE_FREE: { codeHash: string; hashType: string; what: string }[] = [
-  { codeHash: "0xd369597ff47f29fbc0d47d2e3775370d1250b85140c670e4718af712983a2354", hashType: "type", what: "anyone-can-pay" },
-  { codeHash: "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356", hashType: "type", what: "anyone-can-pay" },
-  { codeHash: "0x0fb343953ee78c9986b091defb6252154e0bb51044fd2879fde5b27314506111", hashType: "data", what: "anyone-can-pay" },
-  { codeHash: "0x86a1c6987a4acbe1a887cca4c9dd2ac9fcb07405bbeda51b861b18bbf7492c4b", hashType: "type", what: "anyone-can-pay" },
-  { codeHash: "0xbf43c3602455798c1a61a596e0d95278864c552fafe231c063b3fabf97a8febc", hashType: "type", what: "PW-Lock" },
-  { codeHash: "0x58c5f491aba6d61678b7cf7edf4910b1f5e00ec0cde2f42e0abb4fd9aff25a63", hashType: "type", what: "PW-Lock" },
-  { codeHash: "0x3b521cc4b552f109d092d8cc468a8048acb53c5952dbe769d2b2f9cf6e47f7f1", hashType: "data1", what: "always-success" },
+const SIGNATURE_FREE: { codeHash: string; by: "type" | "data"; what: string }[] = [
+  { codeHash: "0xd369597ff47f29fbc0d47d2e3775370d1250b85140c670e4718af712983a2354", by: "type", what: "anyone-can-pay" },
+  { codeHash: "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356", by: "type", what: "anyone-can-pay" },
+  { codeHash: "0xcd69ba816f7471e59110058aa37387c362ed9a240cd178f7bb1ecee386cb31e6", by: "data", what: "anyone-can-pay" },
+  { codeHash: "0x0fb343953ee78c9986b091defb6252154e0bb51044fd2879fde5b27314506111", by: "data", what: "anyone-can-pay" },
+  { codeHash: "0x86a1c6987a4acbe1a887cca4c9dd2ac9fcb07405bbeda51b861b18bbf7492c4b", by: "type", what: "anyone-can-pay" },
+  { codeHash: "0xbf43c3602455798c1a61a596e0d95278864c552fafe231c063b3fabf97a8febc", by: "type", what: "PW-Lock" },
+  { codeHash: "0x58c5f491aba6d61678b7cf7edf4910b1f5e00ec0cde2f42e0abb4fd9aff25a63", by: "type", what: "PW-Lock" },
+  { codeHash: "0xd6a5a0edb152e88e8bbc702e164441cb3890fae35da672b408d28ca9a1bde3ee", by: "data", what: "PW-Lock" },
+  { codeHash: "0xeffe377419256d150d68368d7cb5731edad39d1805a8c2c73ce8e9615b9f9878", by: "data", what: "PW-Lock" },
+  { codeHash: "0x3b521cc4b552f109d092d8cc468a8048acb53c5952dbe769d2b2f9cf6e47f7f1", by: "data", what: "always-success" },
 ];
+
+/** The signature-free lock `lock` runs, if it is one of `SIGNATURE_FREE` under a matching hash_type. */
+const signatureFree = (lock: ccc.Script) =>
+  SIGNATURE_FREE.find((s) => s.codeHash === lock.codeHash && (s.by === "type" ? lock.hashType === "type" : lock.hashType !== "type"));
 
 /** Omnilock auth flags that verify a signature over the whole transaction (RFC 0042, nervosnetwork/omnilock). */
 const OMNI_SIGNING_AUTH = new Set([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x12]);
@@ -569,8 +622,11 @@ const OMNI_ADDITIVE_MODES = 0x04 | 0x08;
  * - JoyID (closed source: reviewed from its documentation only).
  *
  * Known to unlock without the owner's signature, refused always (reason
- * `"owner-lock-unsafe"`): anyone-can-pay, PW-Lock, always-success, Omnilock in
- * anyone-can-pay or administrator mode, Nostr lock in PoW mode (args[0] != 0).
+ * `"owner-lock-unsafe"`): anyone-can-pay, PW-Lock, always-success (by their
+ * type id, or by the data hash of their deployed binaries under any data
+ * hash_type), Omnilock in anyone-can-pay or administrator mode, Nostr lock in
+ * PoW mode (args[0] != 0). Another build of those locks (a binary with a
+ * different data hash) is not recognised: it is refused as unreviewed.
  *
  * Anything else (Omnilock auth 0xFC-0xFE, which hand the decision to another lock
  * or to other code; the proxy locks; unknown locks; args the lock's code would
@@ -584,17 +640,26 @@ export async function assertSigningLock(
   client: ccc.Client,
   opts: SigningLockOptions = {},
 ): Promise<void> {
+  return checkSigningLock(lock, client, !!opts.allowUnreviewedOwnerLock, OWNER_ROLE);
+}
+
+/** Whose lock `checkSigningLock` checks, for its messages, and the opt-in that lets an unreviewed one through. */
+export type SigningRole = { whose: string; can: string; optIn: string };
+const OWNER_ROLE: SigningRole = { whose: "the owner's lock", can: "own a session", optIn: "allowUnreviewedOwnerLock" };
+
+/** `assertSigningLock` for any role: a subscription's charger lock is checked the same way (review M2), with its own opt-in. */
+export async function checkSigningLock(lock: ccc.Script, client: ccc.Client, allowUnreviewed: boolean, role: SigningRole): Promise<void> {
   const unsafe = (why: string) => {
-    throw new SessionPolicyError(`the owner's lock ${why}: it cannot own a session`, "owner-lock-unsafe");
+    throw new SessionPolicyError(`${role.whose} ${why}: it cannot ${role.can}`, "owner-lock-unsafe");
   };
   const unreviewed = (why: string) => {
-    const message = `the owner's lock ${why}`;
-    if (opts.allowUnreviewedOwnerLock) {
-      console.warn(`ckb-session-kit: ${message}; allowed by allowUnreviewedOwnerLock`);
+    const message = `${role.whose} ${why}`;
+    if (allowUnreviewed) {
+      console.warn(`ckb-session-kit: ${message}; allowed by ${role.optIn}`);
       return;
     }
     throw new SessionPolicyError(
-      `${message}, so it cannot own a session unless you review it and pass allowUnreviewedOwnerLock`,
+      `${message}, so it cannot ${role.can} unless you review it and pass ${role.optIn}`,
       "owner-lock-unreviewed",
     );
   };
@@ -608,7 +673,7 @@ export async function assertSigningLock(
   };
   const args = ccc.bytesFrom(lock.args);
 
-  const free = SIGNATURE_FREE.find((s) => s.codeHash === lock.codeHash && s.hashType === lock.hashType);
+  const free = signatureFree(lock);
   if (free?.what === "PW-Lock" || (await is(ccc.KnownScript.PWLock))) {
     return unsafe("is PW-Lock, whose deployed build is anyone-can-pay: it opens with no signature");
   }
@@ -773,7 +838,7 @@ export async function assertPlainXudt(type: ccc.Script, client: ccc.Client): Pro
 type XudtCode = { codeHash: ccc.Hex; hashType: ccc.HashType };
 
 /** Why `type` is not a plain xUDT under the network's xUDT script `xudt`, or undefined if it is. */
-function plainXudtFault(type: ccc.Script, xudt: XudtCode): string | undefined {
+export function plainXudtFault(type: ccc.Script, xudt: XudtCode): string | undefined {
   if (type.codeHash !== xudt.codeHash || type.hashType !== xudt.hashType) {
     return "a token session holds an xUDT token; this type script is not xUDT";
   }
@@ -1216,11 +1281,14 @@ function sweepable(cell: ccc.Cell, xudt?: XudtCode): boolean {
 /**
  * Spends `cells` in owner mode: everything returns to the owner. Tokens go back
  * in one cell per token type (xUDT would let a sweep burn them otherwise).
+ * `memo` goes in the witness (`input_type`) of the owner's own input, which the
+ * owner's signature covers: what the sweep is for (`CLEAR_PLANTED_MEMO`).
  */
 export async function ownerSweep(
   owner: ccc.Signer,
   deployments: SessionLockDeployment | SessionLockDeployment[],
   cells: ccc.Cell[],
+  opts: { memo?: ccc.Hex } = {},
 ): Promise<ccc.Hex> {
   // The code of every lock version these cells are under, and only those.
   const used = [deployments].flat().filter((d) => cells.some((c) => c.cellOutput.lock.codeHash === d.codeHash));
@@ -1243,6 +1311,7 @@ export async function ownerSweep(
   // Owner mode needs an owner-locked input in the transaction.
   for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {
     tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
+    if (opts.memo) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: opts.memo });
     await tx.completeFeeBy(owner);
     // A sweep the node took but whose reply was lost is still the sweep (review, 28 Oct).
     return signAndSend(owner, tx);

@@ -7,7 +7,8 @@
 import { ccc } from "@ckb-ccc/core";
 import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { format } from "node:util";
 import {
   assertSigningLock,
@@ -25,23 +26,31 @@ export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 // --- keys ------------------------------------------------------------------
 
-export const SMOKE_KEY_FILE = ".env.smoke";
+/**
+ * This repository's .env.smoke (scripts/..), wherever a script is run from: in
+ * the current directory it could land outside this repository's .gitignore
+ * (review W6 I4). The file's mode 0o600 has no effect on Windows.
+ */
+export const SMOKE_KEY_FILE = join(resolve(dirname(fileURLToPath(import.meta.url)), ".."), ".env.smoke");
 
 /**
- * FUNDER_KEY and CREATOR_KEY from the environment, else from .env.smoke
- * (gitignored), which is created with two fresh testnet keys on first run.
- * `created` means the funder has nothing yet: fund it from the faucet.
- * SMOKE_KEY_FILE names another key file (a worktree using the main checkout's);
- * that file must exist: a mistyped path never creates new keys.
+ * FUNDER_KEY and CREATOR_KEY from the environment, else from `defaultFile`
+ * (`SMOKE_KEY_FILE`, gitignored), which is created with two fresh testnet keys
+ * on first run. `created` means the funder has nothing yet: fund it from the faucet.
+ * SMOKE_KEY_FILE in the environment names another key file (a worktree using the
+ * main checkout's); that file must exist: a mistyped path never creates new keys.
  */
-export function smokeKeys(env: NodeJS.ProcessEnv = process.env): { funderKey: string; creatorKey: string; created: boolean } {
+export function smokeKeys(
+  env: NodeJS.ProcessEnv = process.env,
+  defaultFile: string = SMOKE_KEY_FILE,
+): { funderKey: string; creatorKey: string; created: boolean } {
   const hex = /^0x[0-9a-fA-F]{64}$/;
   if (env.FUNDER_KEY || env.CREATOR_KEY) {
     if (!hex.test(env.FUNDER_KEY ?? "") || !hex.test(env.CREATOR_KEY ?? ""))
       throw new Error("FUNDER_KEY and CREATOR_KEY must both be 0x + 64 hex characters (or unset both to use .env.smoke)");
     return { funderKey: env.FUNDER_KEY!, creatorKey: env.CREATOR_KEY!, created: false };
   }
-  const file = env.SMOKE_KEY_FILE || SMOKE_KEY_FILE;
+  const file = env.SMOKE_KEY_FILE || defaultFile;
   if (existsSync(file)) {
     const text = readFileSync(file, "utf8");
     const funderKey = /^FUNDER_KEY=(0x[0-9a-fA-F]{64})\s*$/m.exec(text)?.[1];
@@ -53,7 +62,7 @@ export function smokeKeys(env: NodeJS.ProcessEnv = process.env): { funderKey: st
   const funderKey = ccc.hexFrom(randomBytes(32));
   const creatorKey = ccc.hexFrom(randomBytes(32));
   writeFileSync(
-    SMOKE_KEY_FILE,
+    file,
     `# Testnet keys for smoke:contention and smoke:clear-planted. Testnet only. Never commit.
 FUNDER_KEY=${funderKey}
 CREATOR_KEY=${creatorKey}

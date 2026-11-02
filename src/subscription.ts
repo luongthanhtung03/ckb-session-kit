@@ -9,11 +9,13 @@ import {
   addTopUp,
   assertPlainXudt,
   assertSigningLock,
+  checkSigningLock,
   type SigningLockOptions,
   isAnyoneCanPay,
   keyCellFloor,
   ownerSweep,
   ownOrigin,
+  plainXudtFault,
   randomPick,
   completeFeeOrNoFeeCell,
   rebuildOnDeadInputs,
@@ -112,10 +114,13 @@ export function subscriptionMemo(account: string): ccc.Hex {
  * left to `recoverSessions`. Cells whose tokens would overflow a u128 are left out
  * (`withinU128`).
  *
- * The indexer filters by kind (no type script; or the token's type script, by
- * prefix), so cells of any other kind are never listed and never count toward
- * `cap`: anyone can create them, they cannot pay a price, and one with a type
- * script that refuses to be spent could never be cleared (mentor review, 2 Nov).
+ * The indexer filters by kind (`kindFilter`: no type script; or exactly the
+ * token's type script), so cells of any other kind are never listed and never
+ * count toward `cap`: anyone can create them, they cannot pay a price, and one
+ * with a type script that refuses to be spent could never be cleared (mentor
+ * review, 2 Nov). Only cells that are really of the kind count toward `cap`
+ * (review W6 M1), and the listing itself is read at most `RAW_READS * cap`
+ * deep, for an indexer that would list more than the filter asks.
  */
 async function subscriptionCells(
   client: ccc.Client,
@@ -125,18 +130,69 @@ async function subscriptionCells(
   cap?: number,
 ): Promise<ccc.Cell[]> {
   const cells: ccc.Cell[] = [];
-  let seen = 0;
-  const kind = token ? { script: token } : { scriptLenRange: [0, 1] as [number, number] };
-  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter: kind, withData: true })) {
-    if (cap !== undefined && ++seen > cap) throw tooManyCells(cap);
-    const type = cell.cellOutput.type;
-    if (token ? type?.eq(token) && ccc.bytesFrom(cell.outputData).length >= 16 : !type) cells.push(cell);
+  let read = 0;
+  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter: kindFilter(token), withData: true })) {
+    if (cap !== undefined && ++read > RAW_READS * cap) throw tooManyCells(cap);
+    if (!ofKind(cell, token)) continue;
+    if (cap !== undefined && cells.length >= cap) throw tooManyCells(cap);
+    cells.push(cell);
   }
   // Cells only CCC's cache still lists, spent since by another client, would make a charge or a cancel fail.
   const live = await withoutDeadCached(client, lock, cells);
   // A planted cell of 2^128-1 free tokens would block charges and the cancel; the
   // subscriber's and the charger's own cells are always kept.
   return token ? withinU128(client, live) : live;
+}
+
+/**
+ * The indexer filter for a subscription's own kind of cell under its lock: no
+ * type script, or exactly its token. The indexer matches a filter script by args
+ * prefix, and xUDT with a zero flags word ignores bytes after it, so anyone can
+ * create zero-amount cells of `xUDT(token.args ++ anything)` (review W6 M1);
+ * the length range (33 bytes plus the args, as the indexer and CCC count a
+ * script) leaves only the token itself, as CCC's `completeInputsByUdt` does.
+ */
+const kindFilter = (token?: ccc.Script): ccc.ClientIndexerSearchKeyFilterLike =>
+  token
+    ? { script: token, scriptLenRange: [token.occupiedSize, token.occupiedSize + 1] }
+    : { scriptLenRange: [0, 1] };
+
+/** Whether `cell` is of the subscription's kind: untyped, or typed with exactly `token` and holding its amount. */
+const ofKind = (cell: ccc.Cell, token?: ccc.Script) =>
+  token ? cell.cellOutput.type?.eq(token) === true && ccc.bytesFrom(cell.outputData).length >= 16 : !cell.cellOutput.type;
+
+/** Listed cells read per cell a scan may keep: only an indexer that ignored the filter would list other ones. */
+const RAW_READS = 8;
+
+/**
+ * Look-alikes of a token subscription's token under its lock (review W6 M1):
+ * cells typed with the token's code and args that start with the token's args
+ * but are longer. The subscription never makes them, so every one was planted.
+ * Only those an owner sweep can spend are kept: a plain xUDT (zero flags, so no
+ * extension script that could refuse the spend) holding an amount. At most
+ * `budget` listed cells are read when given; `more` says some were left unread.
+ */
+async function lookalikeCells(
+  client: ccc.Client,
+  lock: ccc.Script,
+  token: ccc.Script,
+  budget?: number,
+): Promise<{ cells: ccc.Cell[]; more: boolean }> {
+  const xudt = await client.getKnownScript(ccc.KnownScript.XUdt);
+  const cells: ccc.Cell[] = [];
+  let read = 0;
+  let more = false;
+  for await (const cell of client.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", filter: { script: token }, withData: true })) {
+    if (budget !== undefined && ++read > budget) {
+      more = true;
+      break;
+    }
+    const type = cell.cellOutput.type;
+    if (!type || type.eq(token) || !type.args.startsWith(token.args) || type.codeHash !== token.codeHash || type.hashType !== token.hashType) continue;
+    if (plainXudtFault(type, xudt) !== undefined || ccc.bytesFrom(cell.outputData).length < 16) continue;
+    cells.push(cell);
+  }
+  return { cells: await withinU128(client, await withoutDeadCached(client, lock, cells)), more };
 }
 
 /**
@@ -157,10 +213,36 @@ async function subscriptionCells(
  * or with `cancelSubscription`.
  */
 export const MAX_SUBSCRIPTION_CELLS = 16;
-/** The most transactions in a lock's recent history that `lastSpend` reads, on the same grounds. */
+/**
+ * The most transactions that spent a cell under the lock that `lastCharge` reads
+ * in the recent history (each is fetched, with its inputs), on the same grounds.
+ * Only the subscriber and the charger can make those.
+ */
 const MAX_HISTORY = 4 * MAX_SUBSCRIPTION_CELLS;
+/**
+ * The most transactions that only created cells under the lock that `lastCharge`
+ * pages past in the recent history (review W6 M2). Anyone can make those, but
+ * they are skipped without a fetch, so only the indexer's pages cost anything
+ * (`HISTORY_PAGE` entries each). Past it, a status or a charge is refused
+ * rather than stopping short of the last charge: blocking one period this way
+ * takes over 1024 transactions within it, each locking up at least a cell's
+ * size (153 CKB) under the subscription's lock.
+ */
+export const MAX_CREATED_HISTORY = 64 * MAX_SUBSCRIPTION_CELLS;
+/** Entries per indexer page when reading a lock's history. */
+const HISTORY_PAGE = 128;
+/** The most inputs a creating transaction may have before its inputs are looked up (each is an RPC call). */
+const MAX_PAYMENT_INPUTS = 32;
+
 /** The charger's cells read when picking one to pay a charge's fee: any of them will do. */
 const FEE_CELL_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
+
+const tooManyTransactions = (cap: number) =>
+  new SessionPolicyError(
+    `over ${cap} recent transactions under this subscription's lock: refused rather than read in part; ` +
+      "they leave the window a period after they committed, or the subscriber can cancel",
+    "too-many-cells",
+  );
 
 const tooManyCells = (cap: number) =>
   new SessionPolicyError(
@@ -183,14 +265,42 @@ function tokensIn(cells: { type?: ccc.Script; data: ccc.HexLike }[], token: ccc.
  * one in a period. The last input is looked at first: a charge puts the
  * charger's cell there.
  */
-async function isCharge(client: ccc.Client, txHash: ccc.Hex, chargerLockHash: ccc.Hex): Promise<{ charge: boolean; fetched: Created }> {
+async function isCharge(
+  client: ccc.Client,
+  txHash: ccc.Hex,
+  chargerLockHash: ccc.Hex,
+): Promise<{ charge: boolean; fetched: Created; inputs?: (ccc.Cell | undefined)[] }> {
   const fetched = await client.getTransactionNoCache(txHash);
   const inputs = fetched?.transaction.inputs ?? [];
   if (!inputs.length || inputs.length > MAX_PAYMENT_INPUTS) return { charge: true, fetched };
   const byCharger = (c: ccc.Cell | undefined) => !c || c.cellOutput.lock.hash() === chargerLockHash;
-  if (byCharger(await client.getCell(inputs[inputs.length - 1].previousOutput))) return { charge: true, fetched };
+  const last = await client.getCell(inputs[inputs.length - 1].previousOutput);
+  if (byCharger(last)) return { charge: true, fetched };
   const rest = await Promise.all(inputs.slice(0, -1).map((i) => client.getCell(i.previousOutput)));
-  return { charge: rest.some(byCharger), fetched };
+  return { charge: rest.some(byCharger), fetched, inputs: [...rest, last] };
+}
+
+/**
+ * The memo `clearPlantedCells` puts in the witness (`input_type`) of the
+ * subscriber's own input, under the subscriber's signature: a status tells its
+ * cleanup from a cancel by it, so a cleanup does not end a paid period (review
+ * W6 L2). Only the subscriber can sign it; a subscriber who marks a cancel
+ * with it keeps access only through a period already paid for.
+ */
+export const CLEAR_PLANTED_MEMO = ccc.hashCkb(ccc.bytesFrom("ckb-session-kit clear-planted", "utf8"));
+
+/** Whether a subscriber's spend `fetched` (with its `inputs`) is marked as a `clearPlantedCells` cleanup. */
+function isCleanup(fetched: Created, inputs: (ccc.Cell | undefined)[] | undefined, subscriberLockHash: ccc.Hex): boolean {
+  const tx = fetched?.transaction;
+  if (!tx || !inputs) return false;
+  return inputs.some((c, i) => {
+    if (c?.cellOutput.lock.hash() !== subscriberLockHash) return false;
+    try {
+      return tx.getWitnessArgsAt(i)?.inputType === CLEAR_PLANTED_MEMO;
+    } catch {
+      return false; // not a WitnessArgs
+    }
+  });
 }
 
 /**
@@ -198,30 +308,39 @@ async function isCharge(client: ccc.Client, txHash: ccc.Hex, chargerLockHash: cc
  * age in blocks, looking back under `window` blocks (undefined if none), from
  * the indexer's history of the lock: a charge that took the whole balance leaves
  * no change cell to tell it by (30 Oct). `ownerAfter`: the subscriber spent
- * cells under the lock after it (a cancel, or a `clearPlantedCells`).
+ * cells under the lock after it, other than in a cleanup marked with
+ * `CLEAR_PLANTED_MEMO` (a cancel, or any other owner-mode spend).
  * Transactions that only created cells under the lock (anyone can) are skipped
- * without being fetched. A subscriber's spend does not date the last charge: a
- * cleanup must not delay the next one (mentor review, 2 Nov).
+ * without being fetched, and counted under their own, larger budget
+ * (`MAX_CREATED_HISTORY`); only spends count toward `MAX_HISTORY`, and an
+ * entry older than the window is never counted (review W6 M2). Past either
+ * budget it refuses: stopping short could miss the last charge. A subscriber's
+ * spend does not date the last charge: a cleanup must not delay the next one
+ * (mentor review, 2 Nov).
  */
 async function lastCharge(
   client: ccc.Client,
   lock: ccc.Script,
-  chargerLockHash: ccc.Hex,
+  sub: Pick<Subscription, "chargerLockHash" | "subscriberLockHash">,
   tip: bigint,
   window: bigint,
 ): Promise<{ charge?: { txHash: ccc.Hex; age: bigint; fetched: Created }; ownerAfter: boolean }> {
-  let seen = 0;
+  let spends = 0;
+  let created = 0;
   let ownerAfter = false;
-  for await (const t of client.findTransactionsByLock(lock, null, true, "desc")) {
-    // Stopping short could miss the last charge and let a second one into the period: refuse instead.
-    if (++seen > MAX_HISTORY) throw tooManyCells(MAX_HISTORY);
+  for await (const t of client.findTransactionsByLock(lock, null, true, "desc", HISTORY_PAGE)) {
     const born = ccc.numFrom(t.blockNumber);
     const age = tip > born ? tip - born : 0n; // the indexer may be a block past the tip read
     if (age >= window) break;
-    if (!t.cells.some((c) => c.isInput)) continue;
-    const { charge, fetched } = await isCharge(client, t.txHash, chargerLockHash);
+    // Stopping short could miss the last charge and let a second one into the period: refuse instead.
+    if (!t.cells.some((c) => c.isInput)) {
+      if (++created > MAX_CREATED_HISTORY) throw tooManyTransactions(MAX_CREATED_HISTORY);
+      continue;
+    }
+    if (++spends > MAX_HISTORY) throw tooManyTransactions(MAX_HISTORY);
+    const { charge, fetched, inputs } = await isCharge(client, t.txHash, sub.chargerLockHash);
     if (charge) return { charge: { txHash: t.txHash, age, fetched }, ownerAfter };
-    ownerAfter = true;
+    if (!isCleanup(fetched, inputs, sub.subscriberLockHash)) ownerAfter = true;
   }
   return { ownerAfter };
 }
@@ -271,6 +390,8 @@ export async function openSubscription(
     token?: { type: ccc.ScriptLike; amount: bigint };
     account?: string;
     beforeSend?: (sub: Subscription) => Promise<void>;
+    /** Let an unreviewed charger lock through, with a warning (`allowUnreviewedOwnerLock` covers the subscriber's own lock only). */
+    allowUnreviewedChargerLock?: boolean;
   } & SigningLockOptions,
 ): Promise<{ txHash: ccc.Hex; subscription: Subscription }> {
   const client = subscriber.client;
@@ -286,8 +407,13 @@ export async function openSubscription(
   const [chargerLock, payToLock] = await Promise.all(
     [opts.charger, opts.payTo].map(async (a) => (await ccc.Address.fromString(a, client)).script),
   );
-  // A charger lock that signs nothing would let anyone trigger charges (review M2).
-  await assertSigningLock(chargerLock, client, opts);
+  // A charger lock that signs nothing would let anyone trigger charges (review M2). Its own
+  // opt-in: opting in for the subscriber's wallet does not waive review of the creator's lock (review W6 I1).
+  await checkSigningLock(chargerLock, client, !!opts.allowUnreviewedChargerLock, {
+    whose: "the charger's lock",
+    can: "charge a subscription",
+    optIn: "allowUnreviewedChargerLock",
+  });
   const sub: Subscription = {
     subscriberLockHash: subscriberLock.hash(),
     chargerLockHash: chargerLock.hash(),
@@ -416,7 +542,7 @@ async function subscriptionState(client: ccc.Client, deployment: SessionLockDepl
   // the subscription's cells as they were (mentor review, 2 Nov), and a cancel
   // takes every cell, so whatever comes after it is younger than it anyway.
   // One block more than a period: a status counts the period's last block as paid.
-  const { charge: spent, ownerAfter } = await lastCharge(client, lock, sub.chargerLockHash, tip, sub.periodBlocks + 1n);
+  const { charge: spent, ownerAfter } = await lastCharge(client, lock, sub, tip, sub.periodBlocks + 1n);
   if (nextChargeIn !== undefined && spent && sub.periodBlocks - spent.age > nextChargeIn) nextChargeIn = sub.periodBlocks - spent.age;
   return { lock, cells, balance, tokenBalance, nextChargeIn, tip, created, ages, spent, ownerAfter };
 }
@@ -579,7 +705,9 @@ export async function cancelSubscription(
   const tokenBalance = token ? tokensIn(cells.map((c) => ({ type: c.cellOutput.type, data: c.outputData })), token) : 0n;
   // A charger may leave a token subscription's last change untyped; its CKB is the subscriber's too (review, 27 Oct).
   const untyped = token ? await subscriptionCells(subscriber.client, subLock) : [];
-  const all = [...cells, ...untyped];
+  // Look-alikes of the token planted under the lock go back with the rest (review W6 M1).
+  const lookalikes = token ? (await lookalikeCells(subscriber.client, subLock, token)).cells : [];
+  const all = [...cells, ...untyped, ...lookalikes];
   if (!all.length) return { refunded: 0n, nothingFound: true };
   const txHash = await ownerSweep(subscriber, deployment, all);
   const refunded = all.reduce((s, c) => s + c.cellOutput.capacity, 0n);
@@ -592,6 +720,13 @@ export async function cancelSubscription(
 
 /** The most cells under a subscription's lock that one `clearPlantedCells` reads. */
 const CLEAR_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
+/**
+ * The most planted cells one `clearPlantedCells` transaction sweeps: with the
+ * subscriber's own input (and room for one more for the fee) it stays within
+ * `MAX_PAYMENT_INPUTS`, so a status can read it and never takes it for a
+ * charge, which would delay the next one (review W6 L3).
+ */
+const CLEAR_BATCH = MAX_PAYMENT_INPUTS - 2;
 
 /**
  * The subscriber clears cells a third party created under the subscription's
@@ -608,9 +743,15 @@ const CLEAR_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
  * so their age and the payments that made them still count: access and the
  * charge schedule go on as before.
  *
- * Bounded: one call reads at most `4 * MAX_SUBSCRIPTION_CELLS` cells and looks
- * each creating transaction up once. `more` says cells were left unread: call
- * again once this sweep commits. Refused when none of the cells read is the
+ * In a token subscription, look-alikes of the token (cells typed with the
+ * token's code and longer args that start with the token's, which xUDT accepts
+ * and anyone can create with 0 units) are planted too, and swept the same way
+ * when an owner sweep can spend them (plain xUDT, no flags; review W6 M1).
+ *
+ * Bounded: one call keeps at most `4 * MAX_SUBSCRIPTION_CELLS` cells of the
+ * kind, reads at most twice as many listed cells for each of the two scans,
+ * and looks each creating transaction up once. `more` says cells were left
+ * unread: call again once this sweep commits. Refused when none of the cells read is the
  * subscription's own: cancel instead. `nothingFound` when nothing is planted.
  */
 export async function clearPlantedCells(
@@ -623,28 +764,22 @@ export async function clearPlantedCells(
   if (lock.hash() !== sub.subscriberLockHash) throw new SessionPolicyError("this signer is not the subscriber");
   const subLock = subscriptionLock(deployment, sub);
   const token = tokenOf(sub);
-  let cells: ccc.Cell[];
+  // At most CLEAR_SCAN cells of the kind, from at most twice as many listed (review W6 M1).
+  let cells: ccc.Cell[] = [];
   let more = false;
-  try {
-    cells = await subscriptionCells(client, subLock, token, CLEAR_SCAN);
-  } catch (e) {
-    if (!(e instanceof SessionPolicyError && e.reason === "too-many-cells")) throw e;
-    more = true;
-    cells = [];
-    for await (const cell of client.findCells({
-      script: subLock,
-      scriptType: "lock",
-      scriptSearchMode: "exact",
-      filter: token ? { script: token } : { scriptLenRange: [0, 1] },
-      withData: true,
-    })) {
-      if (cells.length >= CLEAR_SCAN) break;
-      const type = cell.cellOutput.type;
-      if (token ? type?.eq(token) && ccc.bytesFrom(cell.outputData).length >= 16 : !type) cells.push(cell);
+  let read = 0;
+  for await (const cell of client.findCells({ script: subLock, scriptType: "lock", scriptSearchMode: "exact", filter: kindFilter(token), withData: true })) {
+    if (cells.length >= CLEAR_SCAN || ++read > 2 * CLEAR_SCAN) {
+      more = true;
+      break;
     }
-    cells = await withoutDeadCached(client, subLock, cells);
-    if (token) cells = await withinU128(client, cells);
+    if (ofKind(cell, token)) cells.push(cell);
   }
+  cells = await withoutDeadCached(client, subLock, cells);
+  if (token) cells = await withinU128(client, cells);
+  // Look-alikes of the token are always planted; the scan reads past the token's own cells too.
+  const lookalikes = token ? await lookalikeCells(client, subLock, token, 2 * CLEAR_SCAN) : { cells: [], more: false };
+  if (lookalikes.more) more = true;
   // One look-up per creating transaction, however many cells it made.
   const origin = new Map<ccc.Hex, Promise<boolean>>();
   const own = (c: ccc.Cell) => {
@@ -654,12 +789,17 @@ export async function clearPlantedCells(
     return origin.get(h)!;
   };
   const mine = await Promise.all(cells.map(own));
-  const planted = cells.filter((_, i) => !mine[i]);
-  if (!planted.length) return { swept: 0, refunded: 0n, more, ...(!more && { nothingFound: true as const }) };
-  if (!mine.some(Boolean)) {
+  const plantedOfKind = cells.filter((_, i) => !mine[i]);
+  const found = [...plantedOfKind, ...lookalikes.cells];
+  if (!found.length) return { swept: 0, refunded: 0n, more, ...(!more && { nothingFound: true as const }) };
+  // Every cell read and none the subscription's own: it is gone (cancel instead). With
+  // cells left unread, its own may lie past them (review W6 L1), and sweeping planted ones is harmless.
+  if (!more && !mine.some(Boolean) && plantedOfKind.length) {
     throw new SessionPolicyError("none of these cells is the subscription's own: cancel it instead (cancelSubscription)");
   }
-  const txHash = await ownerSweep(subscriber, deployment, planted);
+  const planted = found.slice(0, CLEAR_BATCH);
+  if (found.length > planted.length) more = true;
+  const txHash = await ownerSweep(subscriber, deployment, planted, { memo: CLEAR_PLANTED_MEMO });
   return {
     txHash,
     swept: planted.length,
@@ -812,9 +952,6 @@ interface Payment {
   block: bigint;
   inputs: (ccc.Cell | undefined)[];
 }
-
-/** The most inputs a creating transaction may have before its inputs are looked up (each is an RPC call). */
-const MAX_PAYMENT_INPUTS = 32;
 
 /**
  * The committed transaction `txHash`, if it paid `sub`'s payout address enough;

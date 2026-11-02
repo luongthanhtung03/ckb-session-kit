@@ -178,6 +178,15 @@ describe("openSession warns when there is no rate limit (review 2 Nov)", () => {
     expect(seen[0].message).toMatch(/miner/);
   });
 
+  // Review W6 I3: a spend every other block is almost no limit either.
+  it("warns for minInterval 1n too: the change can be spent again a block later", async () => {
+    const seen: SessionWarning[] = [];
+    const { signer } = await owner(secp, async (tx) => tx.hash());
+    await openSession(signer, newSession(), d, { budget: 200n * CKB, minInterval: 1n, onWarning: (w) => void seen.push(w) });
+    expect(seen.map((w) => w.code)).toEqual(["no-rate-limit"]);
+    expect(seen[0].message).toMatch(/minInterval is 1/);
+  });
+
   it("does not warn with a rate limit", async () => {
     const onWarning = vi.fn();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

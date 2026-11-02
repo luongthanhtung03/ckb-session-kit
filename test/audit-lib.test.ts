@@ -3,6 +3,7 @@
  * finding; they pass since the fixes of 30 Oct. Mocked chain only.
  */
 import { ccc } from "@ckb-ccc/core";
+import { indexerFind } from "./fixtures/indexer.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionLockScript, TESTNET_DEPLOYMENT as d } from "../src/lock.js";
 import { keyLockOf, recoverSessions, sessionLockOf, spendInSession, type OnChainBinding } from "../src/onchain.js";
@@ -177,6 +178,9 @@ describe("spendInSession: the key cell that pays the fee", () => {
     const cells = [cellOf(lock, 300n * CKB), first, funded, cellOf(recipientLock, 61n * CKB)];
     vi.spyOn(client, "findCellsByLock").mockImplementation(async function* (l: ccc.ScriptLike) {
       for (const c of cells) if (c.cellOutput.lock.eq(l)) yield c;
+    } as never);
+    vi.spyOn(client, "findCells").mockImplementation(async function* (key: ccc.ClientIndexerSearchKeyLike) {
+      yield* indexerFind(cells, key);
     } as never);
     vi.spyOn(client, "getCellLive").mockImplementation(async (op) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))));
     // A fee of 1000 shannons, taken from the key cell the transaction spends.

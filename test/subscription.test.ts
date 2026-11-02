@@ -6,9 +6,11 @@ import { SessionBalanceError } from "../src/onchain.js";
 import { SessionPolicyError } from "../src/session.js";
 import {
   cancelSubscription,
+  CLEAR_PLANTED_MEMO,
   clearPlantedCells,
   chargeSubscription,
   findSubscriptionCells,
+  MAX_CREATED_HISTORY,
   MAX_SUBSCRIPTION_CELLS,
   subscriptionMemo,
   subscriptionStatus,
@@ -40,7 +42,8 @@ function fakeClient(
     async *findCellsByLock(lock: ccc.ScriptLike) {
       for (const c of cells) if (c.cellOutput.lock.eq(ccc.Script.from(lock))) yield c;
     },
-    // The indexer's filter on the type script, as CKB applies it: by prefix, or by its length.
+    // The indexer's filter on the type script, as CKB applies it: by prefix, and by its
+    // length (code hash, hash type and args: 33 + args bytes, as CCC's own cache counts it).
     async *findCells(key: ccc.ClientIndexerSearchKeyLike) {
       const k = ccc.ClientIndexerSearchKey.from(key);
       for (const c of cells) {
@@ -48,7 +51,7 @@ function fakeClient(
         const type = c.cellOutput.type;
         const f = k.filter?.script;
         if (f && !(type && type.codeHash === f.codeHash && type.hashType === f.hashType && type.args.startsWith(f.args))) continue;
-        const len = type ? ccc.bytesFrom(type.toBytes()).length : 0;
+        const len = type ? type.occupiedSize : 0;
         const range = k.filter?.scriptLenRange;
         if (range && (len < range[0] || len >= range[1])) continue;
         yield c;
@@ -554,7 +557,18 @@ describe("subscriptionStatus (a server with no database)", () => {
       cellOutput: { lock, capacity: 173n * CKB },
       outputData: "0x",
     });
-    const txs: Record<string, ccc.Transaction> = { [RECREATE]: recreate, [READ]: read, [CHARGE]: charge, [CHARGE_ALL]: chargeAll, [CANCEL]: cancel };
+    // The subscriber's clearPlantedCells: owner mode too, marked in the subscriber's own witness.
+    const cleanup = ccc.Transaction.from({ inputs: [{ previousOutput: own.outPoint }], outputs: [{ lock: subscriberLock, capacity: 1000n * CKB }] });
+    cleanup.setWitnessArgsAt(0, { inputType: CLEAR_PLANTED_MEMO });
+    const CLEANUP = h("1c");
+    const txs: Record<string, ccc.Transaction> = {
+      [RECREATE]: recreate,
+      [READ]: read,
+      [CHARGE]: charge,
+      [CHARGE_ALL]: chargeAll,
+      [CANCEL]: cancel,
+      [CLEANUP]: cleanup,
+    };
     const liveCells = opts.liveCreatedBy === "none" ? [] : [live];
     const { client } = fakeClient([...liveCells, payIn, own, stranger, fee], 990n, (hash) => txs[hash] ?? opening, opts.history);
     return { client, status: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }) };
@@ -605,6 +619,17 @@ describe("subscriptionStatus (a server with no database)", () => {
     const cancelled = [{ txHash: h("0f"), blockNumber: 995n, spent: true }, charged];
     expect(await (await setup({ liveCreatedBy: "none", history: cancelled })).status()).toMatchObject({
       status: { paidThroughBlock: undefined, active: false },
+    });
+  });
+
+  // Review W6 L2: a cleanup of planted cells is not a cancel; the paid period stays.
+  it("keeps a charge of the whole balance paid through a later clearPlantedCells", async () => {
+    const history = [
+      { txHash: h("1c"), blockNumber: 995n, spent: true },
+      { txHash: h("0e"), blockNumber: 990n, spent: true },
+    ];
+    expect(await (await setup({ liveCreatedBy: "none", history })).status()).toMatchObject({
+      status: { paidThroughBlock: 990n + PERIOD, active: true },
     });
   });
 });
@@ -1002,6 +1027,115 @@ describe("token subscriptions", () => {
       expect(tx.inputs.some((i) => i.previousOutput.eq(planted.outPoint))).toBe(false);
     });
   });
+
+  // Review W6 M1: the indexer matches the type filter by args prefix, and xUDT with a
+  // zero flags word ignores what follows (test/session-lock.test.ts, "look-alike").
+  // Anyone can plant zero-amount look-alikes under the lock; they must neither count
+  // toward the cap nor be left behind by a cleanup or a cancel.
+  describe("look-alike token cells (xUDT args prefix)", () => {
+    const OPEN = h("0a");
+    const PLANT = h("e7");
+    async function setup(count: number, opts: { suffix?: string; ignoreLength?: boolean } = {}) {
+      const r = await tokenRoles(fakeClient([]).client);
+      const lock = subscriptionLock(d, r.sub);
+      const variant = ccc.Script.from({ ...r.token, args: r.token.args + (opts.suffix ?? "00000000" + "01") });
+      const payIn = tokenCell(r.payToLock, r.token, 5n * T);
+      const own = cellOf(r.subscriberLock, 1000n * CKB);
+      const proof = cellOf(r.subscriberLock, 100n * CKB);
+      const stranger = cellOf(ccc.Script.from({ ...r.payToLock, args: "0x" + "66".repeat(20) }), 50_000n * CKB);
+      const opening = ccc.Transaction.from({
+        inputs: [{ previousOutput: payIn.outPoint }, { previousOutput: own.outPoint }],
+        outputs: [
+          { lock, type: r.token, capacity: 282n * CKB },
+          { lock: r.payToLock, type: r.token, capacity: 142n * CKB },
+        ],
+        outputsData: [units(30n * T), units(15n * T)],
+      });
+      opening.setWitnessArgsAt(1, { inputType: subscriptionMemo("alice") });
+      const live = ccc.Cell.from({ outPoint: { txHash: OPEN, index: 0 }, cellOutput: opening.outputs[0], outputData: units(30n * T) });
+      const planted = Array.from({ length: count }, (_, i) =>
+        ccc.Cell.from({
+          outPoint: { txHash: PLANT, index: i },
+          cellOutput: { lock, type: variant, capacity: 290n * CKB },
+          outputData: units(0n),
+        }),
+      );
+      const plant = ccc.Transaction.from({ inputs: [{ previousOutput: stranger.outPoint }] });
+      const { client, sent } = fakeClient([live, ...planted, payIn, own, proof, stranger], 990n, (hash) =>
+        hash === PLANT ? plant : opening,
+      );
+      let read = 0;
+      const find = client.findCells.bind(client);
+      client.findCells = (async function* (key: ccc.ClientIndexerSearchKeyLike, ...rest: unknown[]) {
+        // An indexer that ignores the length range, to show the reads stay bounded anyway.
+        const k = opts.ignoreLength ? { ...key, filter: { ...key.filter, scriptLenRange: undefined } } : key;
+        for await (const c of (find as (...a: unknown[]) => AsyncGenerator<ccc.Cell>)(k, ...rest)) {
+          if (ccc.Script.from(key.script).eq(lock)) read++;
+          yield c;
+        }
+      }) as never;
+      const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
+      vi.spyOn(subscriber, "findCells").mockImplementation(async function* () {
+        yield proof;
+      });
+      vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+      return { r, client, sent, subscriber, live, planted, variant, reads: () => read };
+    }
+
+    it(`never count toward the cap: ${MAX_SUBSCRIPTION_CELLS + 1} of them do not block a status or a charge`, async () => {
+      const { r, client } = await setup(MAX_SUBSCRIPTION_CELLS + 1);
+      const found = await findSubscriptionCells(client, d, r.sub);
+      expect(found.cells).toHaveLength(1);
+      expect(found.tokenBalance).toBe(30n * T);
+      expect(await subscriptionStatus(client, d, r.sub, { openTx: OPEN, account: "alice" })).toMatchObject({
+        ok: true,
+        status: { active: true, tokenBalance: 30n * T },
+      });
+    });
+
+    it("clearPlantedCells sweeps them back to the subscriber, type kept, and leaves the subscription's own cell", async () => {
+      const { r, sent, subscriber, live, planted, variant } = await setup(MAX_SUBSCRIPTION_CELLS + 1);
+      const result = await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN });
+      expect(result).toMatchObject({ swept: MAX_SUBSCRIPTION_CELLS + 1, more: false, refundedTokens: 0n });
+      expect(result.refunded).toBe(BigInt(MAX_SUBSCRIPTION_CELLS + 1) * 290n * CKB);
+      const ins = sent[0].inputs.map((i) => i.previousOutput);
+      expect(planted.every((c) => ins.some((i) => i.eq(c.outPoint)))).toBe(true);
+      expect(ins.some((i) => i.eq(live.outPoint))).toBe(false);
+      const back = sent[0].outputs.findIndex((o) => o.type?.eq(variant));
+      expect(sent[0].outputs[back].lock.eq(r.subscriberLock)).toBe(true);
+      expect(sent[0].outputsData[back]).toBe(units(0n));
+    });
+
+    it("cancelSubscription sweeps them with the rest", async () => {
+      const { r, sent, subscriber, planted } = await setup(3);
+      expect(await cancelSubscription(subscriber, d, r.sub)).toMatchObject({
+        refunded: 282n * CKB + 3n * 290n * CKB,
+        refundedTokens: 30n * T,
+      });
+      const ins = sent[0].inputs.map((i) => i.previousOutput);
+      expect(planted.every((c) => ins.some((i) => i.eq(c.outPoint)))).toBe(true);
+    });
+
+    it("leaves a look-alike with flags (extension scripts that may refuse a spend) alone, and does not count it", async () => {
+      const { r, client, sent, subscriber } = await setup(MAX_SUBSCRIPTION_CELLS + 1, { suffix: "01000000" + "ab".repeat(32) });
+      expect((await findSubscriptionCells(client, d, r.sub)).cells).toHaveLength(1);
+      expect(await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN })).toMatchObject({ swept: 0, nothingFound: true });
+      expect(sent).toHaveLength(0);
+    });
+
+    it("reads a bounded number of cells even from an indexer that ignores the length range", async () => {
+      const many = 20 * MAX_SUBSCRIPTION_CELLS;
+      const status = await setup(many, { ignoreLength: true });
+      await expect(findSubscriptionCells(status.client, d, status.r.sub)).rejects.toMatchObject({ reason: "too-many-cells" });
+      expect(status.reads()).toBeLessThanOrEqual(8 * MAX_SUBSCRIPTION_CELLS + 1);
+
+      const clear = await setup(many, { ignoreLength: true });
+      const result = await clearPlantedCells(clear.subscriber, d, { ...clear.r.sub, openTx: OPEN });
+      expect(result.more).toBe(true);
+      expect(result.swept).toBeGreaterThan(0);
+      expect(clear.reads()).toBeLessThanOrEqual(16 * MAX_SUBSCRIPTION_CELLS + 2);
+    });
+  });
 });
 
 // Security audit, 30 Oct: anyone can create cells under a subscription's lock or
@@ -1177,6 +1311,45 @@ describe("third-party cells over the cap, without cancelling", () => {
     expect(getTransaction.mock.calls.length).toBeLessThanOrEqual(6);
   });
 
+  // Review W6 L3: a cleanup of over MAX_PAYMENT_INPUTS (32) inputs would be dated as a charge.
+  it("sweeps at most 30 planted cells per transaction, so the cleanup stays under 32 inputs", async () => {
+    const { r, sent, subscriber } = await setup(40);
+    const result = await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN });
+    expect(result).toMatchObject({ swept: 30, more: true });
+    expect(sent[0].inputs.length).toBeLessThanOrEqual(32);
+  });
+
+  it("marks its transaction in the subscriber's own witness, so a status does not take it for a cancel", async () => {
+    const { r, sent, subscriber } = await setup(2);
+    await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN });
+    const subscriberLock = (await subscriber.getRecommendedAddressObj()).script;
+    const client = subscriber.client;
+    const mine: number[] = [];
+    for (const [i, input] of sent[0].inputs.entries()) {
+      if ((await client.getCell(input.previousOutput))?.cellOutput.lock.eq(subscriberLock)) mine.push(i);
+    }
+    expect(mine.length).toBeGreaterThan(0);
+    expect(CLEAR_PLANTED_MEMO).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(sent[0].getWitnessArgsAt(mine[0])?.inputType).toBe(CLEAR_PLANTED_MEMO);
+  });
+
+  // Review W6 L1: past the scan, the cells read may all be planted, the own cell further on.
+  it("sweeps the planted cells read even when the subscription's own cell lies past the scan", async () => {
+    const { r, client, sent, subscriber, opening } = await setup(5 * MAX_SUBSCRIPTION_CELLS);
+    const find = client.findCells.bind(client);
+    client.findCells = (async function* (key: ccc.ClientIndexerSearchKeyLike, ...rest: unknown[]) {
+      const all: ccc.Cell[] = [];
+      for await (const c of (find as (...a: unknown[]) => AsyncGenerator<ccc.Cell>)(key, ...rest)) all.push(c);
+      // The opening listed last, as after a charge re-created it: newer than every planted cell.
+      yield* all.filter((c) => !c.outPoint.eq(opening.outPoint));
+      yield* all.filter((c) => c.outPoint.eq(opening.outPoint));
+    }) as never;
+    const result = await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN });
+    expect(result.more).toBe(true);
+    expect(result.swept).toBeGreaterThan(0);
+    expect(sent[0].inputs.some((i) => i.previousOutput.eq(opening.outPoint))).toBe(false);
+  });
+
   it("does nothing without planted cells, refuses another signer, and refuses with no own cell left", async () => {
     const clean = await setup(0);
     expect(await clearPlantedCells(clean.subscriber, d, clean.r.sub)).toEqual({ swept: 0, refunded: 0n, more: false, nothingFound: true });
@@ -1202,6 +1375,39 @@ describe("third-party cells over the cap, without cancelling", () => {
     const { r, client, sent } = await setup(0, { history });
     await chargeSubscription(new ccc.SignerCkbPrivateKey(client, keys.charger), d, r.sub, { payTo: r.payTo, topUp: true });
     expect(sent).toHaveLength(1);
+  });
+
+  // Review W6 M2: anyone can add transactions to the lock's history by creating
+  // cells under it. Those must not use up the budget for the spends that matter.
+  describe("a flooded transaction history (review W6 M2)", () => {
+    const created = (n: number, blockNumber = 995n): Touched[] =>
+      Array.from({ length: n }, (_, i) => ({ txHash: ("0x" + (0xa000 + i).toString(16).padStart(64, "0")) as ccc.Hex, blockNumber, spent: false }));
+    const charge = (r: Awaited<ReturnType<typeof setup>>) =>
+      chargeSubscription(new ccc.SignerCkbPrivateKey(r.client, keys.charger), d, r.r.sub, { payTo: r.r.payTo, topUp: true });
+
+    it("transactions that only created cells do not count toward the spends read (64 + 1 of them)", async () => {
+      const history = [...created(4 * MAX_SUBSCRIPTION_CELLS + 1), { txHash: CHARGE, blockNumber: 900n, spent: true }];
+      const s = await setup(0, { history });
+      await charge(s);
+      expect(s.sent).toHaveLength(1);
+    });
+
+    it("an entry older than the window is never counted (the check comes first)", async () => {
+      const spends: Touched[] = Array.from({ length: 4 * MAX_SUBSCRIPTION_CELLS }, () => ({ txHash: CLEAN, blockNumber: 995n, spent: true }));
+      const s = await setup(0, { history: [...spends, { txHash: CHARGE, blockNumber: 900n, spent: true }] });
+      await charge(s);
+      expect(s.sent).toHaveLength(1);
+    });
+
+    it("still refuses, never stops short, past the budgets: spends, then created-only entries", async () => {
+      const spends: Touched[] = Array.from({ length: 4 * MAX_SUBSCRIPTION_CELLS + 1 }, () => ({ txHash: CLEAN, blockNumber: 995n, spent: true }));
+      const a = await setup(0, { history: [...spends, { txHash: CHARGE, blockNumber: 994n, spent: true }] });
+      await expect(charge(a)).rejects.toMatchObject({ reason: "too-many-cells" });
+      expect(a.sent).toHaveLength(0);
+      const b = await setup(0, { history: [...created(MAX_CREATED_HISTORY + 1), { txHash: CHARGE, blockNumber: 994n, spent: true }] });
+      await expect(charge(b)).rejects.toMatchObject({ reason: "too-many-cells" });
+      expect(b.sent).toHaveLength(0);
+    });
   });
 
   it("counts a spend it cannot tell apart as a charge", async () => {
