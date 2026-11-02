@@ -1199,4 +1199,279 @@ describe.skipIf(skip)("session lock", () => {
       ], { witnesses: [injected, ccc.hexFrom(ccc.WitnessArgs.from({ inputType: "0x01", lock: "0x" + "00".repeat(65) }).toBytes())] });
     });
   });
+  // Mentor review, 2 Nov 2026 (CKBuilder-projects#47): aggregate outflow across several
+  // inputs. A script group is every input under the same lock script (same code, same
+  // args), so cells of one session or one subscription are checked together, against one
+  // limit per transaction; cells with other args are other groups, each checked on its own
+  // against the whole transaction. Listed in docs/SECURITY-EVIDENCE.md, "Aggregate outflow".
+  describe("aggregate outflow across inputs (review 2 Nov)", () => {
+    /** Build once; check the session group and the sibling group separately. */
+    const both = (...a: Parameters<typeof build>) => {
+      const { verifier, hashes } = build(...a);
+      return {
+        session: { ok: () => verifier.verifySuccess(false, { codeHash: hashes.session }), fails: (code: number) => verifier.verifyFailure(code, false, { codeHash: hashes.session }) },
+        sibling: { ok: () => verifier.verifySuccess(false, { codeHash: hashes.sibling }), fails: (code: number) => verifier.verifyFailure(code, false, { codeHash: hashes.sibling }) },
+      };
+    };
+    const S = (capacity: bigint, since?: bigint): Cell => ({ lock: "session", capacity, since });
+    const B = (capacity: bigint, since?: bigint): Cell => ({ lock: "sibling", capacity, since });
+    const OWNER: Cell = { lock: "owner", capacity: 61n * CKB };
+    const KEY_FEE: Cell = { lock: "key", capacity: 61n * CKB - 1000n };
+    const T = 1_000_000n;
+
+    describe("cells with the same args: one limit per transaction, not per cell", () => {
+      it("refuses max_per_tx taken from each of three cells (300 out, limit 100)", async () => {
+        await fails(
+          E.OUTFLOW_EXCEEDED,
+          scope100,
+          [S(200n * CKB), S(200n * CKB), S(200n * CKB), KEY_CELL],
+          [{ lock: "stranger", capacity: 300n * CKB }, S(300n * CKB), KEY_CELL],
+        );
+      });
+
+      it("refuses cells taken whole with no change when together they pass the limit", async () => {
+        await fails(E.OUTFLOW_EXCEEDED, scope100, [S(61n * CKB), S(61n * CKB), KEY_CELL], [
+          { lock: "stranger", capacity: 122n * CKB },
+          KEY_CELL,
+        ]);
+      });
+
+      it("accepts exactly max_per_tx across three cells merged into one change cell", async () => {
+        await ok(
+          scope100,
+          [S(200n * CKB), S(200n * CKB), S(200n * CKB), KEY_CELL],
+          [{ lock: "stranger", capacity: 100n * CKB }, S(500n * CKB), KEY_CELL],
+        );
+      });
+
+      it("token session: refuses max_per_tx_token taken from each of two cells", async () => {
+        const tok: Scope = { maxPerTx: 100n * CKB, tokenMaxPerTx: 10n * T };
+        await fails(
+          E.TOKEN_OUTFLOW_EXCEEDED,
+          tok,
+          [{ ...S(200n * CKB), token: 50n * T }, { ...S(200n * CKB), token: 50n * T }, KEY_CELL],
+          [{ lock: "stranger", capacity: 1n * CKB, token: 20n * T }, { ...S(399n * CKB), token: 80n * T }, KEY_CELL],
+        );
+      });
+
+      it("token session: accepts exactly max_per_tx_token across two cells", async () => {
+        const tok: Scope = { maxPerTx: 100n * CKB, tokenMaxPerTx: 10n * T };
+        await ok(
+          tok,
+          [{ ...S(200n * CKB), token: 50n * T }, { ...S(200n * CKB), token: 50n * T }, KEY_CELL],
+          [{ lock: "stranger", capacity: 1n * CKB, token: 10n * T }, { ...S(399n * CKB), token: 90n * T }, KEY_CELL],
+        );
+      });
+
+      // What the min_interval = 0 warning is about: each spend is within the limit, and
+      // the change of one can be spent again at once, so spends repeat until the cell is dry.
+      it("min_interval 0: the change of a spend can be spent again at once, with no since", async () => {
+        await ok(scope100, [S(400n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 100n * CKB }, S(300n * CKB), KEY_CELL]);
+        await ok(scope100, [S(300n * CKB), KEY_CELL], [{ lock: "stranger", capacity: 100n * CKB }, S(200n * CKB), KEY_CELL]);
+        await fails(E.RATE_LIMITED, { ...scope100, minInterval: 10n }, [S(300n * CKB), KEY_CELL], [
+          { lock: "stranger", capacity: 100n * CKB },
+          S(200n * CKB),
+          KEY_CELL,
+        ]);
+      });
+    });
+
+    describe("one subscription, mature cells merged in one charge", () => {
+      const PERIOD = 20n;
+      const PRICE = 10n * CKB;
+      const sub: Scope = { maxPerTx: PRICE, minInterval: PERIOD, recipient: true };
+      const mature = (capacity: bigint) => S(capacity, relativeBlocks(PERIOD));
+
+      it("accepts two mature cells merged, one price in total", async () => {
+        await ok(
+          sub,
+          [mature(300n * CKB), mature(200n * CKB), KEY_CELL],
+          [{ lock: "recipient", capacity: PRICE }, S(490n * CKB), KEY_FEE],
+        );
+      });
+
+      it("refuses one price from each of two mature cells (two prices in one charge)", async () => {
+        await fails(
+          E.OUTFLOW_EXCEEDED,
+          sub,
+          [mature(300n * CKB), mature(200n * CKB), KEY_CELL],
+          [{ lock: "recipient", capacity: 2n * PRICE }, S(480n * CKB), KEY_FEE],
+        );
+      });
+
+      it("refuses two prices paid as two outputs to the payout address", async () => {
+        await fails(
+          E.OUTFLOW_EXCEEDED,
+          sub,
+          [mature(300n * CKB), mature(200n * CKB), KEY_CELL],
+          [{ lock: "recipient", capacity: PRICE }, { lock: "recipient", capacity: PRICE }, S(480n * CKB), KEY_FEE],
+        );
+      });
+
+      it("refuses merging a young cell with a mature one", async () => {
+        await fails(
+          E.RATE_LIMITED,
+          sub,
+          [mature(300n * CKB), S(200n * CKB, relativeBlocks(PERIOD - 1n)), KEY_CELL],
+          [{ lock: "recipient", capacity: PRICE }, S(490n * CKB), KEY_FEE],
+        );
+      });
+
+      describe.skipIf(!existsSync(XUDT_BINARY))("token subscription, real xUDT", () => {
+        const xudt = { xudt: true };
+        const tokSub: Scope = { maxPerTx: 0n, minInterval: PERIOD, tokenMaxPerTx: 10n * T, recipient: true };
+        const subCell = (amount: bigint, since?: bigint): Cell => ({ lock: "session", capacity: 282n * CKB, token: amount, since });
+        const payout = (amount: bigint): Cell => ({ lock: "recipient", capacity: 142n * CKB, token: amount });
+
+        it("accepts two mature token cells merged, one price in total, no CKB out", async () => {
+          await ok(
+            tokSub,
+            [subCell(50n * T, relativeBlocks(PERIOD)), subCell(50n * T, relativeBlocks(PERIOD)), payout(0n), KEY_CELL],
+            [payout(10n * T), { ...subCell(90n * T), capacity: 564n * CKB }, KEY_FEE],
+            xudt,
+          );
+        });
+
+        it("refuses one price from each of two mature token cells", async () => {
+          await fails(
+            E.TOKEN_OUTFLOW_EXCEEDED,
+            tokSub,
+            [subCell(50n * T, relativeBlocks(PERIOD)), subCell(50n * T, relativeBlocks(PERIOD)), payout(0n), KEY_CELL],
+            [payout(20n * T), { ...subCell(80n * T), capacity: 564n * CKB }, KEY_FEE],
+            xudt,
+          );
+        });
+      });
+    });
+
+    describe("cells with different args: each checked on its own", () => {
+      // Two subscriptions of one creator: same charger key and payout address, two subscribers.
+      const PERIOD = 20n;
+      const PRICE = 10n * CKB;
+      const sub: Scope = { maxPerTx: PRICE, minInterval: PERIOD, recipient: true };
+      const other = { sibling: { ...sub, owner: "stranger" as const } };
+      const m = relativeBlocks(PERIOD);
+
+      it("two subscriptions charged in one transaction with change: both refuse, 13 (the other's change is anyone else)", async () => {
+        const g = both(
+          sub,
+          [S(500n * CKB, m), B(500n * CKB, m), KEY_CELL],
+          [{ lock: "recipient", capacity: 2n * PRICE }, S(490n * CKB), B(490n * CKB), KEY_FEE],
+          other,
+        );
+        await g.session.fails(E.RECIPIENT_NOT_ALLOWED);
+        await g.sibling.fails(E.RECIPIENT_NOT_ALLOWED);
+      });
+
+      // Possible only when no change is left (cells at most the price, L1), but it shows each group alone.
+      it("two subscriptions taken whole in one transaction, each within its own price: both accept", async () => {
+        const g = both(
+          sub,
+          [S(PRICE, m), B(PRICE, m), KEY_CELL],
+          [{ lock: "recipient", capacity: 2n * PRICE }, KEY_FEE],
+          other,
+        );
+        await g.session.ok();
+        await g.sibling.ok();
+      });
+
+      it("no pooling: one subscription's unused price does not cover the other's overcharge", async () => {
+        const g = both(
+          sub,
+          [S(PRICE + 5n * CKB, m), B(5n * CKB, m), KEY_CELL],
+          [{ lock: "recipient", capacity: 2n * PRICE }, KEY_FEE],
+          other,
+        );
+        await g.session.fails(E.OUTFLOW_EXCEEDED);
+        await g.sibling.ok();
+      });
+
+      it("a recipient-scoped session spent next to an unrestricted one: the payment to a stranger is refused by the scoped one, 13", async () => {
+        const g = both(
+          { ...scope100, recipient: true },
+          [S(500n * CKB), B(500n * CKB), KEY_CELL],
+          [{ lock: "recipient", capacity: 100n * CKB }, { lock: "stranger", capacity: 100n * CKB }, S(400n * CKB), B(400n * CKB), KEY_CELL],
+          { sibling: { maxPerTx: 1000n * CKB } },
+        );
+        await g.sibling.ok(); // no recipient of its own: within its limit, it accepts
+        await g.session.fails(E.RECIPIENT_NOT_ALLOWED);
+      });
+
+      it("an unrestricted sibling's rate limit of 0 does not lift this session's: its young cell is refused, 14", async () => {
+        const g = both(
+          { ...scope100, minInterval: 10n },
+          [S(500n * CKB, relativeBlocks(9n)), B(500n * CKB), KEY_CELL],
+          [{ lock: "stranger", capacity: 200n * CKB }, S(400n * CKB), B(400n * CKB), KEY_CELL],
+          { sibling: { maxPerTx: 100n * CKB } },
+        );
+        await g.session.fails(E.RATE_LIMITED);
+        await g.sibling.ok();
+      });
+
+      it("token sessions: moving tokens into a looser sibling token session is outflow, 20", async () => {
+        const tok: Scope = { maxPerTx: 100n * CKB, tokenMaxPerTx: 10n * T };
+        const g = both(
+          tok,
+          [{ ...S(200n * CKB), token: 100n * T }, { ...B(200n * CKB), token: 0n }, KEY_CELL],
+          [{ ...S(200n * CKB), token: 50n * T }, { ...B(200n * CKB), token: 50n * T }, KEY_CELL],
+          { sibling: { maxPerTx: 100n * CKB, tokenMaxPerTx: 1000n * T } },
+        );
+        await g.session.fails(E.TOKEN_OUTFLOW_EXCEEDED);
+        await g.sibling.ok();
+      });
+    });
+
+    describe("owner mode with several cells (cancel, recovery)", () => {
+      it("sweeps three same-args cells in one transaction: young, rate-limited, recipient-scoped, no since", async () => {
+        await ok(
+          { ...scope100, minInterval: 10n, recipient: true },
+          [S(500n * CKB), S(200n * CKB), S(153n * CKB), OWNER],
+          [{ lock: "owner", capacity: 914n * CKB }],
+        );
+      });
+
+      it("a subscriber cancels with two subscription cells and a planted one, in one transaction", async () => {
+        await ok(
+          { maxPerTx: 10n * CKB, minInterval: 20n, recipient: true },
+          [S(490n * CKB, relativeBlocks(20n)), S(300n * CKB), S(61n * CKB), OWNER],
+          [{ lock: "owner", capacity: 912n * CKB }],
+        );
+      });
+
+      it("recovery sweeps two sessions with different args of one owner in one transaction (both groups accept)", async () => {
+        await ok(
+          { ...scope100, minInterval: 10n },
+          [S(500n * CKB), S(300n * CKB), B(200n * CKB), B(200n * CKB), OWNER],
+          [{ lock: "owner", capacity: 1261n * CKB }],
+          { sibling: { maxPerTx: 1n * CKB, recipient: true } },
+        );
+      });
+
+      it("one owner's input does not give owner mode to another owner's session in the same transaction", async () => {
+        const g = both(
+          scope100,
+          [S(500n * CKB), B(500n * CKB), OWNER],
+          [{ lock: "owner", capacity: 1061n * CKB }],
+          { sibling: { maxPerTx: 100n * CKB, owner: "stranger" } },
+        );
+        await g.session.ok();
+        await g.sibling.fails(E.NOT_AUTHORIZED);
+      });
+
+      describe.skipIf(!existsSync(XUDT_BINARY))("token subscription, real xUDT", () => {
+        it("the subscriber cancels two token cells of one subscription in one transaction, every token back", async () => {
+          await ok(
+            { maxPerTx: 0n, minInterval: 20n, tokenMaxPerTx: 10n * T, recipient: true },
+            [
+              { ...S(282n * CKB, relativeBlocks(20n)), token: 60n * T },
+              { ...S(282n * CKB), token: 30n * T },
+              OWNER,
+            ],
+            [{ lock: "owner", capacity: 625n * CKB - 1000n, token: 90n * T }],
+            { xudt: true },
+          );
+        });
+      });
+    });
+  });
 });
