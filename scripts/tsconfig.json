@@ -1,0 +1,12 @@
+{
+  // Type-checks the testnet and setup scripts (npm run typecheck). testnet-listen.ts
+  // imports the demo by package name and runs with examples/tsconfig.json instead.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "types": ["node"]
+  },
+  "include": ["*.ts"],
+  "exclude": ["testnet-listen.ts"]
+}

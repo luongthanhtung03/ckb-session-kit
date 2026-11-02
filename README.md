@@ -198,6 +198,7 @@ outcome is unknown is never retried. When every cell is busy, nothing is sent
 and the error says `"payout-busy"`. Give a creator more cells with
 `createPayoutCells(funder, payTo, { count })`; `npm run setup:creator` gives the
 demo's creator eight.
+`npm run smoke:contention` checks it on testnet: four payers pay one creator at the same moment, every payment must commit, and a hand-built double top-up shows the node's own refusal.
 
 Chained payments (topping up a cell another payment created while that payment
 is still in the pool) are not used: if the first payment is dropped or slow to
@@ -357,6 +358,7 @@ cells out. The subscriber clears planted ones without cancelling:
 `clearPlantedCells(wallet, deployment, subscription)` sweeps every cell not made
 by the opening, a charge or the subscriber back to the subscriber, in one
 signature, and leaves the subscription's own cells as they are.
+`npm run smoke:clear-planted` checks it on testnet: 16 planted cells block the status and charges, `clearPlantedCells` clears them, and the next charge stays on time.
 
 ## Which wallets can own a session
 
