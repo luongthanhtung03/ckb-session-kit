@@ -3,7 +3,7 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
-## 2.0.0 (2026-11-XX)
+## 2.0.0 (2026-11-03)
 
 ### Upgrading from 1.0.0
 Every 1.0.0 export is still there with the same signature; new parameters are
