@@ -30,7 +30,7 @@
   },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
-    "typecheck": "tsc --noEmit && tsc -p examples && tsc -p e2e",
+    "typecheck": "tsc --noEmit && tsc -p examples && tsc -p e2e && tsc -p scripts",
     "check:lock-hash": "node scripts/check-lock-hash.mjs",
     "evidence": "node scripts/evidence.mjs",
     "test": "vitest run",
@@ -54,6 +54,8 @@
     "smoke:read-tokens": "tsx scripts/testnet-read-tokens.ts",
     "smoke:subscription": "tsx scripts/testnet-subscription.ts",
     "smoke:subscription-token": "tsx scripts/testnet-subscription-token.ts",
+    "smoke:contention": "tsx scripts/testnet-contention.ts",
+    "smoke:clear-planted": "tsx scripts/testnet-clear-planted.ts",
     "matrix:wallets": "tsx scripts/wallet-matrix.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"
