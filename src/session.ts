@@ -46,7 +46,11 @@ export interface CreateOptions {
  * "too-many-cells", more cells under a subscription's lock than a status or a
  * charge reads (`MAX_SUBSCRIPTION_CELLS`).
  */
-export type SessionPolicyReason = "payto-not-anyone-can-pay" | "too-many-cells";
+export type SessionPolicyReason =
+  | "payto-not-anyone-can-pay"
+  | "too-many-cells"
+  | "owner-lock-unsafe"
+  | "owner-lock-unreviewed";
 
 export class SessionPolicyError extends Error {
   readonly reason?: SessionPolicyReason;

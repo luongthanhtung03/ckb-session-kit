@@ -335,24 +335,85 @@ export function onchainRecipient(session: Session): string | undefined {
   return recipients[0];
 }
 
+/** Options for {@link assertSigningLock}. */
+export type SigningLockOptions = {
+  /**
+   * Let a lock this kit has not reviewed own a session, with a `console.warn`.
+   * Use it only after checking yourself that the lock cannot be unlocked without
+   * the owner's signature. A lock known to unlock without it is refused anyway.
+   */
+  allowUnreviewedOwnerLock?: boolean;
+};
+
 /**
- * Throws unless `lock` is known to need a signature over the whole transaction:
- * the session lock grants owner mode to any transaction with an input under the
- * owner's lock, so that lock is the only thing standing between a stranger and
- * every session. An allowlist, not a blocklist (code review, 14 Oct):
+ * Code hashes of locks that open without any signature, on mainnet and testnet,
+ * refused whatever the client's network: anyone-can-pay (RFC 0026, and the older
+ * deployments pw-core lists as anyone-can-pay), PW-Lock (the deployed build is
+ * lay2dev/pw-lock's `secp256k1_keccak256_sighash_all_acpl`: with no signature in
+ * the witness it takes the anyone-can-pay path, whatever its args) and
+ * always-success (ckb-proxy-locks).
+ */
+const SIGNATURE_FREE: { codeHash: string; hashType: string; what: string }[] = [
+  { codeHash: "0xd369597ff47f29fbc0d47d2e3775370d1250b85140c670e4718af712983a2354", hashType: "type", what: "anyone-can-pay" },
+  { codeHash: "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356", hashType: "type", what: "anyone-can-pay" },
+  { codeHash: "0x0fb343953ee78c9986b091defb6252154e0bb51044fd2879fde5b27314506111", hashType: "data", what: "anyone-can-pay" },
+  { codeHash: "0x86a1c6987a4acbe1a887cca4c9dd2ac9fcb07405bbeda51b861b18bbf7492c4b", hashType: "type", what: "anyone-can-pay" },
+  { codeHash: "0xbf43c3602455798c1a61a596e0d95278864c552fafe231c063b3fabf97a8febc", hashType: "type", what: "PW-Lock" },
+  { codeHash: "0x58c5f491aba6d61678b7cf7edf4910b1f5e00ec0cde2f42e0abb4fd9aff25a63", hashType: "type", what: "PW-Lock" },
+  { codeHash: "0x3b521cc4b552f109d092d8cc468a8048acb53c5952dbe769d2b2f9cf6e47f7f1", hashType: "data1", what: "always-success" },
+];
+
+/** Omnilock auth flags that verify a signature over the whole transaction (RFC 0042, nervosnetwork/omnilock). */
+const OMNI_SIGNING_AUTH = new Set([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x12]);
+/** Omnilock modes that only add checks: time-lock (0x04) and supply (0x08). */
+const OMNI_ADDITIVE_MODES = 0x04 | 0x08;
+
+/**
+ * Throws `SessionPolicyError` unless `lock` is a reviewed configuration of a lock
+ * that needs the owner's signature over the whole transaction. The session lock
+ * grants owner mode to any transaction with an input under the owner's lock, so
+ * that lock is the only thing standing between a stranger and every session.
+ * An allowlist, not a blocklist (code review, 14 Oct; mentor review, 2 Nov):
  *
- * - secp256k1-blake160 (single or multisig), JoyID, Nostr, PW lock;
- * - Omnilock with a signature auth flag (0x00-0x07: CKB, Ethereum, EOS, Tron,
- *   Bitcoin, Dogecoin, multisig; 0x12: Ethereum with the message displayed) and neither administrator (0x01) nor
- *   anyone-can-pay (0x02) mode. Auth flags 0xFC-0xFE hand the decision to
- *   another lock or to arbitrary code, and are refused.
+ * Reviewed, accepted:
+ * - secp256k1-blake160 (20-byte args); secp256k1 multisig, v1 and v2 (20 bytes,
+ *   or 28 with a since, which only delays);
+ * - Omnilock with a signature auth flag (0x00-0x06: CKB, Ethereum, EOS, Tron,
+ *   Bitcoin, Dogecoin, multisig; 0x12: Ethereum with the message displayed), and
+ *   no mode other than time-lock or supply;
+ * - Nostr lock in signing mode (args[0] = 0, 21-byte args);
+ * - JoyID (closed source: reviewed from its documentation only).
  *
- * Anyone-can-pay (RFC 0026) unlocks with no signature at all: anyone could spend
- * the owner's cell back to itself unchanged and sweep every session.
+ * Known to unlock without the owner's signature, refused always (reason
+ * `"owner-lock-unsafe"`): anyone-can-pay, PW-Lock, always-success, Omnilock in
+ * anyone-can-pay or administrator mode, Nostr lock in PoW mode (args[0] != 0).
+ *
+ * Anything else (Omnilock auth 0xFC-0xFE, which hand the decision to another lock
+ * or to other code; the proxy locks; unknown locks; args the lock's code would
+ * not accept) is refused with reason `"owner-lock-unreviewed"`, unless
+ * `allowUnreviewedOwnerLock` is set: then it passes with a warning.
  *
  * The owner must also never sign a partial (open) transaction with this lock.
  */
-export async function assertSigningLock(lock: ccc.Script, client: ccc.Client): Promise<void> {
+export async function assertSigningLock(
+  lock: ccc.Script,
+  client: ccc.Client,
+  opts: SigningLockOptions = {},
+): Promise<void> {
+  const unsafe = (why: string) => {
+    throw new SessionPolicyError(`the owner's lock ${why}: it cannot own a session`, "owner-lock-unsafe");
+  };
+  const unreviewed = (why: string) => {
+    const message = `the owner's lock ${why}`;
+    if (opts.allowUnreviewedOwnerLock) {
+      console.warn(`ckb-session-kit: ${message}; allowed by allowUnreviewedOwnerLock`);
+      return;
+    }
+    throw new SessionPolicyError(
+      `${message}, so it cannot own a session unless you review it and pass allowUnreviewedOwnerLock`,
+      "owner-lock-unreviewed",
+    );
+  };
   const is = async (known: ccc.KnownScript) => {
     try {
       const s = await client.getKnownScript(known);
@@ -361,39 +422,53 @@ export async function assertSigningLock(lock: ccc.Script, client: ccc.Client): P
       return false; // not deployed on this network
     }
   };
-  if (await is(ccc.KnownScript.AnyoneCanPay)) {
-    throw new SessionPolicyError("the owner's lock is anyone-can-pay: it needs no signature, so it cannot own a session");
+  const args = ccc.bytesFrom(lock.args);
+
+  const free = SIGNATURE_FREE.find((s) => s.codeHash === lock.codeHash && s.hashType === lock.hashType);
+  if (free?.what === "PW-Lock" || (await is(ccc.KnownScript.PWLock))) {
+    return unsafe("is PW-Lock, whose deployed build is anyone-can-pay: it opens with no signature");
   }
+  if (free || (await is(ccc.KnownScript.AnyoneCanPay))) {
+    return unsafe(`is ${free?.what ?? "anyone-can-pay"}: it opens with no signature`);
+  }
+  if (await is(ccc.KnownScript.AlwaysSuccess)) return unsafe("is always-success: it opens with no signature");
+
   if (await is(ccc.KnownScript.OmniLock)) {
-    // Omnilock args: auth flag (1) + auth content (20) + omnilock flags (1) + ...
-    const args = ccc.bytesFrom(lock.args);
-    const omniFlags = args[21] ?? 0;
-    if (omniFlags & 0x02) {
-      throw new SessionPolicyError("the owner's Omnilock is in anyone-can-pay mode: it cannot own a session");
+    // Omnilock args: auth flag (1) + auth content (20) + Omnilock flags (1) + mode args.
+    if (args.length < 22) return unreviewed("is an Omnilock with args its code would not accept");
+    const auth = args[0];
+    const modes = args[21];
+    if (modes & 0x02) return unsafe("is an Omnilock in anyone-can-pay mode, which opens with no signature");
+    if (modes & 0x01) return unsafe("is an Omnilock with an administrator, who could unlock it without the owner");
+    if (auth >= 0xfc && auth <= 0xfe) {
+      const flag = auth.toString(16);
+      return unreviewed(`is an Omnilock that does not verify a signature itself (auth 0x${flag} hands the check to another lock or code)`);
     }
-    if (omniFlags & 0x01) {
-      throw new SessionPolicyError("the owner's Omnilock has an administrator, who could unlock it: it cannot own a session");
+    if (!OMNI_SIGNING_AUTH.has(auth)) {
+      return unreviewed(`is an Omnilock with auth flag 0x${auth.toString(16).padStart(2, "0")}, which is not one this kit has reviewed`);
     }
-    const auth = args[0] ?? 0xff;
-    // 0x12 is Ethereum with the message displayed: what CCC gives MetaMask and
-    // OKX (EVM) users. Missing from this list until the wallet matrix (26 Oct).
-    if (auth > 0x07 && auth !== 0x12) {
-      throw new SessionPolicyError("the owner's Omnilock does not verify a signature itself: it cannot own a session");
+    if (modes & ~OMNI_ADDITIVE_MODES) {
+      return unreviewed(`is an Omnilock with mode flags 0x${modes.toString(16).padStart(2, "0")}, not one this kit has reviewed`);
     }
     return;
   }
-  const signing = [
-    ccc.KnownScript.Secp256k1Blake160,
-    ccc.KnownScript.Secp256k1Multisig,
-    ccc.KnownScript.Secp256k1MultisigV2,
-    ccc.KnownScript.JoyId,
-    ccc.KnownScript.NostrLock,
-    ccc.KnownScript.PWLock,
-  ];
-  for (const known of signing) if (await is(known)) return;
-  throw new SessionPolicyError(
-    "the owner's lock is not one known to sign the whole transaction, so it cannot own a session",
-  );
+
+  if (await is(ccc.KnownScript.NostrLock)) {
+    // Nostr lock args: PoW difficulty (1) + blake160 of the Schnorr public key (20).
+    if (args.length !== 21) return unreviewed("is a Nostr lock with args its code would not accept");
+    if (args[0] !== 0) return unsafe("is a Nostr lock in proof of work mode, which anyone who does the work can unlock");
+    return;
+  }
+
+  if (await is(ccc.KnownScript.Secp256k1Blake160)) {
+    return args.length === 20 ? undefined : unreviewed("is secp256k1-blake160 with args its code would not accept");
+  }
+  if ((await is(ccc.KnownScript.Secp256k1Multisig)) || (await is(ccc.KnownScript.Secp256k1MultisigV2))) {
+    return args.length === 20 || args.length === 28 ? undefined : unreviewed("is a multisig with args its code would not accept");
+  }
+  if (await is(ccc.KnownScript.JoyId)) return;
+
+  return unreviewed("is not one this kit has reviewed: it may open without the owner's signature");
 }
 
 /**
@@ -420,7 +495,7 @@ export async function openSession(
     /** A token session: put `amount` units of the xUDT `type` in it, and let one spend move at most `maxPerTx`. */
     token?: { type: ccc.ScriptLike; amount: bigint; maxPerTx: bigint };
     beforeSend?: (binding: OnChainBinding) => Promise<void>;
-  },
+  } & SigningLockOptions,
 ): Promise<{ txHash: ccc.Hex; binding: OnChainBinding }> {
   const client = owner.client;
   const token = opts.token && ccc.Script.from(opts.token.type);
@@ -432,7 +507,7 @@ export async function openSession(
   }
   if (opts.minInterval !== undefined) relativeBlocksSince(opts.minInterval); // a spend must be able to meet it
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
-  await assertSigningLock(ownerLock, client);
+  await assertSigningLock(ownerLock, client, opts);
   const floor = keyCellFloor(ownerLock);
   const feeBudget = opts.feeBudget ?? floor + FEE_MARGIN;
   if (feeBudget <= floor) {
