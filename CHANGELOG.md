@@ -5,6 +5,45 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
 ## Unreleased
 
+### Fixed (Week 6 adversarial review, 2 Nov)
+- Token subscriptions: look-alike cells typed `xUDT(token.args ++ extra)`
+  (xUDT accepts them, anyone can create them with 0 units, and the indexer's
+  type filter matched them by prefix) counted toward `MAX_SUBSCRIPTION_CELLS`
+  but were never swept. The filter now asks for the exact script length, only
+  cells really of the subscription's kind count, raw reads are bounded, and
+  `clearPlantedCells` and `cancelSubscription` sweep spendable look-alikes back
+  to the subscriber (M1).
+- A status or a charge counted every recent transaction under the lock toward
+  its budget of 64, creations by anyone included, and before the age check.
+  Now only spends count, an entry older than the period is never counted, and
+  creation-only entries are paged past under their own budget of 1024
+  (`MAX_CREATED_HISTORY`); past either budget it still refuses (M2).
+- `clearPlantedCells`: sweeps at most 30 cells per transaction, so a status
+  never dates the cleanup as a charge (L3); with cells left unread, sweeps the
+  planted cells it read instead of refusing (L1); marks its transaction with
+  `CLEAR_PLANTED_MEMO` in the subscriber's own witness, so a status does not
+  take it for a cancel and a charge of the whole balance stays paid (L2).
+- `signAndSend` throws `SendOutcomeUnknownError` (new export) when a send fails
+  and the status lookup fails too, instead of rethrowing the send's error: a
+  `Dead` answer from CCC's fallback node after a lost reply was retried and
+  could pay twice (L4). It is never retried.
+- Payout cells under `payTo` are listed by the indexer's filter (plain and
+  empty, or exactly the token with 16 data bytes), so junk planted under an
+  anyone-can-pay address no longer pushes the real cells out of reach (L5).
+- `assertSigningLock` refuses anyone-can-pay, PW-Lock and always-success by the
+  data hash of their deployed binaries under every data hash_type (`data`,
+  `data1`, `data2`), not only by type id (L6).
+
+### Changed (Week 6 adversarial review, 2 Nov)
+- `openSubscription` checks the creator's charger lock with its own opt-in,
+  `allowUnreviewedChargerLock`; `allowUnreviewedOwnerLock` now covers the
+  subscriber's lock only (I1).
+- `openSession` raises `no-rate-limit` for `minInterval` 1 too (I3).
+- The testnet scripts keep `.env.smoke` at the repository root whatever the
+  current directory (I4).
+- Docs: a multisig with a since or an Omnilock time-lock also delays the
+  owner's sweep (I2).
+
 ### Added (mentor review, tracker #47, 2 Nov)
 - Payout cell contention. A top-up (`spendInSession` with `topUp`,
   `chargeSubscription`, `openSubscription`) picks the recipient's cell with

@@ -397,4 +397,31 @@ transactions), so a third party can still block status and charges for a while,
 at a cost of at least 153 CKB per plain cell (282 per token cell), which the
 subscriber then keeps. Planted creations still count toward the 64 recent
 transactions until they are a period old. The cleanup's own reads are the
-subscriber's, bounded per call.
+subscriber's, bounded per call. (Changed by the Week 6 review below.)
+
+## Week 6 adversarial review, 2 Nov 2026
+
+- **M1: look-alike tokens.** The indexer matches a type filter by args prefix,
+  and xUDT with a zero flags word ignores the bytes after it, so anyone could
+  create zero-amount `xUDT(token.args ++ anything)` cells under a token
+  subscription's lock (shown in CKB-VM). They counted toward the cap but were
+  never swept. The filter now also gives the exact script length (33 bytes plus
+  the args, as CCC's `completeInputsByUdt` does), only cells really of the kind
+  count, the listing is read at most 8 times the cap deep, and
+  `clearPlantedCells` and `cancelSubscription` sweep spendable look-alikes (no
+  flags) back to the subscriber with their type.
+- **M2: the history budget.** Only spends (subscriber or charger) count toward
+  the 64 recent transactions; creation-only entries are paged past (128 per
+  page) under their own budget of 1024 (`MAX_CREATED_HISTORY`); an entry older
+  than the window is never counted. Past either budget a status or a charge is
+  still refused rather than stop short. Residual: over 1024 planting
+  transactions within one period block it, at about 157,000 CKB per period.
+- **L1:** with cells left unread, a scan that found only planted cells sweeps
+  them instead of telling the subscriber to cancel.
+- **L2:** a cleanup carries `CLEAR_PLANTED_MEMO` in the witness of the
+  subscriber's own input (covered by the subscriber's signature); a status does
+  not take it for a cancel, so a charge of the whole balance stays paid. A
+  subscriber who marks a real cancel with it keeps access only through a
+  period already paid for.
+- **L3:** at most 30 planted cells per cleanup transaction, so it stays within
+  the 32 inputs a status reads and is never dated as a charge.
