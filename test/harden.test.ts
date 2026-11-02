@@ -1,7 +1,7 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeCellAt, TEST_DEPLOYMENT as d } from "./fixtures/deployment.js";
-import { closeSession, openSession, SessionBalanceError } from "../src/onchain.js";
+import { closeSession, openSession, SessionBalanceError, type SessionWarning } from "../src/onchain.js";
 import { createSession } from "../src/session.js";
 import { deserializeSession, indexedDbStore, memoryStore, serializeSession } from "../src/store.js";
 
@@ -144,5 +144,70 @@ describe("session store", () => {
     await expect(idb.load()).rejects.toThrow(/unreadable/);
     expect(backing.get("current")).toBe("{not json");
     await expect(memoryStore().load()).resolves.toBeUndefined();
+  });
+});
+
+// Mentor review, 2 Nov: with min_interval 0 every spend is within maxPerTx, but spends can
+// repeat every block until the cell is empty. openSession says so before anything is signed.
+describe("openSession warns when there is no rate limit (review 2 Nov)", () => {
+  it("calls onWarning with no-rate-limit when minInterval is left out, before signing", async () => {
+    const order: string[] = [];
+    const seen: SessionWarning[] = [];
+    const { signer } = await owner(secp, async (tx) => (order.push("send"), tx.hash()));
+    vi.mocked(signer.signTransaction).mockImplementation(async (tx) => (order.push("sign"), ccc.Transaction.from(tx)));
+    await openSession(signer, newSession(), d, {
+      budget: 200n * CKB,
+      onWarning: (w) => {
+        order.push("warn");
+        seen.push(w);
+      },
+    });
+    expect(seen.map((w) => w.code)).toEqual(["no-rate-limit"]);
+    expect(seen[0].message).toMatch(/minInterval is 0/);
+    expect(order[0]).toBe("warn");
+  });
+
+  it("warns for minInterval 0n given explicitly, and names the fee when a recipient is set", async () => {
+    const seen: SessionWarning[] = [];
+    const { signer, client } = await owner(secp, async (tx) => tx.hash());
+    const to = ccc.Script.from({ ...(await secp(client)), args: "0x" + "22".repeat(20) });
+    const recipient = ccc.Address.fromScript(to, client).toString();
+    const s = createSession({ expiresAt: new Date(Date.now() + 60_000), scope: { maxPerTx: 5n * CKB, recipients: [recipient] } });
+    await openSession(signer, s, d, { budget: 200n * CKB, minInterval: 0n, onWarning: (w) => void seen.push(w) });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].message).toMatch(/miner/);
+  });
+
+  it("does not warn with a rate limit", async () => {
+    const onWarning = vi.fn();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { signer } = await owner(secp, async (tx) => tx.hash());
+    await openSession(signer, newSession(), d, { budget: 200n * CKB, minInterval: 10n, onWarning });
+    await openSession(signer, newSession(), d, { budget: 200n * CKB, minInterval: 10n });
+    expect(onWarning).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to console.warn without onWarning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { signer } = await owner(secp, async (tx) => tx.hash());
+    await openSession(signer, newSession(), d, { budget: 200n * CKB });
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0][0]).toMatch(/^ckb-session-kit: minInterval is 0/);
+  });
+
+  it("stops the opening, with nothing signed or sent, when onWarning throws", async () => {
+    const send = vi.fn(async (tx: ccc.Transaction) => tx.hash());
+    const { signer } = await owner(secp, send);
+    await expect(
+      openSession(signer, newSession(), d, {
+        budget: 200n * CKB,
+        onWarning: (w) => {
+          throw new Error("refused: " + w.code);
+        },
+      }),
+    ).rejects.toThrow("refused: no-rate-limit");
+    expect(signer.signTransaction).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 });
