@@ -43,6 +43,14 @@ describe("POST /api/subscription/charge", () => {
     });
   });
 
+  // Mentor review, 2 Nov: every payout cell taken by payments in the pool; nothing was sent.
+  it("answers 503 with retry when every payout cell is busy", async () => {
+    expect(await status(new SessionBalanceError("any wording", "payout-busy"))).toEqual({
+      status: 503,
+      body: { error: "could not charge right now", retry: true },
+    });
+  });
+
   // 30 Oct: a PAY_TO that is not anyone-can-pay is the deployment's setup, not the subscription's.
   it("answers 503 without retry when PAY_TO is not anyone-can-pay", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});

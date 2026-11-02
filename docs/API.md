@@ -64,7 +64,7 @@ cells, any surplus returned), and one spend may move at most `maxPerTx` units,
 enforced by the lock. Only plain xUDT is accepted (`assertPlainXudt`). A token
 session cell occupies 250 CKB (282 with a recipient).
 
-### `spendInSession(session, client, deployment, binding, { to, amount | token, topUp?, memo?, beforeSend? }) → txHash`
+### `spendInSession(session, client, deployment, binding, { to, amount | token, topUp?, memo?, beforeSend?, retry? }) → txHash`
 The session key pays, no wallet involved. Checks the scope first (`ScopeError`),
 then the network checks it again in the lock. A plain payment creates a cell, so
 it is at least 61 CKB; `topUp: true` pays any amount into an existing
@@ -79,10 +79,20 @@ never sent unrecorded.
 
 Cells that only the CCC client's cache still lists (outputs of this client's
 own earlier sends) are used only while the node still has them: once another
-tab or device has spent them, they are left out. If the node still rejects the
-payment for a spent or unknown input, the client's cache is cleared and the
-payment is built and sent once more from the live cells; `beforeSend` then runs
-again with the new hash (the first payment was refused and never commits).
+tab or device has spent them, they are left out.
+
+With `topUp`, the recipient's cell is picked by `pickPayoutCell`: a confirmed
+cell that no transaction in the node's pool spends, at random. Readers paying
+at the same moment compete for these cells.
+
+If the node rejects the payment for a spent or unknown input (`Dead`,
+`Unknown`, or an RBF refusal: see `poolConflict`), the client's cache is
+cleared and the payment is built again from the live cells, with another
+payout cell, after a wait. `retry` (`RetryOptions`) sets how many attempts in
+all (default 3) and the first wait (default 1000 ms, doubling, with jitter).
+`beforeSend` runs again with each new hash (a refused payment never commits).
+A send whose outcome is unknown (a timeout, a lost reply the node did not take)
+is never retried, so a payment is never sent twice.
 
 In a token session, `{ to, token }` pays `token` units instead of shannons:
 with `topUp: true` into the recipient's anyone-can-pay token cell (no CKB
@@ -160,6 +170,40 @@ The lock scripts of the key cell and of the session cells.
 `OnChainBinding` is `{ ownerLock, minInterval, recipientLockHash?, token? }`,
 where `token` is `{ type, maxPerTx }`.
 
+### `pickPayoutCell(client, lock, cells, avoid?) → Cell | undefined`
+How a top-up picks the recipient's anyone-can-pay cell. Confirmed cells (listed
+by the indexer) come first, then this client's own pending outputs (only CCC's
+cache lists them), each group shuffled; out points in `avoid` are left out. The
+first `MAX_POOL_CHECKS` (4) are checked at once with `get_live_cell` and
+`include_tx_pool`, which answers a cell a pool transaction spends as dead; the
+first free one is taken. If the node cannot be asked, an unchecked cell is
+taken. If all checked cells are taken and none is left unchecked, it throws
+`SessionBalanceError` `"payout-busy"` and nothing is sent.
+
+### `MAX_PAYOUT_CELLS`, `MAX_POOL_CHECKS`
+64: the most cells of a recipient a top-up reads (from the first 256 listed),
+and the most cells one pick asks the node about (4). Both keep the RPC work of
+a payment bounded, however many cells sit under the recipient's lock.
+
+### `createPayoutCells(funder, payTo, { count, capacity?, token?, beforeSend? }) → txHash`
+Gives an anyone-can-pay address `count` (1 to `MAX_PAYOUT_CELLS`) more cells to
+be topped up, in one transaction the funder pays. Each cell is as small as it
+can be (61 CKB) unless `capacity` is set; with `token`, each is a cell of that
+token holding 0 units. With more cells, payers at the same moment rarely pick
+the same one. Throws `SessionPolicyError` `"payto-not-anyone-can-pay"` for any
+other address, `RangeError` for a count out of range.
+
+### `RetryOptions`, `DEFAULT_RETRY`
+`{ attempts?, delayMs? }` for `spendInSession` and `chargeSubscription`.
+`DEFAULT_RETRY` is `{ attempts: 3, delayMs: 1000 }`. The wait before attempt
+n + 1 is `delayMs × 2^(n-1)`, times a random 0.5 to 1.5. `attempts: 1` never
+retries.
+
+### `poolConflict(error) → boolean`
+Whether a send was refused because an input is already spent by a transaction
+in the node's pool, on a node with replace-by-fee on (CCC's
+`ErrorClientRBFRejected`, code -1111). Such a send is retried with another cell.
+
 ### `SessionBalanceError`
 Not enough in the session, its change, or its key cell, or a budget below what a
 cell occupies. `reason` (type `SessionBalanceReason`) is set when the cells missing
@@ -167,7 +211,9 @@ are the paying side's own rather than the session's or subscription's state:
 `"no-fee-cell"` (no key cell, or no charger cell, that can pay the fee, including
 CCC's "Insufficient CKB" when the cell holds its floor but not the fee) or
 `"no-payout-cell"` (the recipient or `payTo` has no cell to top up, or none of its
-token cells can take the payment without passing 2^128 - 1 units). Match on it,
+token cells can take the payment without passing 2^128 - 1 units) or
+`"payout-busy"` (every payout cell is being spent by another payment in the
+node's pool: nothing was sent; try again after a block). Match on it,
 not on the message, which may change. Other balance errors leave it undefined.
 
 ## The session lock
@@ -280,7 +326,7 @@ no cell of the token: a charge may move no CKB, so it cannot make a new token ce
 ### `subscriptionMemo(account) → Hex`
 The memo an opening commits to, binding the subscription to one account at the creator: a 32-byte hash, so the account id never appears on-chain.
 
-### `chargeSubscription(charger, deployment, subscription, { payTo, topUp?, beforeSend? }) → txHash`
+### `chargeSubscription(charger, deployment, subscription, { payTo, topUp?, beforeSend?, retry? }) → txHash`
 The charger key takes one price, with the period as the inputs' relative `since`,
 and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee
 comes from one of the charger's own plain cells holding at least its floor plus
@@ -289,18 +335,33 @@ comes from one of the charger's own plain cells holding at least its floor plus
 before a full period (saying how many blocks are left), counted from the last
 charge as well as from each cell, so a top-up cannot pay a second price in the
 same period (the last charge is read from the lock's indexer history, so a
-charge that took the whole balance counts too), and once what is left
+charge that took the whole balance counts too; only spends with an input under
+the charger's lock are charges, and one that cannot be told counts as one), and once what is left
 cannot cover a price plus a cell. In a token subscription the price is in units
 and always tops up `payTo`'s token cell; every mature token cell is merged into
 one change that keeps all the CKB and exactly 16 data bytes. Like
 `spendInSession`, it leaves out cells only the client's cache still lists once
-the node has them spent, and is built once more after clearing the cache if the
-node rejects it for a spent or unknown input.
+the node has them spent, picks `payTo`'s cell with `pickPayoutCell`, and is
+built again (up to `retry.attempts`) if the node rejects it for a spent cell.
 
 ### `cancelSubscription(subscriber, deployment, subscription) → { txHash?, refunded, refundedTokens?, nothingFound? }`
 Owner-mode sweep of everything left; no creator involved, no wait. Tokens come
 back as one token cell (`refundedTokens`, token subscriptions only).
 `recoverSessions` also finds and sweeps subscriptions.
+
+### `clearPlantedCells(subscriber, deployment, subscription) → { txHash?, swept, refunded, refundedTokens?, more, nothingFound? }`
+For cells a third party created under the subscription's lock, past
+`MAX_SUBSCRIPTION_CELLS`, without cancelling. A cell is the subscription's own
+when the transaction that made it is the opening (`subscription.openTx`) or
+spent a cell under the subscriber's or the charger's lock (an opening, a
+charge, the subscriber's top-up). Every other cell of the subscription's kind
+goes back to the subscriber in one owner-mode transaction (one signature). The
+subscription's own cells are not touched, so access and the charge schedule go
+on as before. One call reads at most 64 cells and looks up each creating
+transaction once; `more` means cells were left unread: call again once the
+sweep commits. Refused when none of the cells read is the subscription's own
+(cancel instead). `nothingFound` when nothing is planted. Pass `openTx` when you
+have it: an opening with over 32 inputs cannot be told apart otherwise.
 
 ### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance?, account?, token? }) → SubscriptionCheck`
 The creator's check, from the chain alone: the cell is live, under this
@@ -329,22 +390,27 @@ payment count, plus a last charge that took the whole balance and left no cell),
 Cancelling ends access at once. A token subscription counts its
 payments in the token and adds `tokenBalance`; `chargesLeft` is then units / price.
 Throws `SessionPolicyError` (`"too-many-cells"`) past `MAX_SUBSCRIPTION_CELLS`;
-answer it as a conflict (the demo uses 409), not as unpaid.
+answer it as a conflict (the demo uses 409), not as unpaid. The subscriber clears
+it with `clearPlantedCells`. A subscriber's spend after the last charge (a
+cancel) ends the period of a charge that took the whole balance.
 
 ### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, tokenBalance, nextChargeIn }`
 `nextChargeIn` is the number of blocks until a cell is a full period old and the
-last charge (the newest spend of a cell under the lock) is too (0 = it can be charged now).
+last charge (the newest spend of a cell under the lock by the charger) is too (0 = it can be charged now).
 In a token subscription, only cells typed with the token count; `tokenBalance` is
 their units (0 for CKB), `balance` their shannons.
 
 ### `MAX_SUBSCRIPTION_CELLS`
-16: the most cells (of any kind) under one subscription's lock that
-`subscriptionStatus`, `chargeSubscription` and `findSubscriptionCells` read (and
-at most 64 recent transactions of its history). Anyone can create cells under a lock
-and each costs RPC calls, so past it they throw `SessionPolicyError` with reason
-`"too-many-cells"` rather than answer from part of the cells (which could deny a
-paid-up subscriber or leave a mature cell out of a charge). `cancelSubscription`
-reads every cell, so the subscriber can sweep planted ones and open again.
+16: the most cells of the subscription's kind (plain CKB, or its token) under
+one subscription's lock that `subscriptionStatus`, `chargeSubscription` and
+`findSubscriptionCells` read (and at most 64 recent transactions of its
+history). The indexer lists only that kind, so cells under any other type
+script never count. Anyone can create cells under a lock and each costs RPC
+calls, so past it they throw `SessionPolicyError` with reason `"too-many-cells"`
+rather than answer from part of the cells (which could deny a paid-up
+subscriber or leave a mature cell out of a charge). The subscriber sweeps the
+planted ones back with `clearPlantedCells` and keeps the subscription;
+`cancelSubscription` also reads every cell.
 
 ### `subscriptionLock(deployment, subscription)`
 The session-lock script of a subscription: 112-byte args, or 160 with a token.

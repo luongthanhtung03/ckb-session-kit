@@ -15,6 +15,7 @@ import {
   randomPick,
   completeFeeOrNoFeeCell,
   rebuildOnDeadInputs,
+  type RetryOptions,
   SessionBalanceError,
   signAndSend,
   tokenAmount,
@@ -394,9 +395,14 @@ async function subscriptionState(client: ccc.Client, deployment: SessionLockDepl
  * shannon that came in (no CKB may leave) and the tokens less one price, in
  * exactly 16 data bytes.
  *
- * A charge the node rejects for a spent or unknown input is built and sent once
- * more after clearing the client's cache (`rebuildOnDeadInputs`); `beforeSend`
- * then runs again with the new hash.
+ * With `topUp` (or a token), `payTo`'s cell is a confirmed one that no
+ * transaction in the node's pool spends, where the node can tell
+ * (`pickPayoutCell`). A charge the node rejects for a spent or unknown input is
+ * built again after clearing the client's cache, with another payout cell,
+ * after a short wait: up to `retry.attempts` in all (default 3), waiting
+ * `retry.delayMs` (default 1000) doubling each time (`rebuildOnDeadInputs`).
+ * `beforeSend` runs again with each new hash. A send whose outcome is unknown
+ * is never retried.
  */
 export async function chargeSubscription(
   charger: ccc.Signer,
@@ -404,17 +410,18 @@ export async function chargeSubscription(
   sub: Subscription,
   opts: ChargeOptions,
 ): Promise<ccc.Hex> {
-  // Built on a cell another instance spent since: rebuilt once from live cells (audit, 31 Oct).
-  return rebuildOnDeadInputs(charger.client, () => chargeOnce(charger, deployment, sub, opts));
+  // Built on a cell another instance or payer spent since: rebuilt from live cells (audit, 31 Oct; review, 2 Nov).
+  return rebuildOnDeadInputs(charger.client, (avoid) => chargeOnce(charger, deployment, sub, opts, avoid), opts.retry);
 }
 
-type ChargeOptions = { payTo: string; topUp?: boolean; beforeSend?: (txHash: ccc.Hex) => Promise<void> };
+type ChargeOptions = { payTo: string; topUp?: boolean; beforeSend?: (txHash: ccc.Hex) => Promise<void>; retry?: RetryOptions };
 
 async function chargeOnce(
   charger: ccc.Signer,
   deployment: SessionLockDeployment,
   sub: Subscription,
   opts: ChargeOptions,
+  avoid: ReadonlySet<string>,
 ): Promise<ccc.Hex> {
   const client = charger.client;
   assertTerms(sub);
@@ -437,10 +444,10 @@ async function chargeOnce(
   const tx = ccc.Transaction.from({ cellDeps: [sessionLockCellDep(deployment)] });
   if (token) {
     if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("a token subscription needs an anyone-can-pay payTo", "payto-not-anyone-can-pay");
-    if (!(await addTopUp(tx, client, payToLock, { token, units: sub.price }))) throw new SessionBalanceError(NO_TOKEN_TARGET, "no-payout-cell");
+    if (!(await addTopUp(tx, client, payToLock, { token, units: sub.price }, avoid))) throw new SessionBalanceError(NO_TOKEN_TARGET, "no-payout-cell");
   } else if (opts.topUp) {
     if (!(await isAnyoneCanPay(payToLock, client))) throw new SessionPolicyError("topUp needs an anyone-can-pay payTo", "payto-not-anyone-can-pay");
-    if (!(await addTopUp(tx, client, payToLock, { ckb: sub.price }))) {
+    if (!(await addTopUp(tx, client, payToLock, { ckb: sub.price }, avoid))) {
       throw new SessionBalanceError("payTo has no anyone-can-pay cell to top up", "no-payout-cell");
     }
   } else {

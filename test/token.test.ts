@@ -130,6 +130,8 @@ describe("spendInSession in a token session", () => {
     vi.spyOn(client, "findCellsByLock").mockImplementation(async function* (l: ccc.ScriptLike) {
       for (const c of cells) if (c.cellOutput.lock.eq(l)) yield c;
     } as never);
+    // The node's answer on a payout cell (no transaction in its pool spends it).
+    vi.spyOn(client, "getCellLive").mockImplementation(async (op) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))));
     vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockResolvedValue(true as never);
     const sent: ccc.Transaction[] = [];
     vi.spyOn(ccc.SignerCkbPrivateKey.prototype, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));

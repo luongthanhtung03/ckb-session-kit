@@ -19,23 +19,30 @@ export {
   assertPlainXudt,
   assertSigningLock,
   closeSession,
+  createPayoutCells,
+  DEFAULT_RETRY,
   findOwnedSessionCells,
   findSessionCells,
   keyLockOf,
   matureCells,
+  MAX_PAYOUT_CELLS,
+  MAX_POOL_CHECKS,
   onchainRecipient,
   openSession,
+  pickPayoutCell,
+  poolConflict,
   recoverSessions,
   SessionBalanceError,
   sessionLockOf,
   spendInSession,
   tokenAmount,
 } from "./onchain.js";
-export type { OnChainBinding, SessionBalanceReason, SessionCells } from "./onchain.js";
+export type { OnChainBinding, RetryOptions, SessionBalanceReason, SessionCells } from "./onchain.js";
 export {
   blocksForSeconds,
   cancelSubscription,
   chargeSubscription,
+
   findSubscriptionCells,
   MAX_SUBSCRIPTION_CELLS,
   openSubscription,

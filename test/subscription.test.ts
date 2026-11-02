@@ -193,7 +193,7 @@ describe("openSubscription", () => {
       return 1 as never;
     });
     vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
-    vi.spyOn(Math, "random").mockReturnValue(0.99);
+    vi.spyOn(Math, "random").mockReturnValue(0); // the shuffle then puts the last cell first
     const { client, sent } = fakeClient([own, first, last]);
     const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
     const charger = (await r.charger.getRecommendedAddressObj()).toString();

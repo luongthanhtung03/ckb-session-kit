@@ -51,12 +51,15 @@ export interface SessionCells {
  * - `no-fee-cell`: the paying key (a session's key cell, a subscription's charger)
  *   has no cell that can pay the fee.
  * - `no-payout-cell`: the recipient (`payTo`) has no cell to top up.
+ * - `payout-busy`: every payout cell checked is being spent by a transaction in
+ *   the node's pool (other payers at the same moment). Nothing was sent; try
+ *   again after a block, or give the recipient more cells (`createPayoutCells`).
  *
  * Neither is about the session's or the subscription's own balance or timing: the
  * missing cells belong to the key's holder or the recipient (in a subscription,
  * both are the creator's). Other balance errors have no `reason`.
  */
-export type SessionBalanceReason = "no-fee-cell" | "no-payout-cell";
+export type SessionBalanceReason = "no-fee-cell" | "no-payout-cell" | "payout-busy";
 
 export class SessionBalanceError extends Error {
   readonly reason?: SessionBalanceReason;
@@ -153,7 +156,7 @@ const MAX_ORIGIN_INPUTS = 32;
  * session key took part in (an input under the lock hash in args bytes 0..32 or
  * 32..64). Nobody else can sign for those, so a planted cell never passes.
  */
-async function ownOrigin(client: ccc.Client, cell: ccc.Cell): Promise<boolean> {
+export async function ownOrigin(client: ccc.Client, cell: ccc.Cell): Promise<boolean> {
   const args = ccc.bytesFrom(cell.cellOutput.lock.args);
   const own = [ccc.hexFrom(args.slice(0, 32)), ccc.hexFrom(args.slice(32, 64))];
   const inputs = (await client.getTransaction(cell.outPoint.txHash))?.transaction.inputs ?? [];
@@ -205,19 +208,113 @@ export async function isAnyoneCanPay(lock: ccc.Script, client: ccc.Client): Prom
   return lock.codeHash === acp.codeHash && lock.hashType === acp.hashType;
 }
 
+/** The most cells of a recipient read when picking one to top up: any of them will do. */
+export const MAX_PAYOUT_CELLS = 64;
+/** The most payout cells a pick asks the node about (`get_live_cell` with the pool), all at once. */
+export const MAX_POOL_CHECKS = 4;
+
+const outPointKey = (op: ccc.OutPointLike) => ccc.hexFrom(ccc.OutPoint.from(op).toBytes());
+
+/** The out points CCC's client cache lists as live under `lock`: outputs of transactions this client sent. */
+async function cachedOutPoints(client: ccc.Client, lock: ccc.Script): Promise<Set<string>> {
+  const cached = new Set<string>();
+  if (!client.cache) return cached;
+  for await (const c of client.cache.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", withData: true })) {
+    cached.add(outPointKey(c.outPoint));
+  }
+  return cached;
+}
+
+function shuffled<T>(xs: T[]): T[] {
+  const a = [...xs];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+const payoutBusy = () =>
+  new SessionBalanceError(
+    "every payout cell is being spent by another payment in the node's pool: try again after a block, " +
+      "or give the recipient more cells (createPayoutCells)",
+    "payout-busy",
+  );
+
 /**
- * Tops up a random cell under the anyone-can-pay `lock` in `tx`: one input, and
- * one output holding `ckb` shannons more, or with `token`, `units` more of it in
- * a cell of that token. Returns the cell, or undefined when `lock` has none to add to.
+ * Which of `cells` (the recipient's anyone-can-pay cells) to top up, so payers at
+ * the same moment rarely take the same one (mentor review, 2 Nov):
+ *
+ * - confirmed cells first (listed by the indexer), then this client's own
+ *   outputs still pending (only CCC's cache lists them), each group shuffled;
+ * - `avoid` (out points a node rejection named as spent) left out;
+ * - the first `MAX_POOL_CHECKS` asked at once whether a transaction in the
+ *   node's pool spends them (`get_live_cell` with `include_tx_pool`: a cell a
+ *   pool transaction consumes is dead); the first free one is taken.
+ *
+ * If the node cannot be asked, an unchecked cell is taken (a rejected send is
+ * retried). If every cell checked is spent in the pool, an unchecked one is taken
+ * if any is left; otherwise a `SessionBalanceError` "payout-busy" is thrown and
+ * nothing is sent. Undefined when `cells` is empty.
+ */
+export async function pickPayoutCell(
+  client: ccc.Client,
+  lock: ccc.Script,
+  cells: ccc.Cell[],
+  avoid: ReadonlySet<string> = new Set(),
+): Promise<ccc.Cell | undefined> {
+  if (!cells.length) return undefined;
+  const usable = cells.filter((c) => !avoid.has(outPointKey(c.outPoint)));
+  if (!usable.length) throw payoutBusy();
+  const cached = await cachedOutPoints(client, lock);
+  const isCached = (c: ccc.Cell) => cached.has(outPointKey(c.outPoint));
+  const order = [...shuffled(usable.filter((c) => !isCached(c))), ...shuffled(usable.filter(isCached))];
+  const checked = order.slice(0, MAX_POOL_CHECKS);
+  const states = await Promise.all(
+    checked.map(async (c): Promise<"free" | "taken" | "unknown"> => {
+      try {
+        return (await client.getCellLive(c.outPoint, false, true)) ? "free" : "taken";
+      } catch {
+        return "unknown"; // the node cannot be asked
+      }
+    }),
+  );
+  const first = (state: "free" | "unknown") => checked[states.indexOf(state)];
+  const picked = first("free") ?? first("unknown") ?? randomPick(order.slice(MAX_POOL_CHECKS));
+  if (!picked) throw payoutBusy();
+  return picked;
+}
+
+/**
+ * Plain cells under the recipient's `lock` (with `token`, cells holding exactly
+ * that token), at most `MAX_PAYOUT_CELLS` of them from the first
+ * `4 * MAX_PAYOUT_CELLS` listed: anyone can create cells under any lock.
+ */
+async function payoutCells(client: ccc.Client, lock: ccc.Script, token?: ccc.Script): Promise<ccc.Cell[]> {
+  const cells: ccc.Cell[] = [];
+  let seen = 0;
+  for await (const cell of client.findCellsByLock(lock, null, true)) {
+    if (++seen > 4 * MAX_PAYOUT_CELLS || cells.length >= MAX_PAYOUT_CELLS) break;
+    if (token ? plainTokenCell(cell, token) : !cell.cellOutput.type && cell.outputData === "0x") cells.push(cell);
+  }
+  return withoutDeadCached(client, lock, cells);
+}
+
+/**
+ * Tops up one cell under the anyone-can-pay `lock` in `tx`: one input, and one
+ * output holding `ckb` shannons more, or with `token`, `units` more of it in a
+ * cell of that token. The cell is chosen by `pickPayoutCell`, never one in
+ * `avoid`. Returns the cell, or undefined when `lock` has none to add to.
  */
 export async function addTopUp(
   tx: ccc.Transaction,
   client: ccc.Client,
   lock: ccc.Script,
   add: { ckb?: bigint; token?: ccc.Script; units?: bigint },
+  avoid?: ReadonlySet<string>,
 ): Promise<ccc.Cell | undefined> {
   const { token } = add;
-  const cells = (await collect(client, lock, token)).filter((c) => !!token === !!c.cellOutput.type);
+  const cells = await payoutCells(client, lock, token);
   // A cell the payment would take past a u128 of tokens cannot be topped up (xUDT refuses it).
   const room = token ? cells.filter((c) => tokenAmount(c.outputData) + (add.units ?? 0n) <= U128_MAX) : cells;
   if (cells.length && !room.length) {
@@ -225,7 +322,7 @@ export async function addTopUp(
       "every token cell of the recipient would hold over 2^128 - 1 units after this payment", "no-payout-cell",
     );
   }
-  const target = randomPick(room);
+  const target = await pickPayoutCell(client, lock, room, avoid);
   if (!target) return undefined;
   tx.inputs.push(ccc.CellInput.from({ previousOutput: target.outPoint }));
   tx.addOutput(
@@ -258,10 +355,7 @@ export async function collect(client: ccc.Client, lock: ccc.Script, token?: ccc.
  */
 export async function withoutDeadCached(client: ccc.Client, lock: ccc.Script, cells: ccc.Cell[]): Promise<ccc.Cell[]> {
   if (!cells.length || !client.cache) return cells;
-  const cached = new Set<string>();
-  for await (const c of client.cache.findCells({ script: lock, scriptType: "lock", scriptSearchMode: "exact", withData: true })) {
-    cached.add(ccc.hexFrom(c.outPoint.toBytes()));
-  }
+  const cached = await cachedOutPoints(client, lock);
   if (!cached.size) return cells;
   const keep = await Promise.all(
     cells.map(async (c) => {
@@ -286,20 +380,82 @@ export function deadInputs(e: unknown): boolean {
   return /\b(Dead|Unknown)\(OutPoint\(/.test(text);
 }
 
+const errorText = (e: unknown) =>
+  e instanceof ccc.ErrorClientBase ? `${e.message} ${e.data}` : e instanceof Error ? e.message : String(e);
+
 /**
- * Runs `build` (which builds and sends a transaction); if the node rejects it
- * for a spent or unknown input, clears the client's cache and runs it once more,
- * so it is built again from the cells live on-chain (audit, 31 Oct). A
- * `beforeSend` inside then runs again, with the new transaction's hash: the
- * first one was refused and will never commit.
+ * Whether a send was rejected because an input is already spent by a
+ * transaction in the node's pool, on a node with replace-by-fee on: CKB then
+ * runs its RBF checks instead of answering `Dead`, and refuses the newcomer
+ * (`PoolRejectedRBF`, -1111) unless it pays enough more to replace the other.
  */
-export async function rebuildOnDeadInputs<T>(client: ccc.Client, build: () => Promise<T>): Promise<T> {
+export function poolConflict(e: unknown): boolean {
+  if (e instanceof ccc.ErrorClientRBFRejected) return true;
+  if (e instanceof ccc.ErrorClientBase && e.code === -1111) return true;
+  return /\b(RBFRejected|PoolRejectedRBF)\b/.test(errorText(e));
+}
+
+/** The out point a `Dead` or `Unknown` rejection names (as `outPointKey`), if any. */
+function rejectedOutPoint(e: unknown): string | undefined {
+  if (e instanceof ccc.ErrorClientResolveUnknown) return outPointKey(e.outPoint);
+  const hex = /\b(?:Dead|Unknown)\(OutPoint\((0x[0-9a-fA-F]+)\)/.exec(errorText(e))?.[1];
+  if (!hex) return undefined;
   try {
-    return await build();
-  } catch (e) {
-    if (!deadInputs(e) || !client.cache) throw e;
-    await client.cache.clear();
-    return build();
+    return outPointKey(ccc.OutPoint.fromBytes(hex));
+  } catch {
+    return undefined;
+  }
+}
+
+/** How often, and how patiently, a payment or a charge is built again after a refusal for a spent cell. */
+export interface RetryOptions {
+  /** Attempts in all, the first included (default 3; 1 never retries). */
+  attempts?: number;
+  /** The wait before the second attempt, in ms (default 1000); it doubles each time, with jitter of +-50%. */
+  delayMs?: number;
+}
+
+export const DEFAULT_RETRY: Readonly<Required<RetryOptions>> = { attempts: 3, delayMs: 1000 };
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Runs `build` (which builds and sends a transaction). If the node definitely
+ * refused it because an input was already spent (`Dead`, `Unknown`, or an RBF
+ * refusal for a conflict in its pool), or `build` sent nothing because every
+ * payout cell was busy ("payout-busy"), clears the client's cache, waits, and
+ * runs it again, up to `retry.attempts` in all (audit, 31 Oct; mentor review,
+ * 2 Nov). `build` is given the out points rejections named, so a payout cell
+ * the node called spent is not picked again. The wait is `retry.delayMs`,
+ * doubling each time, times a random 0.5 to 1.5, so payers that collided do
+ * not retry in step.
+ *
+ * Any other error is thrown at once. That includes a send whose outcome is
+ * unknown (a timeout, a lost reply): `signAndSend` returns the hash when the
+ * node did take the transaction, and otherwise throws the send's own error,
+ * which is never retried, so nothing is ever paid twice. A `beforeSend` inside
+ * runs again with each new transaction's hash: a refused one never commits.
+ */
+export async function rebuildOnDeadInputs<T>(
+  client: ccc.Client,
+  build: (avoid: ReadonlySet<string>) => Promise<T>,
+  retry: RetryOptions = {},
+): Promise<T> {
+  const attempts = Math.max(1, Math.floor(retry.attempts ?? DEFAULT_RETRY.attempts));
+  const delay = Math.max(0, retry.delayMs ?? DEFAULT_RETRY.delayMs);
+  const avoid = new Set<string>();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await build(avoid);
+    } catch (e) {
+      const busy = e instanceof SessionBalanceError && e.reason === "payout-busy";
+      if (!(busy || deadInputs(e) || poolConflict(e)) || attempt >= attempts) throw e;
+      const named = rejectedOutPoint(e);
+      if (named) avoid.add(named);
+      await client.cache?.clear();
+      const wait = delay * 2 ** (attempt - 1) * (0.5 + Math.random());
+      if (wait > 0) await sleep(wait);
+    }
   }
 }
 
@@ -534,10 +690,17 @@ function plainXudtFault(type: ccc.Script, xudt: XudtCode): string | undefined {
  * `memo` is recorded in the witness of the session key's own input, which that
  * key's signature covers: the payment commits to it (see `verifyAccess`).
  *
+ * With `topUp`, the recipient's cell is a confirmed one that no transaction in
+ * the node's pool spends, where the node can tell (`pickPayoutCell`): readers
+ * paying at the same moment compete for those cells.
+ *
  * If the node rejects the payment because an input is already spent (another
- * tab or device paid from the same cells) or unknown, the client's cache is
- * cleared and the payment is built and sent once more from the live cells;
- * `beforeSend` then runs again with the new hash (`rebuildOnDeadInputs`).
+ * tab, device or payer took it first) or unknown, the client's cache is cleared
+ * and the payment is built again from the live cells, with another payout
+ * cell, after a short wait: up to `retry.attempts` in all (default 3), waiting
+ * `retry.delayMs` (default 1000) doubling each time. `beforeSend` runs again
+ * with each new hash (`rebuildOnDeadInputs`). A send whose outcome is unknown
+ * is never retried.
  */
 export async function spendInSession(
   session: Session,
@@ -547,13 +710,12 @@ export async function spendInSession(
   request: SpendRequest,
   now: Date = new Date(),
 ): Promise<ccc.Hex> {
-  // Built on a cell another tab spent since: rebuilt once from live cells (audit, 31 Oct).
-  return rebuildOnDeadInputs(client, () => spendOnce(session, client, deployment, binding, request, now));
+  // Built on a cell another tab or payer spent since: rebuilt from live cells (audit, 31 Oct; review, 2 Nov).
+  return rebuildOnDeadInputs(client, (avoid) => spendOnce(session, client, deployment, binding, request, now, avoid), request.retry);
 }
 
-type SpendRequest =
-  | { to: string; amount: bigint; token?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> }
-  | { to: string; token: bigint; amount?: undefined; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> };
+type SpendCommon = { to: string; topUp?: boolean; memo?: ccc.HexLike; beforeSend?: (txHash: ccc.Hex) => Promise<void>; retry?: RetryOptions };
+type SpendRequest = SpendCommon & ({ amount: bigint; token?: undefined } | { token: bigint; amount?: undefined });
 
 async function spendOnce(
   session: Session,
@@ -562,6 +724,7 @@ async function spendOnce(
   binding: OnChainBinding,
   request: SpendRequest,
   now: Date,
+  avoid: ReadonlySet<string>,
 ): Promise<ccc.Hex> {
   const tokenType = binding.token && ccc.Script.from(binding.token.type);
   const tokenOut = request.token ?? 0n;
@@ -594,11 +757,11 @@ async function spendOnce(
   let ckbOut: bigint;
   if (request.topUp) {
     if (!(await isAnyoneCanPay(toLock, client))) throw new ScopeError("top-up needs an anyone-can-pay recipient");
-    // Payers at once compete for a cell; a random pick spreads them out when the
-    // recipient keeps several.
+    // Payers at once compete for a cell: a confirmed one no pool transaction spends,
+    // at random among the recipient's (pickPayoutCell).
     ckbOut = request.amount ?? 0n;
     const paid = request.token !== undefined ? { token: tokenType, units: tokenOut } : { ckb: ckbOut };
-    if (!(await addTopUp(tx, client, toLock, paid))) {
+    if (!(await addTopUp(tx, client, toLock, paid, avoid))) {
       throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up", "no-payout-cell");
     }
   } else if (request.token !== undefined) {
@@ -972,4 +1135,41 @@ export async function ownerSweep(
     return signAndSend(owner, tx);
   }
   throw new SessionBalanceError("the owner needs one plain cell to prove ownership");
+}
+
+/**
+ * Gives an anyone-can-pay address (a creator's `payTo`) `count` more cells to be
+ * topped up, paid by `funder`, in one transaction. Each top-up consumes one of
+ * these cells, so readers paying at the same moment compete for them; with more
+ * cells they rarely pick the same one (mentor review, 2 Nov). Anyone can be the
+ * funder: the anyone-can-pay lock needs no signature to receive a new cell.
+ *
+ * Each cell is as small as a cell under `payTo` can be (61 CKB for a 20-byte
+ * args address) unless `capacity` is given. With `token`, each is a cell of that
+ * token holding 0 units (about 142 CKB), for token payments. `count` is 1 to
+ * `MAX_PAYOUT_CELLS`: a payment reads no more than that many.
+ */
+export async function createPayoutCells(
+  funder: ccc.Signer,
+  payTo: string,
+  opts: { count: number; capacity?: bigint; token?: ccc.ScriptLike; beforeSend?: (txHash: ccc.Hex) => Promise<void> },
+): Promise<ccc.Hex> {
+  const client = funder.client;
+  if (!Number.isInteger(opts.count) || opts.count < 1 || opts.count > MAX_PAYOUT_CELLS) {
+    throw new RangeError(`count must be 1 to ${MAX_PAYOUT_CELLS}`);
+  }
+  const { script: lock } = await ccc.Address.fromString(payTo, client);
+  if (!(await isAnyoneCanPay(lock, client))) {
+    throw new SessionPolicyError("payout cells go under an anyone-can-pay address", "payto-not-anyone-can-pay");
+  }
+  const token = opts.token && ccc.Script.from(opts.token);
+  const tx = ccc.Transaction.from({ outputs: [], outputsData: [] });
+  // CCC raises a capacity below what the cell occupies to that size.
+  for (let i = 0; i < opts.count; i++) {
+    tx.addOutput({ lock, capacity: opts.capacity ?? 0n, ...(token && { type: token }) }, token ? tokenData(0n) : "0x");
+  }
+  if (token) await tx.addCellDepsOfKnownScripts(client, ccc.KnownScript.XUdt);
+  await tx.completeInputsByCapacity(funder);
+  await tx.completeFeeBy(funder);
+  return signAndSend(funder, tx, opts.beforeSend);
 }

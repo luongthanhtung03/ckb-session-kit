@@ -15,6 +15,8 @@ import { isAsset, isHash, termsFor } from "../../../subscribe/terms";
  * payout cell to top up): a server fault, not the subscription's state (review, 28 Oct).
  */
 const CREATOR_FAULTS: readonly SessionBalanceReason[] = ["no-fee-cell", "no-payout-cell"];
+/** Every payout cell was being spent by other payments in the node's pool: nothing was sent, a retry may pass. */
+const BUSY: SessionBalanceReason = "payout-busy";
 const deployment = deploymentJson as SessionLockDeployment;
 
 /**
@@ -53,12 +55,13 @@ export async function POST(request: Request) {
     // Not due yet, run dry, cancelled: the subscription's state, not a server fault.
     const creatorFault = e instanceof SessionBalanceError && !!e.reason && CREATOR_FAULTS.includes(e.reason);
     if (creatorFault) console.error(`charge: ${e.message}`);
+    const busy = e instanceof SessionBalanceError && e.reason === BUSY;
     // PAY_TO not anyone-can-pay: this deployment's setup, and a retry cannot fix it.
     if (e instanceof SessionPolicyError && e.reason === "payto-not-anyone-can-pay") {
       console.error(`charge: ${e.message}`);
       return Response.json({ error: "charging is misconfigured on this deployment" }, { status: 503 });
     }
-    if (!creatorFault && (e instanceof SessionBalanceError || e instanceof SessionPolicyError)) {
+    if (!creatorFault && !busy && (e instanceof SessionBalanceError || e instanceof SessionPolicyError)) {
       return Response.json({ error: e.message }, { status: 409 });
     }
     return Response.json({ error: "could not charge right now", retry: true }, { status: 503 });
