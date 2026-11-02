@@ -44,9 +44,35 @@ The problem is not specific to that application.
 npm install ckb-session-kit
 ```
 
-[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v1.0.0, ESM, Node 20 or later
+[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v1.1.0, ESM, Node 20 or later
 and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
 [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
+
+New in 1.1.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
+
+- `openSession(owner, session, deployment, { ..., onWarning })`: called with a
+  `SessionWarning` (`"no-rate-limit"`) before anything is signed; throw from it
+  to stop the opening. Without it the warning goes to `console.warn`.
+- `SigningLockOptions` (`{ allowUnreviewedOwnerLock?: boolean }`), taken by
+  `assertSigningLock`, `openSession` and `openSubscription`: owner locks are
+  checked against a list of reviewed configurations (see
+  [Which wallets can own a session](#which-wallets-can-own-a-session)). Refusals
+  carry `reason: "owner-lock-unsafe"` (never allowed) or
+  `"owner-lock-unreviewed"` (allowed, with a warning, by this option).
+- `RetryOptions` (`{ attempts?, delayMs? }`, defaults in `DEFAULT_RETRY`: 3
+  attempts from 1000 ms, doubling, with jitter), passed as `retry` to
+  `spendInSession` and `chargeSubscription`: a send the node refuses for a spent
+  input is built again with another payout cell (`poolConflict` tells an RBF
+  refusal apart). The retry loop itself is internal (not exported).
+- `pickPayoutCell(client, lock, cells, avoid?)`: the payout cell a top-up uses,
+  confirmed and free in the node's pool (`MAX_POOL_CHECKS`, `MAX_PAYOUT_CELLS`).
+  When none is free, `SessionBalanceError` with reason `"payout-busy"`.
+- `createPayoutCells(funder, payTo, { count, capacity?, token? })`: more
+  anyone-can-pay cells for a creator, so concurrent payments do not compete.
+- `clearPlantedCells(subscriber, deployment, subscription)`: sweeps cells a third
+  party created under a subscription's lock, keeping the subscription's own.
+- `assertCurrentDeployment(client, deployment)`, `MAX_SUBSCRIPTION_CELLS`, and the
+  `SessionPolicyReason` / `SessionBalanceReason` types for the errors' `reason`.
 
 ## Try it
 
