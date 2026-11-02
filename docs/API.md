@@ -50,7 +50,8 @@ the recipient rule covers outputs, not the fee, so without a rate limit a leaked
 key can still give up to `maxPerTx` to the miner in every block.
 Without a rate limit (`minInterval` left out or 0), each spend is still held to
 `maxPerTx`, but spends can repeat in every block until the session is empty.
-`openSession` then raises a `SessionWarning` (`"no-rate-limit"`) before
+`minInterval` 1 is almost the same (a spend one block after another).
+`openSession` then raises a `SessionWarning` (`"no-rate-limit"`) for 0 or 1 before
 anything is signed: to `opts.onWarning(warning)` if given (throw there to stop
 the opening), otherwise to `console.warn`.
 `opts.beforeSend(binding)` runs after the
@@ -104,7 +105,10 @@ payout cell, after a wait. `retry` (`RetryOptions`) sets how many attempts in
 all (default 3) and the first wait (default 1000 ms, doubling, with jitter).
 `beforeSend` runs again with each new hash (a refused payment never commits).
 A send whose outcome is unknown (a timeout, a lost reply the node did not take)
-is never retried, so a payment is never sent twice.
+is never retried, so a payment is never sent twice. If the send fails and the
+status lookup fails too, it throws `SendOutcomeUnknownError` (never retried),
+even when the send's error was a refusal for a spent input: CCC sends again on
+a fallback node, which answers `Dead` once the first send has committed.
 
 In a token session, `{ to, token }` pays `token` units instead of shannons:
 with `topUp: true` into the recipient's anyone-can-pay token cell (no CKB
@@ -166,7 +170,14 @@ unless the lock is a configuration this kit has reviewed:
 Refused always, reason `"owner-lock-unsafe"`: anyone-can-pay (both networks'
 deployments and the older ones pw-core lists), PW-Lock (its deployed build is
 anyone-can-pay), always-success, Omnilock in anyone-can-pay or administrator
-mode, and Nostr lock in proof of work mode (`args[0]` not 0).
+mode, and Nostr lock in proof of work mode (`args[0]` not 0). Anyone-can-pay,
+PW-Lock and always-success are recognised by their type id and by the data hash
+of their deployed binaries under any data hash_type (`data`, `data1`, `data2`);
+another build of them (a different binary) is only refused as unreviewed.
+
+A multisig with a since, or an Omnilock time-lock, delays the owner as much as
+a thief: owner mode needs an input under that lock, so revoking or sweeping a
+session waits for the since while the session key can still spend.
 
 Anything else is refused with reason `"owner-lock-unreviewed"`: Omnilock auth
 0xFC-0xFE (they hand the check to another lock or code), other Omnilock auth
@@ -245,9 +256,15 @@ token cells can take the payment without passing 2^128 - 1 units) or
 node's pool: nothing was sent; try again after a block). Match on it,
 not on the message, which may change. Other balance errors leave it undefined.
 
+### `SendOutcomeUnknownError`
+Thrown by a send (`spendInSession`, `chargeSubscription`, and every other call
+that signs and sends) when the node refused or did not answer and could not
+then be asked whether it has the transaction. It may still commit: look for
+`txHash` before paying again. `cause` is the send's own error. Never retried.
+
 ### `SessionWarning`
 `{ code, message }`, passed to `openSession`'s `opts.onWarning` before anything
-is signed. One code so far: `"no-rate-limit"`, for `minInterval` 0. The lock
+is signed. One code so far: `"no-rate-limit"`, for `minInterval` 0 or 1. The lock
 will enforce such a session as written; the warning says what that allows. Match
 on `code`, not on the message. Subscriptions do not warn: `openSubscription`
 refuses a period of 0.
@@ -353,7 +370,9 @@ price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
 of 153 CKB plus n prices pays n more periods. Keep a plain cell in the wallet:
 cancelling needs one. `budget` is required without `token`. The subscriber's and
 the charger's locks must both pass `assertSigningLock`;
-`allowUnreviewedOwnerLock: true` lets unreviewed ones through with a warning.
+`allowUnreviewedOwnerLock: true` lets an unreviewed subscriber lock through with
+a warning, and `allowUnreviewedChargerLock: true` an unreviewed charger lock:
+opting in for one's own wallet does not waive review of the creator's lock.
 
 With `token: { type, amount }` (a plain xUDT; flags refused), the cell is typed
 with the token and holds `amount` units plus its own size (282 CKB; `budget` may
@@ -384,7 +403,9 @@ built again (up to `retry.attempts`) if the node rejects it for a spent cell.
 
 ### `cancelSubscription(subscriber, deployment, subscription) → { txHash?, refunded, refundedTokens?, nothingFound? }`
 Owner-mode sweep of everything left; no creator involved, no wait. Tokens come
-back as one token cell (`refundedTokens`, token subscriptions only).
+back as one token cell (`refundedTokens`, token subscriptions only). Look-alikes
+of the token planted under the lock (see `clearPlantedCells`) go back too, in
+their own token cells.
 `recoverSessions` also finds and sweeps subscriptions.
 
 ### `clearPlantedCells(subscriber, deployment, subscription) → { txHash?, swept, refunded, refundedTokens?, more, nothingFound? }`
@@ -395,11 +416,24 @@ spent a cell under the subscriber's or the charger's lock (an opening, a
 charge, the subscriber's top-up). Every other cell of the subscription's kind
 goes back to the subscriber in one owner-mode transaction (one signature). The
 subscription's own cells are not touched, so access and the charge schedule go
-on as before. One call reads at most 64 cells and looks up each creating
-transaction once; `more` means cells were left unread: call again once the
-sweep commits. Refused when none of the cells read is the subscription's own
-(cancel instead). `nothingFound` when nothing is planted. Pass `openTx` when you
-have it: an opening with over 32 inputs cannot be told apart otherwise.
+on as before. In a token subscription, look-alikes of the token are planted too:
+cells typed with the token's code and longer args that start with the token's
+(xUDT ignores what follows a zero flags word, and anyone can create them with 0
+units; the indexer's type filter matches by prefix). Those an owner sweep can
+spend (no flags) go back to the subscriber with their type; they never count
+toward `MAX_SUBSCRIPTION_CELLS`.
+
+One call keeps at most 64 cells of the kind, reads at most twice as many listed
+cells per scan, looks up each creating transaction once, and sweeps at most 30
+cells in one transaction, so with the subscriber's own input it stays within
+32 inputs (a status reads it, and never takes it for a charge). `more` means
+cells were left: call again once the sweep commits. When every cell was read
+and none is the subscription's own, it is refused (cancel instead); with cells
+left unread, the planted ones read are swept anyway. The transaction carries
+`CLEAR_PLANTED_MEMO` (exported by `src/subscription.ts`) in the witness of the
+subscriber's own input, so a status does not take it for a cancel.
+`nothingFound` when nothing is planted. Pass `openTx` when you have it: an
+opening with over 32 inputs cannot be told apart otherwise.
 
 ### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance?, account?, token? }) → SubscriptionCheck`
 The creator's check, from the chain alone: the cell is live, under this
@@ -430,7 +464,8 @@ payments in the token and adds `tokenBalance`; `chargesLeft` is then units / pri
 Throws `SessionPolicyError` (`"too-many-cells"`) past `MAX_SUBSCRIPTION_CELLS`;
 answer it as a conflict (the demo uses 409), not as unpaid. The subscriber clears
 it with `clearPlantedCells`. A subscriber's spend after the last charge (a
-cancel) ends the period of a charge that took the whole balance.
+cancel) ends the period of a charge that took the whole balance; a
+`clearPlantedCells` cleanup, marked with `CLEAR_PLANTED_MEMO`, does not.
 
 ### `findSubscriptionCells(client, deployment, subscription) → { lock, cells, balance, tokenBalance, nextChargeIn }`
 `nextChargeIn` is the number of blocks until a cell is a full period old and the
@@ -439,11 +474,14 @@ In a token subscription, only cells typed with the token count; `tokenBalance` i
 their units (0 for CKB), `balance` their shannons.
 
 ### `MAX_SUBSCRIPTION_CELLS`
-16: the most cells of the subscription's kind (plain CKB, or its token) under
-one subscription's lock that `subscriptionStatus`, `chargeSubscription` and
-`findSubscriptionCells` read (and at most 64 recent transactions of its
-history). The indexer lists only that kind, so cells under any other type
-script never count. Anyone can create cells under a lock and each costs RPC
+16: the most cells of the subscription's kind (plain CKB, or exactly its token)
+under one subscription's lock that `subscriptionStatus`, `chargeSubscription`
+and `findSubscriptionCells` read. The indexer lists only that kind (a token by
+its type script and exact length, so look-alikes with longer args are left
+out), and only cells really of that kind count. In the lock's history within
+the last period, at most 64 transactions that spent a cell under the lock (only
+the subscriber and the charger can) and at most 1024 that only created one
+(skipped without a fetch) are read; older ones are never counted. Anyone can create cells under a lock and each costs RPC
 calls, so past it they throw `SessionPolicyError` with reason `"too-many-cells"`
 rather than answer from part of the cells (which could deny a paid-up
 subscriber or leave a mature cell out of a charge). The subscriber sweeps the

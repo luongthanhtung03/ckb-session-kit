@@ -56,7 +56,6 @@ import {
   waitBlocks,
   type ClearOptions,
   smokeKeys,
-  SMOKE_KEY_FILE,
 } from "./testnet-lib.js";
 
 const PRICE = 10n * CKB;
@@ -84,7 +83,7 @@ async function main(): Promise<void> {
   const { funderKey, creatorKey, created } = smokeKeys();
   if (created) {
     const funderAddress = await new ccc.SignerCkbPrivateKey(new ccc.ClientPublicTestnet({ url: rpcUrl() }), funderKey).getRecommendedAddress();
-    console.log(`created ${SMOKE_KEY_FILE} with two new testnet keys`);
+    console.log("created .env.smoke (at the repository root) with two new testnet keys");
     console.log(`fund this address from https://faucet.nervos.org, then run again:
   ${funderAddress}`);
     return;

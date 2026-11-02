@@ -131,6 +131,23 @@ describe("assertSigningLock: known signature-free paths are refused, even with t
   it("always-success", async () => {
     await expectUnsafe(await known(ccc.KnownScript.AlwaysSuccess, "0x"), /always/);
   });
+
+  // Review W6 L6: the same binaries referenced by data hash, under any data hash_type.
+  // Data hashes of the code cells CCC lists for each script, read from testnet and mainnet (2 Nov).
+  it("the same signature-free binaries referenced by data hash (data, data1, data2)", async () => {
+    const byData: [string, RegExp][] = [
+      ["0x3b521cc4b552f109d092d8cc468a8048acb53c5952dbe769d2b2f9cf6e47f7f1", /always-success/],
+      ["0xcd69ba816f7471e59110058aa37387c362ed9a240cd178f7bb1ecee386cb31e6", /anyone-can-pay/],
+      ["0x0fb343953ee78c9986b091defb6252154e0bb51044fd2879fde5b27314506111", /anyone-can-pay/],
+      ["0xeffe377419256d150d68368d7cb5731edad39d1805a8c2c73ce8e9615b9f9878", /PW-Lock/],
+      ["0xd6a5a0edb152e88e8bbc702e164441cb3890fae35da672b408d28ca9a1bde3ee", /PW-Lock/],
+    ];
+    for (const [codeHash, what] of byData) {
+      for (const hashType of ["data", "data1", "data2"] as const) {
+        await expectUnsafe(ccc.Script.from({ codeHash, hashType, args: "0x" + "11".repeat(20) }), what);
+      }
+    }
+  });
 });
 
 describe("assertSigningLock: unreviewed configurations need allowUnreviewedOwnerLock", () => {
@@ -206,5 +223,22 @@ describe("the opt-in through openSession and openSubscription", () => {
     await expect(openSubscription(subscriber, d, { ...terms, allowUnreviewedOwnerLock: true })).rejects.toMatchObject({
       reason: "owner-lock-unsafe",
     });
+  });
+
+  // Review W6 I1: opting in for one's own wallet does not waive review of the creator's charger lock.
+  it("openSubscription takes a separate opt-in for the charger's lock", async () => {
+    const subscriber = new Owner(await known(ccc.KnownScript.Secp256k1Blake160, "0x" + "11".repeat(20)));
+    const acp = ccc.Address.fromScript(await known(ccc.KnownScript.AnyoneCanPay, "0x" + "77".repeat(20)), client).toString();
+    const charger = ccc.Address.fromScript(unreviewed, client).toString();
+    const terms = { charger, payTo: acp, price: 10n * CKB, periodBlocks: 20n, budget: 500n * CKB };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(openSubscription(subscriber, d, { ...terms, allowUnreviewedOwnerLock: true })).rejects.toMatchObject({
+      reason: "owner-lock-unreviewed",
+      message: expect.stringMatching(/charger/),
+    });
+    // With the charger's own opt-in, the lock check passes (and warns); what fails next is the funding.
+    const err = await openSubscription(subscriber, d, { ...terms, allowUnreviewedChargerLock: true }).catch((e: unknown) => e);
+    expect(err).not.toMatchObject({ reason: "owner-lock-unreviewed" });
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/charger/));
   });
 });

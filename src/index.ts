@@ -32,6 +32,7 @@ export {
   pickPayoutCell,
   poolConflict,
   recoverSessions,
+  SendOutcomeUnknownError,
   SessionBalanceError,
   sessionLockOf,
   spendInSession,

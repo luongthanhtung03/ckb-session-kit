@@ -379,11 +379,15 @@ and the next steps; nothing is sent. A status or a charge reads at most
 `MAX_SUBSCRIPTION_CELLS` (16) cells under one subscription's lock and refuses
 beyond that (`SessionPolicyError`, reason `"too-many-cells"`), so planted cells
 cannot make one request cost thousands of RPC calls. Only cells of the
-subscription's kind count (plain CKB, or its token): the indexer leaves other
-cells out. The subscriber clears planted ones without cancelling:
+subscription's kind count (plain CKB, or exactly its token): the indexer leaves
+other cells out, including look-alikes of the token with longer args. The
+subscriber clears planted ones without cancelling:
 `clearPlantedCells(wallet, deployment, subscription)` sweeps every cell not made
-by the opening, a charge or the subscriber back to the subscriber, in one
-signature, and leaves the subscription's own cells as they are.
+by the opening, a charge or the subscriber (and any look-alike of the token)
+back to the subscriber, at most 30 per transaction, one signature each, and
+leaves the subscription's own cells as they are. Only the subscriber's and the
+charger's spends count toward the 64 recent transactions a status reads;
+creations by anyone else are paged past, up to 1024 per period.
 `npm run smoke:clear-planted` checks it on testnet: 16 planted cells block the status and charges, `clearPlantedCells` clears them, and the next charge stays on time.
 
 ## Which wallets can own a session
@@ -420,10 +424,10 @@ of reviewed configurations:
 | Omnilock, auth 0x00-0x06 or 0x12, no mode or only time-lock or supply | accepted |
 | Nostr lock, signing mode (`args[0]` is 0) | accepted |
 | JoyID | accepted (its code is closed: reviewed from its documentation) |
-| Anyone-can-pay, PW-Lock, always-success | refused: they open with no signature |
+| Anyone-can-pay, PW-Lock, always-success (by type id, or their deployed binaries by data hash) | refused: they open with no signature |
 | Omnilock in anyone-can-pay or administrator mode | refused |
 | Nostr lock in proof of work mode (`args[0]` not 0) | refused: anyone who does the work can unlock it |
-| Omnilock auth 0xFC-0xFE, the proxy locks, any other lock | refused unless you pass `allowUnreviewedOwnerLock: true` |
+| Omnilock auth 0xFC-0xFE, the proxy locks, any other lock | refused unless you pass `allowUnreviewedOwnerLock: true` (`allowUnreviewedChargerLock` for a subscription's charger) |
 
 PW-Lock is refused because the build deployed on CKB is its anyone-can-pay
 variant: a transaction with no signature in the witness takes the payment path,
@@ -461,7 +465,7 @@ Rust. A cell under it can be spent two ways:
     block. `openSession` creates one cell. With `min_interval` 0 there is no
     rate limit: every spend is within `max_per_tx`, but spends can repeat in
     every block until the cell is empty, and `openSession` warns
-    (`SessionWarning`, `"no-rate-limit"`). The interval is a number of blocks,
+    (`SessionWarning`, `"no-rate-limit"`; also for `min_interval` 1, almost the same). The interval is a number of blocks,
     not a fixed time: block time varies (see the
     [average block time](https://explorer.nervos.org/charts/average-block-time));
   - **no splitting** — a session spend may send at most one cell back to the
@@ -478,7 +482,7 @@ Rust. A cell under it can be spent two ways:
 Signatures are delegated to the standard secp256k1 locks of the owner and the
 session key (the pattern sUDT's owner mode uses), so the script carries no
 cryptography: **7.6 KB, no allocator, no C, 15,651 cycles per run** — about 0.9% of
-a session spend (29,031 on a token spend, 1.7%). 141 tests run it in the real CKB-VM, most asserting a specific
+a session spend (29,031 on a token spend, 1.7%). 144 tests run it in the real CKB-VM, most asserting a specific
 rejection code, and CI builds the contract and requires them.
 
 **What it cannot do:** enforce an expiry time. A CKB script can prove time has

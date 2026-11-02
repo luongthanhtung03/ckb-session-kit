@@ -3,7 +3,7 @@
 import { ccc } from "@ckb-ccc/core";
 import { execFileSync, spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { MAX_SUBSCRIPTION_CELLS, subscriptionLock, TESTNET_DEPLOYMENT } from "../src/index.js";
+import { MAX_SUBSCRIPTION_CELLS, SessionPolicyError, subscriptionLock, TESTNET_DEPLOYMENT } from "../src/index.js";
 import {
   analyseRound,
   CKB,
@@ -14,8 +14,20 @@ import {
   deriveKey,
   logPath,
   plantPlan,
+  checkOwnerLock,
+  OWNER_LOCK_CASES,
+  ownerLockCost,
+  ownerLockOptions,
+  ownerLockVerdict,
+  rpcUrl,
+  SMOKE_KEY_FILE,
+  smokeKeys,
   type PayerRound,
 } from "../scripts/testnet-lib.js";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 describe("script options", () => {
   it("contention: defaults, flags over env, bounds", () => {
@@ -126,6 +138,63 @@ describe("analyseRound", () => {
   });
 });
 
+describe("owner locks (smoke:owner-locks)", () => {
+  const client = new ccc.ClientPublicTestnet();
+
+  it("options: open and the PW-Lock proof by default, each can be turned off", () => {
+    expect(ownerLockOptions([], {})).toEqual({ open: true, pwProof: true });
+    expect(ownerLockOptions(["--no-open"], {})).toEqual({ open: false, pwProof: true });
+    expect(ownerLockOptions([], { NO_PW_PROOF: "1" })).toEqual({ open: true, pwProof: false });
+  });
+
+  it("cost: 300 CKB lent per owner it can sign for, 62 CKB left under PW-Lock", () => {
+    expect(ownerLockCost({ open: true, pwProof: true })).toEqual({ openers: 4, lent: 1200n * CKB, spent: 62n * CKB });
+    expect(ownerLockCost({ open: false, pwProof: false })).toEqual({ openers: 0, lent: 0n, spent: 0n });
+  });
+
+  it("covers every refusal reason, and the opt-in both ways", () => {
+    const expects = new Set(OWNER_LOCK_CASES.map((c) => c.expect));
+    expect(expects).toEqual(new Set(["accepted", "owner-lock-unsafe", "owner-lock-unreviewed"]));
+    const optIn = OWNER_LOCK_CASES.filter((c) => c.optIn);
+    expect(optIn.map((c) => c.expect).sort()).toEqual(["accepted", "accepted", "owner-lock-unsafe"]);
+  });
+
+  it("every row this script holds no key for gets its expected verdict, offline", async () => {
+    for (const c of OWNER_LOCK_CASES) {
+      if ("signer" in c.lock) continue;
+      const lock =
+        "known" in c.lock ? ccc.Script.from({ ...(await client.getKnownScript(c.lock.known)), args: c.lock.args }) : ccc.Script.from(c.lock.script);
+      const r = await checkOwnerLock(lock, client, c.optIn);
+      expect([c.name, r.verdict]).toEqual([c.name, c.expect]);
+      expect(r.warnings.length).toBe(c.optIn && c.expect === "accepted" ? 1 : 0);
+    }
+  });
+
+  it("ownerLockVerdict: a refusal's reason, accepted, other errors rethrown", () => {
+    expect(ownerLockVerdict()).toBe("accepted");
+    expect(ownerLockVerdict(new SessionPolicyError("x", "owner-lock-unsafe"))).toBe("owner-lock-unsafe");
+    expect(() => ownerLockVerdict(new SessionPolicyError("x", "too-many-cells"))).toThrow("x");
+    expect(() => ownerLockVerdict(new Error("fetch failed"))).toThrow("fetch failed");
+  });
+
+  it("smokeKeys reads SMOKE_KEY_FILE, and never creates keys at a path that does not exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "smoke-keys-"));
+    const file = join(dir, "keys");
+    // Placeholder values, not keys anyone uses.
+    writeFileSync(file, `FUNDER_KEY=0x${"01".repeat(32)}
+CREATOR_KEY=0x${"02".repeat(32)}
+`);
+    expect(smokeKeys({ SMOKE_KEY_FILE: file })).toEqual({ funderKey: "0x" + "01".repeat(32), creatorKey: "0x" + "02".repeat(32), created: false });
+    expect(() => smokeKeys({ SMOKE_KEY_FILE: join(dir, "missing") })).toThrow(/does not exist/);
+  });
+
+  it("rpcUrl: CKB_RPC_URL, else the script's fallback", () => {
+    expect(rpcUrl({}, "https://testnet.ckbapp.dev/")).toBe("https://testnet.ckbapp.dev/");
+    expect(rpcUrl({ CKB_RPC_URL: "http://x/" }, "https://testnet.ckbapp.dev/")).toBe("http://x/");
+    expect(rpcUrl({})).toBe("https://testnet.ckb.dev/");
+  });
+});
+
 describe("--dry-run", () => {
   const env = { ...process.env, FUNDER_KEY: "", CREATOR_KEY: "", LOG: "" };
   const run = (script: string, ...args: string[]) =>
@@ -144,6 +213,14 @@ describe("--dry-run", () => {
     expect(out).toMatch(/planted: 16 cells x 153 = 2448 CKB/);
   });
 
+  it("smoke:owner-locks prints the cost and every row's expected verdict, with no key and no network", () => {
+    const out = run("scripts/testnet-owner-locks.ts");
+    expect(out).toMatch(/lent by the funder for the run: 1200 CKB/);
+    expect(out).toMatch(/62 CKB left under PW-Lock/);
+    expect(out).not.toMatch(/✗/);
+    expect(out.match(/✓/g)).toHaveLength(OWNER_LOCK_CASES.length);
+  });
+
   it("a bad option is refused before anything else", () => {
     const r = spawnSync(process.execPath, ["--import", "tsx", "scripts/testnet-contention.ts", "--dry-run", "--rounds=9"], {
       env,
@@ -151,5 +228,27 @@ describe("--dry-run", () => {
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/rounds \(--rounds= or ROUNDS\) must be an integer from 1 to 5, got 9/);
+  });
+});
+
+// Review W6 I4: the key file is this repository's .env.smoke (gitignored), wherever
+// a script is run from, never one in the current directory.
+describe(".env.smoke", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+  it("lives at the repository root, not in the current directory", () => {
+    expect(isAbsolute(SMOKE_KEY_FILE)).toBe(true);
+    expect(SMOKE_KEY_FILE).toBe(join(root, ".env.smoke"));
+  });
+
+  it("is read from the path given, whatever the current directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "smoke-"));
+    const file = join(dir, ".env.smoke");
+    const k = (b: string) => "0x" + b.repeat(64);
+    writeFileSync(file, `FUNDER_KEY=${k("1")}
+CREATOR_KEY=${k("2")}
+`);
+    expect(smokeKeys({}, file)).toEqual({ funderKey: k("1"), creatorKey: k("2"), created: false });
+    expect(readFileSync(file, "utf8")).toContain("FUNDER_KEY");
   });
 });

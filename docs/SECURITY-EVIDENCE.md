@@ -26,7 +26,7 @@ Labels used below:
 | Record | [`deployment/testnet.json`](../deployment/testnet.json) |
 | Source | [`contracts/session-lock/src/main.rs`](../contracts/session-lock/src/main.rs), last changed in commit `ba1fa58` (14 Oct 2026); deployment recorded in `46c71dc`. The file is unchanged from `ba1fa58` to the commit this report ships in |
 | Build | rustc 1.99.0, host `x86_64-pc-windows-gnu`, pinned in [`rust-toolchain.toml`](../contracts/session-lock/rust-toolchain.toml). sha256 of the binary `b08c5bfc4072440d72ea309f77af1418686ca03446558ba8c112bfe70ed09429` |
-| CKB-VM tests | [`test/session-lock.test.ts`](../test/session-lock.test.ts), 141 tests, all passing on 2 Nov 2026 against the binary above (116 on 28 Oct, 2 audit tests on 30 Oct, 23 aggregate-outflow tests on 2 Nov) |
+| CKB-VM tests | [`test/session-lock.test.ts`](../test/session-lock.test.ts), 144 tests, all passing on 2 Nov 2026 against the binary above (116 on 28 Oct, 2 audit tests on 30 Oct, 23 aggregate-outflow tests and 3 look-alike token tests on 2 Nov) |
 
 Rebuild and compare with the deployed code (Windows, repository root):
 
@@ -467,6 +467,14 @@ max_per_tx together", "sums tokens across every session cell in the group",
 "rejects one young cell merged with a mature one", and the "several session
 cells with different scopes" table above.
 
+**Planted look-alike tokens (review W6 M1, real xUDT)**
+
+| Attack | Test | Outcome |
+|---|---|---|
+| A stranger plants a zero-amount xUDT look-alike (the token's args, a zero flags word, extra bytes) under a session lock (review W6 M1) | "anyone can create a zero-amount look-alike (token args, zero flags, extra bytes) under the lock" | accepted: xUDT ignores the bytes after a zero flags word. The library leaves such cells out of the cap and sweeps them (`clearPlantedCells`, `cancelSubscription`) |
+| The same stranger puts tokens in a look-alike | "but cannot put tokens in one: xUDT refuses minting it without the issuer" | refused by xUDT, -52 |
+| The owner sweeps two look-alikes back, type kept | "the owner sweeps look-alikes back, keeping their type (clearPlantedCells, cancelSubscription)" | accepted |
+
 **Oversized args**
 
 | Attack | Test | Outcome |
@@ -518,6 +526,22 @@ Consistent with the README's [Limits](../README.md#limits):
   spend from in the same block.
 - **An owner sweep can be raced.** The key holder can replace a pending sweep by
   paying a higher fee. No testnet run here races a sweep.
+- **A subscription's history can still be flooded, at a price.** A status or a
+  charge reads the lock's history for the last period and refuses rather than
+  stop short of the last charge (which could let a second charge into the
+  period). Since the Week 6 review only spends count toward its 64-transaction
+  budget (only the subscriber and the charger can make those), and
+  transactions that only created cells are paged past under a budget of 1024.
+  Over 1024 such transactions within one period still block status and
+  charges until they age out: each locks at least 153 CKB (201 for a token
+  subscription) under the lock, about 157,000 CKB per blocked period, which the
+  subscriber can sweep back with `clearPlantedCells` unless the planter typed
+  the cells with a script that refuses to be spent. A full fix needs the lock
+  to record the last charge, and the deployed lock is fixed.
+- **Look-alike tokens with flags are left alone.** A look-alike of a token
+  subscription's token with a non-zero xUDT flags word (extension scripts) is
+  never counted and never swept, since its extensions could refuse the sweep.
+  It does not block anything; its CKB stays under the lock.
 - **The key cell is not recoverable without the key.** Recovery sweeps every
   session cell; the key cell (the fee budget) needs the key.
 - **The app that opens a session chooses its args.** The lock enforces the args
@@ -534,7 +558,12 @@ Consistent with the README's [Limits](../README.md#limits):
   anyone-can-pay or administrator mode, the Nostr lock in signing mode, and
   JoyID. Anyone-can-pay, PW-Lock (its deployed build is anyone-can-pay),
   always-success and the Nostr lock in proof of work mode are refused always;
-  other locks need `allowUnreviewedOwnerLock`, which warns. Covered by
+  the first three by type id and by the data hash of their deployed binaries
+  under any data hash_type (review W6 L6; another build of them is only
+  "unreviewed"). Other locks need `allowUnreviewedOwnerLock`, which warns; a
+  subscription's charger lock has its own opt-in, `allowUnreviewedChargerLock`.
+  A multisig with a since or an Omnilock time-lock delays the owner's sweep as
+  much as a thief's spend, while the session key keeps spending. Covered by
   `test/owner-lock.test.ts`. The lock itself cannot tell. JoyID's code is not
   public, so its entry rests on its documentation.
 - **Gaps in this evidence.** Errors 10, 11, 15 and 19 have not been sent to

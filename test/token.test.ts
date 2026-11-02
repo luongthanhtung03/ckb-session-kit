@@ -4,6 +4,7 @@
  * burning them. The lock's own rules are tested in CKB-VM (session-lock.test.ts).
  */
 import { ccc } from "@ckb-ccc/core";
+import { indexerFind } from "./fixtures/indexer.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionLockArgs, sessionLockScript, TESTNET_DEPLOYMENT as d } from "../src/lock.js";
 import {
@@ -129,6 +130,9 @@ describe("spendInSession in a token session", () => {
     ];
     vi.spyOn(client, "findCellsByLock").mockImplementation(async function* (l: ccc.ScriptLike) {
       for (const c of cells) if (c.cellOutput.lock.eq(l)) yield c;
+    } as never);
+    vi.spyOn(client, "findCells").mockImplementation(async function* (key: ccc.ClientIndexerSearchKeyLike) {
+      yield* indexerFind(cells, key);
     } as never);
     // The node's answer on a payout cell (no transaction in its pool spends it).
     vi.spyOn(client, "getCellLive").mockImplementation(async (op) => cells.find((c) => c.outPoint.eq(ccc.OutPoint.from(op))));
