@@ -1263,11 +1263,14 @@ function sweepable(cell: ccc.Cell, xudt?: XudtCode): boolean {
 /**
  * Spends `cells` in owner mode: everything returns to the owner. Tokens go back
  * in one cell per token type (xUDT would let a sweep burn them otherwise).
+ * `memo` goes in the witness (`input_type`) of the owner's own input, which the
+ * owner's signature covers: what the sweep is for (`CLEAR_PLANTED_MEMO`).
  */
 export async function ownerSweep(
   owner: ccc.Signer,
   deployments: SessionLockDeployment | SessionLockDeployment[],
   cells: ccc.Cell[],
+  opts: { memo?: ccc.Hex } = {},
 ): Promise<ccc.Hex> {
   // The code of every lock version these cells are under, and only those.
   const used = [deployments].flat().filter((d) => cells.some((c) => c.cellOutput.lock.codeHash === d.codeHash));
@@ -1290,6 +1293,7 @@ export async function ownerSweep(
   // Owner mode needs an owner-locked input in the transaction.
   for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {
     tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
+    if (opts.memo) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: opts.memo });
     await tx.completeFeeBy(owner);
     // A sweep the node took but whose reply was lost is still the sweep (review, 28 Oct).
     return signAndSend(owner, tx);

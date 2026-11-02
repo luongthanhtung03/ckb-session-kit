@@ -230,6 +230,9 @@ const MAX_HISTORY = 4 * MAX_SUBSCRIPTION_CELLS;
 export const MAX_CREATED_HISTORY = 64 * MAX_SUBSCRIPTION_CELLS;
 /** Entries per indexer page when reading a lock's history. */
 const HISTORY_PAGE = 128;
+/** The most inputs a creating transaction may have before its inputs are looked up (each is an RPC call). */
+const MAX_PAYMENT_INPUTS = 32;
+
 /** The charger's cells read when picking one to pay a charge's fee: any of them will do. */
 const FEE_CELL_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
 
@@ -261,14 +264,42 @@ function tokensIn(cells: { type?: ccc.Script; data: ccc.HexLike }[], token: ccc.
  * one in a period. The last input is looked at first: a charge puts the
  * charger's cell there.
  */
-async function isCharge(client: ccc.Client, txHash: ccc.Hex, chargerLockHash: ccc.Hex): Promise<{ charge: boolean; fetched: Created }> {
+async function isCharge(
+  client: ccc.Client,
+  txHash: ccc.Hex,
+  chargerLockHash: ccc.Hex,
+): Promise<{ charge: boolean; fetched: Created; inputs?: (ccc.Cell | undefined)[] }> {
   const fetched = await client.getTransactionNoCache(txHash);
   const inputs = fetched?.transaction.inputs ?? [];
   if (!inputs.length || inputs.length > MAX_PAYMENT_INPUTS) return { charge: true, fetched };
   const byCharger = (c: ccc.Cell | undefined) => !c || c.cellOutput.lock.hash() === chargerLockHash;
-  if (byCharger(await client.getCell(inputs[inputs.length - 1].previousOutput))) return { charge: true, fetched };
+  const last = await client.getCell(inputs[inputs.length - 1].previousOutput);
+  if (byCharger(last)) return { charge: true, fetched };
   const rest = await Promise.all(inputs.slice(0, -1).map((i) => client.getCell(i.previousOutput)));
-  return { charge: rest.some(byCharger), fetched };
+  return { charge: rest.some(byCharger), fetched, inputs: [...rest, last] };
+}
+
+/**
+ * The memo `clearPlantedCells` puts in the witness (`input_type`) of the
+ * subscriber's own input, under the subscriber's signature: a status tells its
+ * cleanup from a cancel by it, so a cleanup does not end a paid period (review
+ * W6 L2). Only the subscriber can sign it; a subscriber who marks a cancel
+ * with it keeps access only through a period already paid for.
+ */
+export const CLEAR_PLANTED_MEMO = ccc.hashCkb(ccc.bytesFrom("ckb-session-kit clear-planted", "utf8"));
+
+/** Whether a subscriber's spend `fetched` (with its `inputs`) is marked as a `clearPlantedCells` cleanup. */
+function isCleanup(fetched: Created, inputs: (ccc.Cell | undefined)[] | undefined, subscriberLockHash: ccc.Hex): boolean {
+  const tx = fetched?.transaction;
+  if (!tx || !inputs) return false;
+  return inputs.some((c, i) => {
+    if (c?.cellOutput.lock.hash() !== subscriberLockHash) return false;
+    try {
+      return tx.getWitnessArgsAt(i)?.inputType === CLEAR_PLANTED_MEMO;
+    } catch {
+      return false; // not a WitnessArgs
+    }
+  });
 }
 
 /**
@@ -276,7 +307,8 @@ async function isCharge(client: ccc.Client, txHash: ccc.Hex, chargerLockHash: cc
  * age in blocks, looking back under `window` blocks (undefined if none), from
  * the indexer's history of the lock: a charge that took the whole balance leaves
  * no change cell to tell it by (30 Oct). `ownerAfter`: the subscriber spent
- * cells under the lock after it (a cancel, or a `clearPlantedCells`).
+ * cells under the lock after it, other than in a cleanup marked with
+ * `CLEAR_PLANTED_MEMO` (a cancel, or any other owner-mode spend).
  * Transactions that only created cells under the lock (anyone can) are skipped
  * without being fetched, and counted under their own, larger budget
  * (`MAX_CREATED_HISTORY`); only spends count toward `MAX_HISTORY`, and an
@@ -288,7 +320,7 @@ async function isCharge(client: ccc.Client, txHash: ccc.Hex, chargerLockHash: cc
 async function lastCharge(
   client: ccc.Client,
   lock: ccc.Script,
-  chargerLockHash: ccc.Hex,
+  sub: Pick<Subscription, "chargerLockHash" | "subscriberLockHash">,
   tip: bigint,
   window: bigint,
 ): Promise<{ charge?: { txHash: ccc.Hex; age: bigint; fetched: Created }; ownerAfter: boolean }> {
@@ -305,9 +337,9 @@ async function lastCharge(
       continue;
     }
     if (++spends > MAX_HISTORY) throw tooManyTransactions(MAX_HISTORY);
-    const { charge, fetched } = await isCharge(client, t.txHash, chargerLockHash);
+    const { charge, fetched, inputs } = await isCharge(client, t.txHash, sub.chargerLockHash);
     if (charge) return { charge: { txHash: t.txHash, age, fetched }, ownerAfter };
-    ownerAfter = true;
+    if (!isCleanup(fetched, inputs, sub.subscriberLockHash)) ownerAfter = true;
   }
   return { ownerAfter };
 }
@@ -502,7 +534,7 @@ async function subscriptionState(client: ccc.Client, deployment: SessionLockDepl
   // the subscription's cells as they were (mentor review, 2 Nov), and a cancel
   // takes every cell, so whatever comes after it is younger than it anyway.
   // One block more than a period: a status counts the period's last block as paid.
-  const { charge: spent, ownerAfter } = await lastCharge(client, lock, sub.chargerLockHash, tip, sub.periodBlocks + 1n);
+  const { charge: spent, ownerAfter } = await lastCharge(client, lock, sub, tip, sub.periodBlocks + 1n);
   if (nextChargeIn !== undefined && spent && sub.periodBlocks - spent.age > nextChargeIn) nextChargeIn = sub.periodBlocks - spent.age;
   return { lock, cells, balance, tokenBalance, nextChargeIn, tip, created, ages, spent, ownerAfter };
 }
@@ -680,6 +712,13 @@ export async function cancelSubscription(
 
 /** The most cells under a subscription's lock that one `clearPlantedCells` reads. */
 const CLEAR_SCAN = 4 * MAX_SUBSCRIPTION_CELLS;
+/**
+ * The most planted cells one `clearPlantedCells` transaction sweeps: with the
+ * subscriber's own input (and room for one more for the fee) it stays within
+ * `MAX_PAYMENT_INPUTS`, so a status can read it and never takes it for a
+ * charge, which would delay the next one (review W6 L3).
+ */
+const CLEAR_BATCH = MAX_PAYMENT_INPUTS - 2;
 
 /**
  * The subscriber clears cells a third party created under the subscription's
@@ -743,12 +782,16 @@ export async function clearPlantedCells(
   };
   const mine = await Promise.all(cells.map(own));
   const plantedOfKind = cells.filter((_, i) => !mine[i]);
-  const planted = [...plantedOfKind, ...lookalikes.cells];
-  if (!planted.length) return { swept: 0, refunded: 0n, more, ...(!more && { nothingFound: true as const }) };
-  if (!mine.some(Boolean) && plantedOfKind.length) {
+  const found = [...plantedOfKind, ...lookalikes.cells];
+  if (!found.length) return { swept: 0, refunded: 0n, more, ...(!more && { nothingFound: true as const }) };
+  // Every cell read and none the subscription's own: it is gone (cancel instead). With
+  // cells left unread, its own may lie past them (review W6 L1), and sweeping planted ones is harmless.
+  if (!more && !mine.some(Boolean) && plantedOfKind.length) {
     throw new SessionPolicyError("none of these cells is the subscription's own: cancel it instead (cancelSubscription)");
   }
-  const txHash = await ownerSweep(subscriber, deployment, planted);
+  const planted = found.slice(0, CLEAR_BATCH);
+  if (found.length > planted.length) more = true;
+  const txHash = await ownerSweep(subscriber, deployment, planted, { memo: CLEAR_PLANTED_MEMO });
   return {
     txHash,
     swept: planted.length,
@@ -901,9 +944,6 @@ interface Payment {
   block: bigint;
   inputs: (ccc.Cell | undefined)[];
 }
-
-/** The most inputs a creating transaction may have before its inputs are looked up (each is an RPC call). */
-const MAX_PAYMENT_INPUTS = 32;
 
 /**
  * The committed transaction `txHash`, if it paid `sub`'s payout address enough;

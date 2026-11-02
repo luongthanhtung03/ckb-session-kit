@@ -6,6 +6,7 @@ import { SessionBalanceError } from "../src/onchain.js";
 import { SessionPolicyError } from "../src/session.js";
 import {
   cancelSubscription,
+  CLEAR_PLANTED_MEMO,
   clearPlantedCells,
   chargeSubscription,
   findSubscriptionCells,
@@ -556,7 +557,18 @@ describe("subscriptionStatus (a server with no database)", () => {
       cellOutput: { lock, capacity: 173n * CKB },
       outputData: "0x",
     });
-    const txs: Record<string, ccc.Transaction> = { [RECREATE]: recreate, [READ]: read, [CHARGE]: charge, [CHARGE_ALL]: chargeAll, [CANCEL]: cancel };
+    // The subscriber's clearPlantedCells: owner mode too, marked in the subscriber's own witness.
+    const cleanup = ccc.Transaction.from({ inputs: [{ previousOutput: own.outPoint }], outputs: [{ lock: subscriberLock, capacity: 1000n * CKB }] });
+    cleanup.setWitnessArgsAt(0, { inputType: CLEAR_PLANTED_MEMO });
+    const CLEANUP = h("1c");
+    const txs: Record<string, ccc.Transaction> = {
+      [RECREATE]: recreate,
+      [READ]: read,
+      [CHARGE]: charge,
+      [CHARGE_ALL]: chargeAll,
+      [CANCEL]: cancel,
+      [CLEANUP]: cleanup,
+    };
     const liveCells = opts.liveCreatedBy === "none" ? [] : [live];
     const { client } = fakeClient([...liveCells, payIn, own, stranger, fee], 990n, (hash) => txs[hash] ?? opening, opts.history);
     return { client, status: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }) };
@@ -607,6 +619,17 @@ describe("subscriptionStatus (a server with no database)", () => {
     const cancelled = [{ txHash: h("0f"), blockNumber: 995n, spent: true }, charged];
     expect(await (await setup({ liveCreatedBy: "none", history: cancelled })).status()).toMatchObject({
       status: { paidThroughBlock: undefined, active: false },
+    });
+  });
+
+  // Review W6 L2: a cleanup of planted cells is not a cancel; the paid period stays.
+  it("keeps a charge of the whole balance paid through a later clearPlantedCells", async () => {
+    const history = [
+      { txHash: h("1c"), blockNumber: 995n, spent: true },
+      { txHash: h("0e"), blockNumber: 990n, spent: true },
+    ];
+    expect(await (await setup({ liveCreatedBy: "none", history })).status()).toMatchObject({
+      status: { paidThroughBlock: 990n + PERIOD, active: true },
     });
   });
 });
@@ -1286,6 +1309,45 @@ describe("third-party cells over the cap, without cancelling", () => {
     expect(result.swept).toBeGreaterThan(MAX_SUBSCRIPTION_CELLS);
     // One creating transaction for all the planted cells, one for the opening, and their inputs' ones.
     expect(getTransaction.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  // Review W6 L3: a cleanup of over MAX_PAYMENT_INPUTS (32) inputs would be dated as a charge.
+  it("sweeps at most 30 planted cells per transaction, so the cleanup stays under 32 inputs", async () => {
+    const { r, sent, subscriber } = await setup(40);
+    const result = await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN });
+    expect(result).toMatchObject({ swept: 30, more: true });
+    expect(sent[0].inputs.length).toBeLessThanOrEqual(32);
+  });
+
+  it("marks its transaction in the subscriber's own witness, so a status does not take it for a cancel", async () => {
+    const { r, sent, subscriber } = await setup(2);
+    await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN });
+    const subscriberLock = (await subscriber.getRecommendedAddressObj()).script;
+    const client = subscriber.client;
+    const mine: number[] = [];
+    for (const [i, input] of sent[0].inputs.entries()) {
+      if ((await client.getCell(input.previousOutput))?.cellOutput.lock.eq(subscriberLock)) mine.push(i);
+    }
+    expect(mine.length).toBeGreaterThan(0);
+    expect(CLEAR_PLANTED_MEMO).toMatch(/^0x[0-9a-f]{64}$/);
+    expect(sent[0].getWitnessArgsAt(mine[0])?.inputType).toBe(CLEAR_PLANTED_MEMO);
+  });
+
+  // Review W6 L1: past the scan, the cells read may all be planted, the own cell further on.
+  it("sweeps the planted cells read even when the subscription's own cell lies past the scan", async () => {
+    const { r, client, sent, subscriber, opening } = await setup(5 * MAX_SUBSCRIPTION_CELLS);
+    const find = client.findCells.bind(client);
+    client.findCells = (async function* (key: ccc.ClientIndexerSearchKeyLike, ...rest: unknown[]) {
+      const all: ccc.Cell[] = [];
+      for await (const c of (find as (...a: unknown[]) => AsyncGenerator<ccc.Cell>)(key, ...rest)) all.push(c);
+      // The opening listed last, as after a charge re-created it: newer than every planted cell.
+      yield* all.filter((c) => !c.outPoint.eq(opening.outPoint));
+      yield* all.filter((c) => c.outPoint.eq(opening.outPoint));
+    }) as never;
+    const result = await clearPlantedCells(subscriber, d, { ...r.sub, openTx: OPEN });
+    expect(result.more).toBe(true);
+    expect(result.swept).toBeGreaterThan(0);
+    expect(sent[0].inputs.some((i) => i.previousOutput.eq(opening.outPoint))).toBe(false);
   });
 
   it("does nothing without planted cells, refuses another signer, and refuses with no own cell left", async () => {
