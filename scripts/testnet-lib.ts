@@ -5,7 +5,8 @@
  * test/testnet-scripts.test.ts without a node.
  */
 import { ccc } from "@ckb-ccc/core";
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { format } from "node:util";
 import { findSubscriptionCells, type SessionLockDeployment, type Subscription } from "../src/index.js";
@@ -15,6 +16,42 @@ export const explorer = (h: string) => `https://testnet.explorer.nervos.org/tran
 /** Over HTTP: the default WebSocket connection has hung mid-run (26 Oct). */
 export const rpcUrl = (env: NodeJS.ProcessEnv = process.env) => env.CKB_RPC_URL ?? "https://testnet.ckb.dev/";
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// --- keys ------------------------------------------------------------------
+
+export const SMOKE_KEY_FILE = ".env.smoke";
+
+/**
+ * FUNDER_KEY and CREATOR_KEY from the environment, else from .env.smoke
+ * (gitignored), which is created with two fresh testnet keys on first run.
+ * `created` means the funder has nothing yet: fund it from the faucet.
+ */
+export function smokeKeys(env: NodeJS.ProcessEnv = process.env): { funderKey: string; creatorKey: string; created: boolean } {
+  const hex = /^0x[0-9a-fA-F]{64}$/;
+  if (env.FUNDER_KEY || env.CREATOR_KEY) {
+    if (!hex.test(env.FUNDER_KEY ?? "") || !hex.test(env.CREATOR_KEY ?? ""))
+      throw new Error("FUNDER_KEY and CREATOR_KEY must both be 0x + 64 hex characters (or unset both to use .env.smoke)");
+    return { funderKey: env.FUNDER_KEY!, creatorKey: env.CREATOR_KEY!, created: false };
+  }
+  if (existsSync(SMOKE_KEY_FILE)) {
+    const text = readFileSync(SMOKE_KEY_FILE, "utf8");
+    const funderKey = /^FUNDER_KEY=(0x[0-9a-fA-F]{64})\s*$/m.exec(text)?.[1];
+    const creatorKey = /^CREATOR_KEY=(0x[0-9a-fA-F]{64})\s*$/m.exec(text)?.[1];
+    if (!funderKey || !creatorKey) throw new Error(`${SMOKE_KEY_FILE} needs FUNDER_KEY=0x… and CREATOR_KEY=0x… lines; fix or remove it`);
+    return { funderKey, creatorKey, created: false };
+  }
+  const funderKey = ccc.hexFrom(randomBytes(32));
+  const creatorKey = ccc.hexFrom(randomBytes(32));
+  writeFileSync(
+    SMOKE_KEY_FILE,
+    `# Testnet keys for smoke:contention and smoke:clear-planted. Testnet only. Never commit.
+FUNDER_KEY=${funderKey}
+CREATOR_KEY=${creatorKey}
+`,
+    { flag: "wx", mode: 0o600 },
+  );
+  return { funderKey, creatorKey, created: true };
+}
 
 // --- logs ------------------------------------------------------------------
 

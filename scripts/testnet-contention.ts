@@ -72,6 +72,8 @@ import {
   type ContentionOptions,
   type PayerRound,
   type RoundAnalysis,
+  smokeKeys,
+  SMOKE_KEY_FILE,
 } from "./testnet-lib.js";
 
 const deployment = JSON.parse(readFileSync("deployment/testnet.json", "utf8")) as SessionLockDeployment;
@@ -119,9 +121,14 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const opts = contentionOptions(argv);
   if (isDryRun(argv)) return printPlan(opts);
-  const funderKey = process.env.FUNDER_KEY;
-  const creatorKey = process.env.CREATOR_KEY;
-  if (!funderKey || !creatorKey) throw new Error("set FUNDER_KEY and CREATOR_KEY to testnet private keys");
+  const { funderKey, creatorKey, created } = smokeKeys();
+  if (created) {
+    const funderAddress = await new ccc.SignerCkbPrivateKey(new ccc.ClientPublicTestnet({ url: rpcUrl() }), funderKey).getRecommendedAddress();
+    console.log(`created ${SMOKE_KEY_FILE} with two new testnet keys`);
+    console.log(`fund this address from https://faucet.nervos.org, then run again:
+  ${funderAddress}`);
+    return;
+  }
   const logFile = startLog("smoke-contention");
   const url = rpcUrl();
   const client = new ccc.ClientPublicTestnet({ url });
