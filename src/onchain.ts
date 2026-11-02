@@ -1016,13 +1016,270 @@ async function spendOnce(
 }
 
 /**
+ * The fee rate `fundInSession` and `sendWithSession` use when none is given, in
+ * shannons per 1000 bytes: CrowdCell's pledge rate. `sendWithSession` keeps the
+ * same rate on every attempt (see there).
+ */
+export const DEFAULT_FUND_FEE_RATE = 2000n;
+
+/** Options for {@link fundInSession}. */
+export interface FundOptions {
+  /** Shannons per 1000 bytes (default `DEFAULT_FUND_FEE_RATE`). The key cell pays it. */
+  feeRate?: ccc.NumLike;
+  /**
+   * The app's own policy on the finished transaction (which outputs it may hold),
+   * run last, before anything is signed: throw to refuse it. It guards against
+   * app bugs; a leaked key is bounded by the lock, not by this.
+   */
+  check?: (tx: ccc.Transaction) => void | Promise<void>;
+  now?: Date;
+  /** Out points (as `ccc.hexFrom(outPoint.toBytes())`) of session or key cells not to take. */
+  avoid?: ReadonlySet<string>;
+}
+
+/** What {@link fundInSession} returns. */
+export interface FundedTransaction {
+  /** The app's transaction with the session's inputs and outputs added, unsigned. */
+  tx: ccc.Transaction;
+  /** Shannons leaving the session cells (session inputs less change): what the lock holds to `maxPerTx`. */
+  outflow: bigint;
+  /** The inputs the kit added: session cells, then the key cell (and any key cell CCC added for the fee). */
+  sessionInputs: ccc.OutPoint[];
+}
+
+/**
+ * Funds a transaction the app built (its own inputs, typed outputs, cell deps
+ * and witnesses) from the session: adds session cells as inputs, at most one
+ * plain change cell under the session lock, and the key cell, which comes back
+ * as the last output and pays the fee. Signs nothing; `sendWithSession` signs
+ * and sends. The checks follow the order the session lock makes them, so a
+ * transaction this returns is one the lock accepts:
+ *
+ * 1. The session is active, and has no on-chain recipient: a recipient-scoped
+ *    session can only pay that recipient and the owner, never a typed output
+ *    (lock errors 13 and 18), so it is refused (`SessionPolicyError`,
+ *    "session-has-recipient").
+ * 2. No input of the app's is under the owner's lock: the lock would run in owner
+ *    mode, and the wallet would have to sign ("owner-lock-input"). None is under
+ *    the session lock or the key's lock, and no output is either: the kit adds
+ *    those ("app-tx-shape").
+ * 3. Need = the outputs' capacity less the app inputs'. Over `maxPerTx`, a
+ *    `ScopeError` before anything is looked up. Session cells are taken (plain
+ *    ones only, mature ones under a rate limit, with `since` set), and change
+ *    is either none or at least a session cell's size (121 CKB for 80-byte args).
+ * 4. The key cell: the largest, in last, out last; the fee (`feeRate`) comes out
+ *    of it, so the fee never counts as outflow.
+ * 5. outflow = session inputs less change, checked against `maxPerTx` again;
+ *    then `opts.check`.
+ *
+ * The app's inputs, witnesses and cell deps stay where they are; the kit's
+ * inputs go after them. `tx` itself is not changed.
+ */
+export async function fundInSession(
+  session: Session,
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+  txLike: ccc.TransactionLike,
+  opts: FundOptions = {},
+): Promise<FundedTransaction> {
+  const now = opts.now ?? new Date();
+  if (!isActive(session, now)) throw new ScopeError("session expired");
+  if (binding.recipientLockHash) {
+    throw new SessionPolicyError(
+      "an app transaction with typed outputs to other locks needs a session without a recipient: " +
+        "this session's lock only lets it pay its recipient and the owner, in plain cells",
+      "session-has-recipient",
+    );
+  }
+  const { maxPerTx } = session.policy.scope;
+  const tx = ccc.Transaction.from(txLike).clone();
+  const appInputs = tx.inputs.length;
+  const state = await findSessionCells(session, client, deployment, binding);
+  const ownerHash = ccc.Script.from(binding.ownerLock).hash();
+  const ownHashes = [state.lock.hash(), state.keyLock.hash()];
+
+  for (const [i, input] of tx.inputs.entries()) {
+    await input.completeExtraInfos(client);
+    const lockHash = input.cellOutput?.lock.hash();
+    if (lockHash === ownerHash) {
+      throw new SessionPolicyError(
+        `input ${i} is under the session owner's lock: the session lock would run in owner mode and ` +
+          "the wallet would have to sign; fund this transaction from the wallet instead",
+        "owner-lock-input",
+      );
+    }
+    if (lockHash && ownHashes.includes(lockHash)) {
+      throw new SessionPolicyError(`input ${i} is a session or key cell: fundInSession adds those itself`, "app-tx-shape");
+    }
+  }
+  for (const [i, output] of tx.outputs.entries()) {
+    if (ownHashes.includes(output.lock.hash())) {
+      throw new SessionPolicyError(
+        `output ${i} is under the session lock or the key's lock: fundInSession adds the change and key cells itself`,
+        "app-tx-shape",
+      );
+    }
+  }
+
+  const need = tx.getOutputsCapacity() - (await tx.getInputsCapacity(client));
+  if (need < 0n) {
+    throw new SessionPolicyError(
+      `the app transaction's inputs exceed its outputs by ${ccc.fixedPointToString(-need)} CKB: ` +
+        "give the surplus an output, or it would go to the key cell",
+      "app-tx-shape",
+    );
+  }
+  if (need > maxPerTx) {
+    throw new ScopeError(
+      `the transaction needs ${ccc.fixedPointToString(need)} CKB from the session, over maxPerTx ` +
+        `(${ccc.fixedPointToString(maxPerTx)} CKB)`,
+    );
+  }
+
+  const avoid = opts.avoid ?? new Set<string>();
+  const free = (c: ccc.Cell) => !avoid.has(outPointKey(c.outPoint));
+  const keyCells = state.keyCells.filter(free);
+  if (!keyCells.length) throw new SessionBalanceError("no key cell left to pay fees", "no-fee-cell");
+
+  // Plain cells only: in a token session the tokens stay where they are.
+  const plain = state.sessionCells.filter((c) => !c.cellOutput.type && free(c));
+  const usable = need > 0n && binding.minInterval > 0n ? await matureCells(client, plain, binding.minInterval) : plain;
+  if (need > 0n && plain.length && !usable.length) {
+    throw new SessionBalanceError(`rate limited: no session cell is ${binding.minInterval} blocks old yet`);
+  }
+  // Change is none, or a whole session cell: take one more cell rather than leave a sliver.
+  const minChange = ccc.CellOutput.from({ lock: state.lock }, "0x").capacity;
+  const taken: ccc.Cell[] = [];
+  let ckbIn = 0n;
+  for (const cell of usable) {
+    if (ckbIn >= need && (ckbIn === need || ckbIn - need >= minChange)) break;
+    taken.push(cell);
+    ckbIn += cell.cellOutput.capacity;
+  }
+  const balance = plain.reduce((s, c) => s + c.cellOutput.capacity, 0n);
+  if (ckbIn < need) {
+    throw new SessionBalanceError(
+      `session balance ${ccc.fixedPointToString(balance)} CKB is too low: the transaction needs ${ccc.fixedPointToString(need)} CKB`,
+    );
+  }
+  const change = ckbIn - need;
+  if (change > 0n && change < minChange) {
+    throw new SessionBalanceError(
+      `the session would keep ${ccc.fixedPointToString(change)} CKB, below the ` +
+        `${ccc.fixedPointToString(minChange)} CKB a session cell needs; spend all of it or less`,
+    );
+  }
+
+  const since = binding.minInterval > 0n ? relativeBlocksSince(binding.minInterval) : 0n;
+  tx.inputs.push(...taken.map((c) => ccc.CellInput.from({ previousOutput: c.outPoint, since })));
+  if (taken.length) tx.addCellDeps(sessionLockCellDep(deployment));
+  if (change > 0n) tx.addOutput({ lock: state.lock, capacity: change }, "0x");
+
+  // The key cell authorises the spend, comes back last and pays the fee (as in spendOnce).
+  tx.inputs.push(ccc.CellInput.from({ previousOutput: largestCell(keyCells).outPoint }));
+  tx.addOutput({ lock: state.keyLock, capacity: 0n }, "0x");
+  await completeFeeOrNoFeeCell(
+    tx,
+    sessionSigner(session, client),
+    "the key cell cannot cover the fee; top it up",
+    opts.feeRate ?? DEFAULT_FUND_FEE_RATE,
+  );
+  if (tx.outputs[tx.outputs.length - 1].capacity < keyCellFloor(binding.ownerLock)) {
+    throw new SessionBalanceError("the key cell cannot cover another fee; top it up", "no-fee-cell");
+  }
+
+  // The lock's own rules on the result (1: outflow; 3 and 5: one plain change cell).
+  const outflow = taken.reduce((s, c) => s + c.cellOutput.capacity, 0n) - change;
+  if (outflow > maxPerTx) {
+    throw new ScopeError(`outflow ${ccc.fixedPointToString(outflow)} CKB exceeds maxPerTx (${ccc.fixedPointToString(maxPerTx)} CKB)`);
+  }
+  const changeCells = tx.outputs.filter((o) => o.lock.eq(state.lock));
+  if (changeCells.length > 1 || changeCells.some((o) => o.type)) {
+    throw new SessionPolicyError("the session lock allows one plain change cell", "app-tx-shape");
+  }
+  await opts.check?.(tx);
+  return { tx, outflow, sessionInputs: tx.inputs.slice(appInputs).map((i) => i.previousOutput) };
+}
+
+/** Options for {@link sendWithSession}. */
+export interface SendWithSessionOptions extends Omit<FundOptions, "avoid"> {
+  /** Runs with the signed transaction's hash before it is sent, on every attempt (see `signAndSend`). */
+  beforeSend?: (txHash: ccc.Hex) => Promise<void>;
+  /** Attempts and backoff for a refusal naming one of the session's own cells (default `DEFAULT_RETRY`). */
+  retry?: RetryOptions;
+}
+
+/**
+ * Builds the app's transaction (`build`), funds it from the session
+ * (`fundInSession`), signs it with the session key alone and sends it. No
+ * wallet is involved: the key signs only its own cell, and the session lock
+ * checks no signature. Returns the transaction hash.
+ *
+ * Retries only when the node refuses the transaction for one of the session's
+ * own cells (`Dead` or `Unknown` naming a session or key cell this attempt
+ * added: another tab spent it). Then the client's cache is cleared, that cell
+ * is left out, and `build` runs again, with the backoff of `rebuildOnDeadInputs`.
+ *
+ * Any other refusal is thrown unchanged, for the app's own loop: a dead input of
+ * the app's (another user took the cell the app built on, such as a
+ * crowdfunding campaign cell; `deadInputs(e)` is true) or an RBF refusal
+ * (`poolConflict(e)`), which names no cell. The app waits for its cell to move
+ * and calls again. A send whose outcome is unknown is never retried.
+ *
+ * The fee rate is the same on every attempt (`feeRate`, default
+ * `DEFAULT_FUND_FEE_RATE`): a retry at a higher rate could replace (RBF)
+ * another user's pending transaction on the same app cell.
+ */
+export async function sendWithSession(
+  session: Session,
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  binding: OnChainBinding,
+  build: () => Promise<ccc.TransactionLike>,
+  opts: SendWithSessionOptions = {},
+): Promise<ccc.Hex> {
+  const attempts = Math.max(1, Math.floor(opts.retry?.attempts ?? DEFAULT_RETRY.attempts));
+  const delay = Math.max(0, opts.retry?.delayMs ?? DEFAULT_RETRY.delayMs);
+  const feeRate = opts.feeRate ?? DEFAULT_FUND_FEE_RATE; // fixed for every attempt
+  const avoid = new Set<string>();
+  for (let attempt = 1; ; attempt++) {
+    let ours = new Set<string>();
+    try {
+      const funded = await fundInSession(session, client, deployment, binding, await build(), {
+        feeRate,
+        check: opts.check,
+        now: opts.now,
+        avoid,
+      });
+      ours = new Set(funded.sessionInputs.map(outPointKey));
+      return await signAndSend(sessionSigner(session, client), funded.tx, opts.beforeSend);
+    } catch (e) {
+      const named = e instanceof SendOutcomeUnknownError ? undefined : rejectedOutPoint(e);
+      if (!named || !ours.has(named) || attempt >= attempts) throw e;
+      avoid.add(named);
+      await client.cache?.clear();
+      const wait = delay * 2 ** (attempt - 1) * (0.5 + Math.random());
+      if (wait > 0) await sleep(wait);
+    }
+  }
+}
+
+/**
  * `completeFeeChangeToOutput` into the last output, with CCC's "Insufficient CKB"
  * (the paying cell holds its floor but not the fee too) as a
  * `SessionBalanceError` with reason `no-fee-cell` (audit round 2, 31 Oct).
  */
-export async function completeFeeOrNoFeeCell(tx: ccc.Transaction, signer: ccc.Signer, message: string): Promise<void> {
+export async function completeFeeOrNoFeeCell(
+  tx: ccc.Transaction,
+  signer: ccc.Signer,
+  message: string,
+  feeRate?: ccc.NumLike,
+): Promise<void> {
   try {
-    await tx.completeFeeChangeToOutput(signer, tx.outputs.length - 1);
+    await (feeRate === undefined
+      ? tx.completeFeeChangeToOutput(signer, tx.outputs.length - 1)
+      : tx.completeFeeChangeToOutput(signer, tx.outputs.length - 1, feeRate));
   } catch (e) {
     // By class, or by message where a second copy of CCC threw it (a bundler's CJS and ESM builds).
     const short = e instanceof ccc.ErrorTransactionInsufficientCapacity || (e instanceof Error && /^Insufficient CKB/.test(e.message));

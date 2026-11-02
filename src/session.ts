@@ -44,13 +44,21 @@ export interface CreateOptions {
  * Why a policy error is not about the request itself: "payto-not-anyone-can-pay",
  * the payer's own setup (a charge can never top such a `payTo` up); or
  * "too-many-cells", more cells under a subscription's lock than a status or a
- * charge reads (`MAX_SUBSCRIPTION_CELLS`).
+ * charge reads (`MAX_SUBSCRIPTION_CELLS`). From `fundInSession`:
+ * "session-has-recipient", the session has an on-chain recipient, so it cannot
+ * fund outputs to other locks; "owner-lock-input", the app transaction spends a
+ * cell under the owner's lock, which would switch the session lock to owner
+ * mode; "app-tx-shape", the app transaction already holds cells only the kit
+ * may add (session or key cells), or its inputs exceed its outputs.
  */
 export type SessionPolicyReason =
   | "payto-not-anyone-can-pay"
   | "too-many-cells"
   | "owner-lock-unsafe"
-  | "owner-lock-unreviewed";
+  | "owner-lock-unreviewed"
+  | "session-has-recipient"
+  | "owner-lock-input"
+  | "app-tx-shape";
 
 export class SessionPolicyError extends Error {
   readonly reason?: SessionPolicyReason;
