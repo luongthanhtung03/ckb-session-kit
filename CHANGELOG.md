@@ -5,7 +5,31 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
 ## Unreleased
 
+### Changed (mentor review 3, 2 Nov)
+- `assertSigningLock` accepts only reviewed owner lock configurations:
+  secp256k1, multisig (v1, v2), Omnilock with auth 0x00-0x06 or 0x12 and no
+  mode other than time-lock or supply, the Nostr lock in signing mode
+  (`args[0]` = 0), and JoyID. The wallet matrix's locks all still pass.
+- PW-Lock is now refused. The build deployed on mainnet and testnet is
+  lay2dev/pw-lock's anyone-can-pay variant: with no signature in the witness it
+  unlocks by payment, whatever the args, so anyone could sweep every session.
+- The Nostr lock in proof of work mode (`args[0]` not 0) is now refused: it
+  unlocks with work, not the holder's key.
+- Anyone-can-pay is refused by code hash on both networks (and the older
+  deployments pw-core lists), whatever the client's network; always-success
+  too. These refusals carry `reason: "owner-lock-unsafe"`.
+- Locks and configurations not reviewed (Omnilock auth 0xFC-0xFE, other Omnilock
+  auth flags or mode bits, the ckb-proxy-locks, unknown locks, args the lock's
+  code would not accept, multisig v2 beta) are refused with
+  `reason: "owner-lock-unreviewed"`. Omnilock auth 0x07 and unknown Omnilock mode
+  bits used to pass.
+
 ### Added
+- `allowUnreviewedOwnerLock` (`SigningLockOptions`) on `assertSigningLock`,
+  `openSession` and `openSubscription`: lets an unreviewed owner or charger lock
+  through with a `console.warn`. It never lets an "owner-lock-unsafe" lock
+  through.
+- `SessionPolicyReason` gains `"owner-lock-unsafe"` and `"owner-lock-unreviewed"`.
 - `SessionBalanceError.reason` (`SessionBalanceReason`): `"no-fee-cell"` or
   `"no-payout-cell"` when the cells missing are the payer's or the recipient's own
   (a charger with no fee cell, a `payTo` with no cell to top up), so a server can
