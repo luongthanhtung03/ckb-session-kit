@@ -524,28 +524,43 @@ export type SigningLockOptions = {
   /**
    * Let a lock this kit has not reviewed own a session, with a `console.warn`.
    * Use it only after checking yourself that the lock cannot be unlocked without
-   * the owner's signature. A lock known to unlock without it is refused anyway.
+   * the owner's signature. A lock known to unlock without it is refused anyway
+   * (the deployed anyone-can-pay, PW-Lock and always-success code, under any
+   * hash_type; see `assertSigningLock`).
    */
   allowUnreviewedOwnerLock?: boolean;
 };
 
 /**
- * Code hashes of locks that open without any signature, on mainnet and testnet,
- * refused whatever the client's network: anyone-can-pay (RFC 0026, and the older
+ * Locks that open without any signature, on mainnet and testnet, refused
+ * whatever the client's network: anyone-can-pay (RFC 0026, and the older
  * deployments pw-core lists as anyone-can-pay), PW-Lock (the deployed build is
  * lay2dev/pw-lock's `secp256k1_keccak256_sighash_all_acpl`: with no signature in
  * the witness it takes the anyone-can-pay path, whatever its args) and
  * always-success (ckb-proxy-locks).
+ *
+ * `type`: the type-id code hash the script is deployed under (hash_type `type`).
+ * `data`: the hash of the binary itself, refused under every data hash_type
+ * (`data`, `data1`, `data2`): the same code referenced by its data hash opens
+ * the same way (review W6 L6). The data hashes are those of the code cells CCC
+ * lists for each script on testnet and mainnet, read on 2 Nov 2026.
  */
-const SIGNATURE_FREE: { codeHash: string; hashType: string; what: string }[] = [
-  { codeHash: "0xd369597ff47f29fbc0d47d2e3775370d1250b85140c670e4718af712983a2354", hashType: "type", what: "anyone-can-pay" },
-  { codeHash: "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356", hashType: "type", what: "anyone-can-pay" },
-  { codeHash: "0x0fb343953ee78c9986b091defb6252154e0bb51044fd2879fde5b27314506111", hashType: "data", what: "anyone-can-pay" },
-  { codeHash: "0x86a1c6987a4acbe1a887cca4c9dd2ac9fcb07405bbeda51b861b18bbf7492c4b", hashType: "type", what: "anyone-can-pay" },
-  { codeHash: "0xbf43c3602455798c1a61a596e0d95278864c552fafe231c063b3fabf97a8febc", hashType: "type", what: "PW-Lock" },
-  { codeHash: "0x58c5f491aba6d61678b7cf7edf4910b1f5e00ec0cde2f42e0abb4fd9aff25a63", hashType: "type", what: "PW-Lock" },
-  { codeHash: "0x3b521cc4b552f109d092d8cc468a8048acb53c5952dbe769d2b2f9cf6e47f7f1", hashType: "data1", what: "always-success" },
+const SIGNATURE_FREE: { codeHash: string; by: "type" | "data"; what: string }[] = [
+  { codeHash: "0xd369597ff47f29fbc0d47d2e3775370d1250b85140c670e4718af712983a2354", by: "type", what: "anyone-can-pay" },
+  { codeHash: "0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356", by: "type", what: "anyone-can-pay" },
+  { codeHash: "0xcd69ba816f7471e59110058aa37387c362ed9a240cd178f7bb1ecee386cb31e6", by: "data", what: "anyone-can-pay" },
+  { codeHash: "0x0fb343953ee78c9986b091defb6252154e0bb51044fd2879fde5b27314506111", by: "data", what: "anyone-can-pay" },
+  { codeHash: "0x86a1c6987a4acbe1a887cca4c9dd2ac9fcb07405bbeda51b861b18bbf7492c4b", by: "type", what: "anyone-can-pay" },
+  { codeHash: "0xbf43c3602455798c1a61a596e0d95278864c552fafe231c063b3fabf97a8febc", by: "type", what: "PW-Lock" },
+  { codeHash: "0x58c5f491aba6d61678b7cf7edf4910b1f5e00ec0cde2f42e0abb4fd9aff25a63", by: "type", what: "PW-Lock" },
+  { codeHash: "0xd6a5a0edb152e88e8bbc702e164441cb3890fae35da672b408d28ca9a1bde3ee", by: "data", what: "PW-Lock" },
+  { codeHash: "0xeffe377419256d150d68368d7cb5731edad39d1805a8c2c73ce8e9615b9f9878", by: "data", what: "PW-Lock" },
+  { codeHash: "0x3b521cc4b552f109d092d8cc468a8048acb53c5952dbe769d2b2f9cf6e47f7f1", by: "data", what: "always-success" },
 ];
+
+/** The signature-free lock `lock` runs, if it is one of `SIGNATURE_FREE` under a matching hash_type. */
+const signatureFree = (lock: ccc.Script) =>
+  SIGNATURE_FREE.find((s) => s.codeHash === lock.codeHash && (s.by === "type" ? lock.hashType === "type" : lock.hashType !== "type"));
 
 /** Omnilock auth flags that verify a signature over the whole transaction (RFC 0042, nervosnetwork/omnilock). */
 const OMNI_SIGNING_AUTH = new Set([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x12]);
@@ -569,8 +584,11 @@ const OMNI_ADDITIVE_MODES = 0x04 | 0x08;
  * - JoyID (closed source: reviewed from its documentation only).
  *
  * Known to unlock without the owner's signature, refused always (reason
- * `"owner-lock-unsafe"`): anyone-can-pay, PW-Lock, always-success, Omnilock in
- * anyone-can-pay or administrator mode, Nostr lock in PoW mode (args[0] != 0).
+ * `"owner-lock-unsafe"`): anyone-can-pay, PW-Lock, always-success (by their
+ * type id, or by the data hash of their deployed binaries under any data
+ * hash_type), Omnilock in anyone-can-pay or administrator mode, Nostr lock in
+ * PoW mode (args[0] != 0). Another build of those locks (a binary with a
+ * different data hash) is not recognised: it is refused as unreviewed.
  *
  * Anything else (Omnilock auth 0xFC-0xFE, which hand the decision to another lock
  * or to other code; the proxy locks; unknown locks; args the lock's code would
@@ -608,7 +626,7 @@ export async function assertSigningLock(
   };
   const args = ccc.bytesFrom(lock.args);
 
-  const free = SIGNATURE_FREE.find((s) => s.codeHash === lock.codeHash && s.hashType === lock.hashType);
+  const free = signatureFree(lock);
   if (free?.what === "PW-Lock" || (await is(ccc.KnownScript.PWLock))) {
     return unsafe("is PW-Lock, whose deployed build is anyone-can-pay: it opens with no signature");
   }
