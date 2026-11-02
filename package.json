@@ -56,6 +56,7 @@
     "smoke:subscription-token": "tsx scripts/testnet-subscription-token.ts",
     "smoke:contention": "tsx scripts/testnet-contention.ts",
     "smoke:clear-planted": "tsx scripts/testnet-clear-planted.ts",
+    "smoke:owner-locks": "tsx scripts/testnet-owner-locks.ts",
     "matrix:wallets": "tsx scripts/wallet-matrix.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"

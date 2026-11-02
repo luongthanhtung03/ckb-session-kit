@@ -1,0 +1,142 @@
+> smoke-owner-locks (2026-11-02T16:04:51.320Z)
+
+node https://testnet.ckbapp.dev/, tip 22946023
+funder ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqf3zkscv3acyhndwm4h4pujvfk266l5kwqy0z494: 299365.9810107 CKB
+session lock 0xab419466529ea479590d4be7b23580ce2ddc640ba902735c9ad9a22dc64c08ce (data2)
+
+deps: each lock class as the real testnet script, and whether its cell deps are live
+  OmniLock             0xf329effd1c475a2978453c8600e1eaf0bc2087ee093c3ee64cc96ec6847752cb type
+      dep 0xf8de3bb4…ee5d37:0 depGroup live
+      dep 0xec18bf0d…5d4602:0 code live
+  JoyId                0xd23761b364210735c19c60561d213fb3beae2fd6172743719eff6920e020baac type
+      dep 0x4a596d31…ffb4d9:0 code live
+      dep 0x4a596d31…ffb4d9:1 code live
+      dep 0xf2c9dbfe…5c8638:1 code live
+      dep 0x95ecf9b4…19ce62:1 code live
+      dep 0x8b325549…e0242e:1 code live
+  AnyoneCanPay         0x3419a1c09eb2567f6552ee7a8ecffd64155cffe0f1796e6e61ec088d740c1356 type
+      dep 0xec26b0f8…fb96a6:0 depGroup live
+  PWLock               0x58c5f491aba6d61678b7cf7edf4910b1f5e00ec0cde2f42e0abb4fd9aff25a63 type
+      dep 0xf8de3bb4…ee5d37:0 depGroup live
+      dep 0x57a62003…e61b38:0 code live
+  AlwaysSuccess        0x3b521cc4b552f109d092d8cc468a8048acb53c5952dbe769d2b2f9cf6e47f7f1 data1
+      dep 0xb4f171c9…137b93:0 code live
+  NostrLock            0x6ae5ee0cb887b2df5a9a18137315b9bdc55be8d52637b2de0624092d5f0c91d5 type
+      dep 0xa2a434dc…c01d68:0 code live
+  Secp256k1Blake160    0x9bd7e06f3ecf4be0f2fcd2188b23f1b9fcc88e5d4b65a8637b17723bbda3cce8 type
+      dep 0xf8de3bb4…ee5d37:0 depGroup live
+  Secp256k1MultisigV2  0x36c971b8d41fbd94aabca77dc75e826729ac98447b46f91e00796155dddb0d29 data1
+      dep 0x2eefdeb2…0b26d5:0 depGroup live
+
+verdicts: assertSigningLock on every row (✓ = the verdict the allowlist promises)
+  ✓ secp256k1-blake160                       accepted  — signature over the whole tx
+  ✓ secp256k1 multisig v2, 1 of 1            accepted  — signatures over the whole tx
+  ✓ Omnilock, Dogecoin auth 0x05             accepted  — signing auth flag, no mode
+  ✓ Nostr lock, signing mode (args[0]=0)     accepted  — Schnorr signature
+  ✓ Omnilock, Ethereum auth 0x12             accepted  — signing auth flag, no mode
+  ✓ JoyID                                    accepted  — reviewed from its docs
+  ✓ anyone-can-pay (RFC 0026)                owner-lock-unsafe  — opens with no signature
+  ✓ PW-Lock                                  owner-lock-unsafe  — deployed build is anyone-can-pay
+  ✓ PW-Lock, with the opt-in                 owner-lock-unsafe  — the opt-in never covers a known signature-free lock
+  ✓ always-success                           owner-lock-unsafe  — opens with no signature
+  ✓ Omnilock, anyone-can-pay mode 0x02       owner-lock-unsafe  — opens with no signature
+  ✓ Omnilock, administrator mode 0x01        owner-lock-unsafe  — an admin can unlock it
+  ✓ Nostr lock, PoW mode (args[0]=0x10)      owner-lock-unsafe  — work, not a key, unlocks it
+  ✓ Omnilock, auth 0xFC (owner lock)         owner-lock-unreviewed  — hands the check to another lock
+  ✓ Omnilock, auth 0xFC, with the opt-in     accepted (warned)  — refusal turned into a warning
+  ✓ unknown code hash                        owner-lock-unreviewed  — not on the allowlist
+  ✓ unknown code hash, with the opt-in       accepted (warned)  — refusal turned into a warning
+
+refusals: openSession with an owner under each lock this script cannot sign for
+  ✓ Omnilock, Ethereum auth 0x12
+      lock 0xf329effd…7752cb type args 0x12111111111111111111111111111111111111111100
+      accepted; this script holds no key for this lock, so no session is opened under it
+      past the owner check; openSession stopped at funding: Insufficient CKB, need 194 extra CKB
+      signing calls 0, owner sends 0, node sends 0
+  ✓ JoyID
+      lock 0xd23761b3…20baac type args 0x00011111111111111111111111111111111111111111
+      accepted; this script holds no key for this lock, so no session is opened under it
+      past the owner check; openSession stopped at funding: Insufficient CKB, need 194 extra CKB
+      signing calls 0, owner sends 0, node sends 0
+  ✓ anyone-can-pay (RFC 0026)
+      lock 0x3419a1c0…0c1356 type args 0x1111111111111111111111111111111111111111
+      refused: reason "owner-lock-unsafe": the owner's lock is anyone-can-pay: it opens with no signature: it cannot own a session
+      signing calls 0, owner sends 0, node sends 0
+  ✓ PW-Lock
+      lock 0x58c5f491…f25a63 type args 0x1111111111111111111111111111111111111111
+      refused: reason "owner-lock-unsafe": the owner's lock is PW-Lock, whose deployed build is anyone-can-pay: it opens with no signature: it cannot own a session
+      signing calls 0, owner sends 0, node sends 0
+  ✓ PW-Lock, with the opt-in [allowUnreviewedOwnerLock]
+      lock 0x58c5f491…f25a63 type args 0x1111111111111111111111111111111111111111
+      refused: reason "owner-lock-unsafe": the owner's lock is PW-Lock, whose deployed build is anyone-can-pay: it opens with no signature: it cannot own a session
+      signing calls 0, owner sends 0, node sends 0
+  ✓ always-success
+      lock 0x3b521cc4…47f7f1 data1 args 0x
+      refused: reason "owner-lock-unsafe": the owner's lock is always-success: it opens with no signature: it cannot own a session
+      signing calls 0, owner sends 0, node sends 0
+  ✓ Omnilock, anyone-can-pay mode 0x02
+      lock 0xf329effd…7752cb type args 0x001111111111111111111111111111111111111111020000
+      refused: reason "owner-lock-unsafe": the owner's lock is an Omnilock in anyone-can-pay mode, which opens with no signature: it cannot own a session
+      signing calls 0, owner sends 0, node sends 0
+  ✓ Omnilock, administrator mode 0x01
+      lock 0xf329effd…7752cb type args 0x001111111111111111111111111111111111111111012222222222222222222222222222222222222222222222222222222222222222
+      refused: reason "owner-lock-unsafe": the owner's lock is an Omnilock with an administrator, who could unlock it without the owner: it cannot own a session
+      signing calls 0, owner sends 0, node sends 0
+  ✓ Nostr lock, PoW mode (args[0]=0x10)
+      lock 0x6ae5ee0c…0c91d5 type args 0x100000000000000000000000000000000000000000
+      refused: reason "owner-lock-unsafe": the owner's lock is a Nostr lock in proof of work mode, which anyone who does the work can unlock: it cannot own a session
+      signing calls 0, owner sends 0, node sends 0
+  ✓ Omnilock, auth 0xFC (owner lock)
+      lock 0xf329effd…7752cb type args 0xfc111111111111111111111111111111111111111100
+      refused: reason "owner-lock-unreviewed": the owner's lock is an Omnilock that does not verify a signature itself (auth 0xfc hands the check to another lock or code), so it cannot own a session unless you review it and pass allowUnreviewedOwnerLock
+      signing calls 0, owner sends 0, node sends 0
+  ✓ Omnilock, auth 0xFC, with the opt-in [allowUnreviewedOwnerLock]
+      lock 0xf329effd…7752cb type args 0xfc111111111111111111111111111111111111111100
+      warning: ckb-session-kit: the owner's lock is an Omnilock that does not verify a signature itself (auth 0xfc hands the check to another lock or code); allowed by allowUnreviewedOwnerLock
+      past the owner check; openSession stopped at funding: Insufficient CKB, need 194 extra CKB
+      signing calls 0, owner sends 0, node sends 0
+  ✓ unknown code hash
+      lock 0xabababab…ababab data1 args 0x1111111111111111111111111111111111111111
+      refused: reason "owner-lock-unreviewed": the owner's lock is not one this kit has reviewed: it may open without the owner's signature, so it cannot own a session unless you review it and pass allowUnreviewedOwnerLock
+      signing calls 0, owner sends 0, node sends 0
+  ✓ unknown code hash, with the opt-in [allowUnreviewedOwnerLock]
+      lock 0xabababab…ababab data1 args 0x1111111111111111111111111111111111111111
+      warning: ckb-session-kit: the owner's lock is not one this kit has reviewed: it may open without the owner's signature; allowed by allowUnreviewedOwnerLock
+      past the owner check; openSession stopped at funding: Insufficient CKB, need 192 extra CKB
+      signing calls 0, owner sends 0, node sends 0
+
+open: one 300 CKB cell for each of 4 owners, in one transaction
+  https://testnet.explorer.nervos.org/transaction/0xf2972f4a3fa94112b6c0a50179293b7cf7f9108aa40d68e6428e984fef06bf30
+  secp256k1-blake160: lock 0x9bd7e06f…a3cce8 type args 0x3dc66d8b65377ca397890cc3527bc46651c14b0e
+      opened 130 CKB (session warnings: no-rate-limit): https://testnet.explorer.nervos.org/transaction/0x59ee26132f6ca3740112717942eb20c35246ff05a08c3a27ee778e9fd70bfcdb
+      closed, session swept to the owner: https://testnet.explorer.nervos.org/transaction/0xac52f1f70224b9e08e88be14efe07461da1a7acc515fa5d43f8e3bd368ff67eb
+      key cell back to the owner: https://testnet.explorer.nervos.org/transaction/0xeb289ed031bd2525231e97955149b41ab58e00a9788999a228d8a5cf6b4506d9
+  secp256k1 multisig v2, 1 of 1: lock 0x36c971b8…db0d29 data1 args 0xa8f1931c8885e6000ebe67c787f8a6d33d831682
+      opened 130 CKB (session warnings: no-rate-limit): https://testnet.explorer.nervos.org/transaction/0x034fba4612912104c192261f034f41026ad9fb1b1c6d0e7eafcd03539c53062b
+      closed, session swept to the owner: https://testnet.explorer.nervos.org/transaction/0xcedbfd27d716b8306adcc9876b4efbafcfc0cc22b9d95418c305b374d238b121
+      key cell back to the owner: https://testnet.explorer.nervos.org/transaction/0xae777851e991b9c7d120cd2ddf0231d4e12b249f2cf697dd01e79ce2a46db1d2
+  Omnilock, Dogecoin auth 0x05: lock 0xf329effd…7752cb type args 0x056cda9a893dcfa7fdb3b65cccf1a0b590e2ff2d9b00
+      opened 130 CKB (session warnings: no-rate-limit): https://testnet.explorer.nervos.org/transaction/0x933da8aa05293542feef2a9b50a8622a2076af8d54badf425a583be2bbcc2380
+      closed, session swept to the owner: https://testnet.explorer.nervos.org/transaction/0x7cb366dc8868f2b88c3ed2d2128ef0e2b48d35bd4a69d16f25ce625e7057a37c
+      key cell back to the owner: https://testnet.explorer.nervos.org/transaction/0x795c21fd9a30ed99ee7f60c457bdf5b82f77a2ec1877593951f17c2939b785bf
+  Nostr lock, signing mode (args[0]=0): lock 0x6ae5ee0c…0c91d5 type args 0x000da875e31c881f1da26774b299ef6bce959f2954
+      opened 130 CKB (session warnings: no-rate-limit): https://testnet.explorer.nervos.org/transaction/0xf0f3d0b8a3f05c439f37d96fbd0b78133c1bf10588f452c2a214a5fc3754266f
+      closed, session swept to the owner: https://testnet.explorer.nervos.org/transaction/0xc0770837d76440c0e3d02449b30c42c22278cedd6dbfd879b68b465264b33a9f
+      key cell back to the owner: https://testnet.explorer.nervos.org/transaction/0xe96cc6a3c4df7d4726246e372da297e03ebd57d4e2745498996b15156f9b795b
+
+sweep: every owner's and key's CKB back to the funder
+  secp256k1-blake160 → funder, 299.99952425 CKB: https://testnet.explorer.nervos.org/transaction/0x3280f98e2eb1f988fe2ffb70a55e2f19befcec5c23b239b1d859cef86e9c39b2
+  secp256k1 multisig v2, 1 of 1 → funder, 299.99950831 CKB: https://testnet.explorer.nervos.org/transaction/0x8bb70ee14f3a0317fd5f5894e276c3739b142ac023272ee91a5a9d5b607aa0d4
+  Omnilock, Dogecoin auth 0x05 → funder, 299.99948438 CKB: https://testnet.explorer.nervos.org/transaction/0x3fa9007734bc90e7050c513d58916452fcffd92bec4243dac208b72a652ee15c
+  Nostr lock, signing mode (args[0]=0) → funder, 299.99918637 CKB: https://testnet.explorer.nervos.org/transaction/0x9cef508dec52d87f4da6304e0be3bfeb1f6064c4b2d95fffb589e7fcff4582b8
+
+pw-proof: why PW-Lock is refused. PW-Lock 0x58c5f491aba6d61678b7cf7edf4910b1f5e00ec0cde2f42e0abb4fd9aff25a63 (type), args 0x4203673aaee9eab3528763c49c963cfab09e44f4
+  a 61 CKB cell under PW-Lock: https://testnet.explorer.nervos.org/transaction/0xdc7854e3c8a1357b27bd43ca60ef59cadf2c8b1ef32d884686fcaed43633167b
+  spend: inputs 2 (PW-Lock at 1), witnesses 1: the PW-Lock input has no witness, no signature
+  accepted with no signature, PW-Lock cell 61 → 62 CKB: https://testnet.explorer.nervos.org/transaction/0x36410febd935b570377806b9605cb3bf90ac56c02f8e3cdf58ec4208d1f5bcc8
+  committed: an input under PW-Lock needs nobody's signature, so a stranger could add one to any
+  transaction and get the session lock's owner mode. Hence "owner-lock-unsafe", opt-in or not.
+
+funder: 299365.9810107 → 299303.97737479 CKB, net spend 62.00363591 CKB
+all rows as expected
+log: docs/evidence/2026-11-02-smoke-owner-locks.log

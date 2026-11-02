@@ -9,12 +9,18 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { format } from "node:util";
-import { findSubscriptionCells, type SessionLockDeployment, type Subscription } from "../src/index.js";
+import {
+  assertSigningLock,
+  findSubscriptionCells,
+  SessionPolicyError,
+  type SessionLockDeployment,
+  type Subscription,
+} from "../src/index.js";
 
 export const CKB = 100_000_000n;
 export const explorer = (h: string) => `https://testnet.explorer.nervos.org/transaction/${h}`;
 /** Over HTTP: the default WebSocket connection has hung mid-run (26 Oct). */
-export const rpcUrl = (env: NodeJS.ProcessEnv = process.env) => env.CKB_RPC_URL ?? "https://testnet.ckb.dev/";
+export const rpcUrl = (env: NodeJS.ProcessEnv = process.env, fallback = "https://testnet.ckb.dev/") => env.CKB_RPC_URL || fallback;
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // --- keys ------------------------------------------------------------------
@@ -25,6 +31,8 @@ export const SMOKE_KEY_FILE = ".env.smoke";
  * FUNDER_KEY and CREATOR_KEY from the environment, else from .env.smoke
  * (gitignored), which is created with two fresh testnet keys on first run.
  * `created` means the funder has nothing yet: fund it from the faucet.
+ * SMOKE_KEY_FILE names another key file (a worktree using the main checkout's);
+ * that file must exist: a mistyped path never creates new keys.
  */
 export function smokeKeys(env: NodeJS.ProcessEnv = process.env): { funderKey: string; creatorKey: string; created: boolean } {
   const hex = /^0x[0-9a-fA-F]{64}$/;
@@ -33,13 +41,15 @@ export function smokeKeys(env: NodeJS.ProcessEnv = process.env): { funderKey: st
       throw new Error("FUNDER_KEY and CREATOR_KEY must both be 0x + 64 hex characters (or unset both to use .env.smoke)");
     return { funderKey: env.FUNDER_KEY!, creatorKey: env.CREATOR_KEY!, created: false };
   }
-  if (existsSync(SMOKE_KEY_FILE)) {
-    const text = readFileSync(SMOKE_KEY_FILE, "utf8");
+  const file = env.SMOKE_KEY_FILE || SMOKE_KEY_FILE;
+  if (existsSync(file)) {
+    const text = readFileSync(file, "utf8");
     const funderKey = /^FUNDER_KEY=(0x[0-9a-fA-F]{64})\s*$/m.exec(text)?.[1];
     const creatorKey = /^CREATOR_KEY=(0x[0-9a-fA-F]{64})\s*$/m.exec(text)?.[1];
-    if (!funderKey || !creatorKey) throw new Error(`${SMOKE_KEY_FILE} needs FUNDER_KEY=0x… and CREATOR_KEY=0x… lines; fix or remove it`);
+    if (!funderKey || !creatorKey) throw new Error(`${file} needs FUNDER_KEY=0x… and CREATOR_KEY=0x… lines; fix or remove it`);
     return { funderKey, creatorKey, created: false };
   }
+  if (env.SMOKE_KEY_FILE) throw new Error(`SMOKE_KEY_FILE ${env.SMOKE_KEY_FILE} does not exist`);
   const funderKey = ccc.hexFrom(randomBytes(32));
   const creatorKey = ccc.hexFrom(randomBytes(32));
   writeFileSync(
@@ -399,4 +409,108 @@ export function instrument(
     }
     return cell;
   }) as typeof client.getCellLive;
+}
+
+// --- owner locks -----------------------------------------------------------
+
+/** What assertSigningLock says about an owner lock: accepted, or the refusal's reason. */
+export type OwnerLockVerdict = "accepted" | "owner-lock-unsafe" | "owner-lock-unreviewed";
+
+/** Owner locks this script holds a key for (derived from the funder's), so it can open a real session. */
+export type OwnerLockSigner = "secp256k1" | "multisig" | "omnilock-doge" | "nostr";
+
+export interface OwnerLockCase {
+  name: string;
+  /** A known script with these args, a script of no known deployment, or the lock of a key this script holds. */
+  lock: { known: ccc.KnownScript; args: string } | { script: ccc.ScriptLike } | { signer: OwnerLockSigner };
+  expect: OwnerLockVerdict;
+  /** Run with allowUnreviewedOwnerLock. */
+  optIn?: boolean;
+  /** Why, in a few words (the rule or the source). */
+  why: string;
+}
+
+const a20 = "11".repeat(20);
+/** A code hash nothing on testnet is deployed under. */
+export const UNKNOWN_CODE_HASH = ("0x" + "ab".repeat(32)) as ccc.Hex;
+
+/** One row per owner-lock class of the allowlist (src/onchain.ts, assertSigningLock). */
+export const OWNER_LOCK_CASES: OwnerLockCase[] = [
+  { name: "secp256k1-blake160", lock: { signer: "secp256k1" }, expect: "accepted", why: "signature over the whole tx" },
+  { name: "secp256k1 multisig v2, 1 of 1", lock: { signer: "multisig" }, expect: "accepted", why: "signatures over the whole tx" },
+  { name: "Omnilock, Dogecoin auth 0x05", lock: { signer: "omnilock-doge" }, expect: "accepted", why: "signing auth flag, no mode" },
+  { name: "Nostr lock, signing mode (args[0]=0)", lock: { signer: "nostr" }, expect: "accepted", why: "Schnorr signature" },
+  { name: "Omnilock, Ethereum auth 0x12", lock: { known: ccc.KnownScript.OmniLock, args: "0x12" + a20 + "00" }, expect: "accepted", why: "signing auth flag, no mode" },
+  { name: "JoyID", lock: { known: ccc.KnownScript.JoyId, args: "0x0001" + a20 }, expect: "accepted", why: "reviewed from its docs" },
+  { name: "anyone-can-pay (RFC 0026)", lock: { known: ccc.KnownScript.AnyoneCanPay, args: "0x" + a20 }, expect: "owner-lock-unsafe", why: "opens with no signature" },
+  { name: "PW-Lock", lock: { known: ccc.KnownScript.PWLock, args: "0x" + a20 }, expect: "owner-lock-unsafe", why: "deployed build is anyone-can-pay" },
+  { name: "PW-Lock, with the opt-in", lock: { known: ccc.KnownScript.PWLock, args: "0x" + a20 }, expect: "owner-lock-unsafe", optIn: true, why: "the opt-in never covers a known signature-free lock" },
+  { name: "always-success", lock: { known: ccc.KnownScript.AlwaysSuccess, args: "0x" }, expect: "owner-lock-unsafe", why: "opens with no signature" },
+  { name: "Omnilock, anyone-can-pay mode 0x02", lock: { known: ccc.KnownScript.OmniLock, args: "0x00" + a20 + "02" + "0000" }, expect: "owner-lock-unsafe", why: "opens with no signature" },
+  { name: "Omnilock, administrator mode 0x01", lock: { known: ccc.KnownScript.OmniLock, args: "0x00" + a20 + "01" + "22".repeat(32) }, expect: "owner-lock-unsafe", why: "an admin can unlock it" },
+  { name: "Nostr lock, PoW mode (args[0]=0x10)", lock: { known: ccc.KnownScript.NostrLock, args: "0x10" + "00".repeat(20) }, expect: "owner-lock-unsafe", why: "work, not a key, unlocks it" },
+  { name: "Omnilock, auth 0xFC (owner lock)", lock: { known: ccc.KnownScript.OmniLock, args: "0xfc" + a20 + "00" }, expect: "owner-lock-unreviewed", why: "hands the check to another lock" },
+  { name: "Omnilock, auth 0xFC, with the opt-in", lock: { known: ccc.KnownScript.OmniLock, args: "0xfc" + a20 + "00" }, expect: "accepted", optIn: true, why: "refusal turned into a warning" },
+  { name: "unknown code hash", lock: { script: { codeHash: UNKNOWN_CODE_HASH, hashType: "data1", args: "0x" + a20 } }, expect: "owner-lock-unreviewed", why: "not on the allowlist" },
+  { name: "unknown code hash, with the opt-in", lock: { script: { codeHash: UNKNOWN_CODE_HASH, hashType: "data1", args: "0x" + a20 } }, expect: "accepted", optIn: true, why: "refusal turned into a warning" },
+];
+
+/** The verdict an assertSigningLock (or openSession) outcome amounts to; other errors are rethrown. */
+export function ownerLockVerdict(error?: unknown): OwnerLockVerdict {
+  if (error === undefined) return "accepted";
+  if (error instanceof SessionPolicyError && (error.reason === "owner-lock-unsafe" || error.reason === "owner-lock-unreviewed")) {
+    return error.reason;
+  }
+  throw error;
+}
+
+/** assertSigningLock on `lock`, with the warnings it printed (offline for every known script: CCC's tables). */
+export async function checkOwnerLock(
+  lock: ccc.Script,
+  client: ccc.Client,
+  optIn = false,
+): Promise<{ verdict: OwnerLockVerdict; message?: string; warnings: string[] }> {
+  const warnings: string[] = [];
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+  try {
+    await assertSigningLock(lock, client, { allowUnreviewedOwnerLock: optIn });
+    return { verdict: "accepted", warnings };
+  } catch (e) {
+    return { verdict: ownerLockVerdict(e), message: (e as Error).message, warnings };
+  } finally {
+    console.warn = warn;
+  }
+}
+
+/** What each owner this script can sign for gets: a 130 CKB session, a key cell, a change cell (61+) and fees. */
+export const OWNER_FUNDING = 300n * CKB;
+export const OWNER_BUDGET = 130n * CKB;
+/** The PW-Lock proof: a 61 CKB cell (20-byte args), topped up by 1 CKB with no signature; both stay under PW-Lock. */
+export const PW_CELL = 61n * CKB;
+export const PW_TOP_UP = 1n * CKB;
+
+export interface OwnerLockOptions {
+  /** Open and close a real session for each owner lock this script can sign for. */
+  open: boolean;
+  /** Spend a PW-Lock cell with no witness (costs PW_CELL + PW_TOP_UP for good). */
+  pwProof: boolean;
+}
+
+export function ownerLockOptions(argv: string[], env: NodeJS.ProcessEnv = process.env): OwnerLockOptions {
+  return {
+    open: !(argv.includes("--no-open") || env.NO_OPEN === "1"),
+    pwProof: !(argv.includes("--no-pw-proof") || env.NO_PW_PROOF === "1"),
+  };
+}
+
+export function ownerLockCost(o: OwnerLockOptions, cases: OwnerLockCase[] = OWNER_LOCK_CASES) {
+  const openers = o.open ? cases.filter((c) => "signer" in c.lock).length : 0;
+  return {
+    openers,
+    /** Out of the funder for the run, swept back at the end (less fees). */
+    lent: BigInt(openers) * OWNER_FUNDING,
+    /** Left under PW-Lock args nobody holds a key for. */
+    spent: o.pwProof ? PW_CELL + PW_TOP_UP : 0n,
+  };
 }
