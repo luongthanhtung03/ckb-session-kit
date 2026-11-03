@@ -482,7 +482,7 @@ of reviewed configurations:
 | secp256k1 (CKB default), secp256k1 multisig, with or without a since | accepted |
 | Omnilock, auth 0x00-0x06 or 0x12, no mode or only time-lock or supply | accepted |
 | Nostr lock, signing mode (`args[0]` is 0) | accepted |
-| JoyID | accepted (its code is closed: reviewed from its documentation) |
+| JoyID | accepted, reviewed from its documentation only: its contract is closed source, so it could not be reviewed from source; revisit if the source becomes available |
 | Anyone-can-pay, PW-Lock, always-success (by type id, or their deployed binaries by data hash) | refused: they open with no signature |
 | Omnilock in anyone-can-pay or administrator mode | refused |
 | Nostr lock in proof of work mode (`args[0]` not 0) | refused: anyone who does the work can unlock it |
@@ -494,6 +494,24 @@ whatever the args. MetaMask and other Ethereum wallets get an Omnilock (0x12)
 from CCC, which is accepted. `allowUnreviewedOwnerLock` lets an unreviewed lock
 through with a warning; use it only once you have checked that the lock cannot
 open without its holder's signature. It never lets a refused lock through.
+
+JoyID is the one accepted lock this kit could not review from source. There is
+no option to exclude it; an app that does not want JoyID owners can refuse them
+itself before calling `openSession` (or `openSubscription`), next to the kit's
+own `assertSigningLock` check:
+
+```ts
+import { ccc } from "@ckb-ccc/core";
+import { assertSigningLock, openSession } from "ckb-session-kit";
+
+const ownerLock = (await owner.getRecommendedAddressObj()).script;
+const joyId = await owner.client.getKnownScript(ccc.KnownScript.JoyId);
+if (ownerLock.codeHash === joyId.codeHash && ownerLock.hashType === joyId.hashType) {
+  throw new Error("JoyID owners are not accepted by this app");
+}
+await assertSigningLock(ownerLock, owner.client); // the kit's own check; openSession runs it again
+await openSession(owner, session, deployment, { budget });
+```
 
 ## The on-chain session lock
 
@@ -585,8 +603,9 @@ paying a higher fee, so sweep early, and resweep what is left. Keep budgets
 small: the budget is the most a session can ever lose.
 
 **Owner and session locks must need a signature.** The lock trusts that an input
-under the owner's lock means the owner signed. Plain secp256k1, JoyID, signing
-Omnilock and the Nostr lock in signing mode are fine; anyone-can-pay, PW-Lock and
+under the owner's lock means the owner signed. Plain secp256k1, signing
+Omnilock and the Nostr lock in signing mode are fine, and so is JoyID as far as
+its documentation goes (closed source, not reviewed from source); anyone-can-pay, PW-Lock and
 the Nostr lock in proof of work mode are not, since anyone could spend the
 owner's cell and get owner mode. See [which wallets can own a
 session](#which-wallets-can-own-a-session).

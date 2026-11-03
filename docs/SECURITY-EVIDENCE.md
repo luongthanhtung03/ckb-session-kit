@@ -588,8 +588,13 @@ Consistent with the README's [Limits](../README.md#limits):
   subscription's charger lock has its own opt-in, `allowUnreviewedChargerLock`.
   A multisig with a since or an Omnilock time-lock delays the owner's sweep as
   much as a thief's spend, while the session key keeps spending. Covered by
-  `test/owner-lock.test.ts`. The lock itself cannot tell. JoyID's code is not
-  public, so its entry rests on its documentation.
+  `test/owner-lock.test.ts`. The lock itself cannot tell. JoyID is accepted but
+  reviewed from its documentation only: its contract is closed source, so it
+  could not be reviewed from source; revisit if the source becomes available.
+  The kit has no option to exclude it; an app that does not want JoyID owners
+  compares the owner's lock with `getKnownScript(ccc.KnownScript.JoyId)` and
+  refuses it before calling `openSession`, then calls `assertSigningLock` for
+  the rest (example in README.md and docs/API.md).
 - **Gaps in this evidence.** Errors 10, 11, 15 and 19 have not been sent to
   testnet; the token limit's rejection (20) has no raw node text. The lock smoke's
   rejections have the node's full text since the 28 Oct run.

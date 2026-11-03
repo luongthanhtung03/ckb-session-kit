@@ -235,7 +235,8 @@ unless the lock is a configuration this kit has reviewed:
   Dogecoin, multisig, Ethereum with the message displayed), and no mode other
   than time-lock or supply;
 - Nostr lock in signing mode (`args[0]` is 0);
-- JoyID (its code is closed; reviewed from its documentation).
+- JoyID: reviewed from its documentation only. Its contract is closed source,
+  so it could not be reviewed from source; revisit if the source becomes available.
 
 Refused always, reason `"owner-lock-unsafe"`: anyone-can-pay (both networks'
 deployments and the older ones pw-core lists), PW-Lock (its deployed build is
@@ -255,6 +256,23 @@ flags or modes, the ckb-proxy-locks, unknown locks, and args the lock's own code
 would not accept. `opts.allowUnreviewedOwnerLock: true` (type
 `SigningLockOptions`) lets these through with a `console.warn`. Set it only once
 you have checked that the lock cannot open without its holder's signature.
+
+There is no option to exclude JoyID. To refuse JoyID owners, compare the
+owner's lock with `client.getKnownScript(ccc.KnownScript.JoyId)` before calling
+`openSession` or `openSubscription`, and call `assertSigningLock` for the rest:
+
+```ts
+import { ccc } from "@ckb-ccc/core";
+import { assertSigningLock, openSession } from "ckb-session-kit";
+
+const ownerLock = (await owner.getRecommendedAddressObj()).script;
+const joyId = await owner.client.getKnownScript(ccc.KnownScript.JoyId);
+if (ownerLock.codeHash === joyId.codeHash && ownerLock.hashType === joyId.hashType) {
+  throw new Error("JoyID owners are not accepted by this app");
+}
+await assertSigningLock(ownerLock, owner.client); // the kit's own check; openSession runs it again
+await openSession(owner, session, deployment, { budget });
+```
 
 ### `assertPlainXudt(type, client)`
 Throws `SessionPolicyError` unless `type` is this network's xUDT with every
