@@ -1,0 +1,23 @@
+> fund-pledge (2026-11-02T17:51:20.018Z)
+
+logging to docs/evidence/2026-11-02-fund-pledge.log
+wallet ckt1qzda0cr08m85hc8jlnfp3zer7xulejywt49kt2rr0vthywaa50xwsqf3zkscv3acyhndwm4h4pujvfk266l5kwqy0z494 holds 299303.97737479 CKB
+CrowdCell's five scripts are live on testnet with the expected code hashes
+1. campaign created (wallet signed), deadline block 22946848, 342 CKB: https://testnet.explorer.nervos.org/transaction/0xafbced2f56328fc19db61e9751e1aeb4e3d6f702f3941277bd681fe6460d9fa4
+2. recipient-scoped session refused before signing (session-has-recipient): an app transaction with typed outputs to other locks needs a session without a recipient: this session's lock only lets it pay its recipient and the owner, in plain cells
+  warning shown to the owner: no-rate-limit
+3. session opened (wallet signed once): budget 773 CKB, maxPerTx 652 CKB, no recipient: https://testnet.explorer.nervos.org/transaction/0x0dc8fdde564befa201a2c92a2ac2ee0fb3a3a660389dfb1a4205709dfbccbf76
+4. pledged 100 CKB from the session, no wallet (1 build): https://testnet.explorer.nervos.org/transaction/0x282adf8e8a25bef1bde96d285856c96c1fd7d1f4ff7d28da3e67669879a12b67
+   fee 0.00003768 CKB from the key cell; session 773 -> 121 CKB (outflow 652)
+   campaign total_pledged now 100 CKB
+5. 101 CKB pledge refused before signing: refused by session scope: the transaction needs 653 CKB from the session, over maxPerTx (652 CKB)
+6. session closed: sweep https://testnet.explorer.nervos.org/transaction/0x80121445ab4d2d9746afdcd0f0f32ccbc7f30254801d987d618d8824fd4ae381, key cell https://testnet.explorer.nervos.org/transaction/0xd53d590a697e034b89db1a49f6d065216caed39ba7084a1c44381c011daab400
+  tip 22946824, waiting for block 22946848 (24 to go)
+  tip 22946827, waiting for block 22946848 (21 to go)
+  tip 22946831, waiting for block 22946848 (17 to go)
+  tip 22946835, waiting for block 22946848 (13 to go)
+  tip 22946841, waiting for block 22946848 (7 to go)
+  tip 22946846, waiting for block 22946848 (2 to go)
+7. campaign finalized as Failed: https://testnet.explorer.nervos.org/transaction/0xe248c5353d534b99b7b0ec8b0f127253d7e54ff9d6157b1ce216bb845b3836cb
+   pledge refunded and receipt reclaimed to the wallet: https://testnet.explorer.nervos.org/transaction/0xa2e7acc7f95cf88c42f462ee470502e5d26934356c52fa30d37f444096c07d25
+done: wallet 299303.97737479 -> 298961.97677167 CKB (net 342.00060312 CKB: the campaign cell, held ~180 days by CrowdCell's grace period, and fees)

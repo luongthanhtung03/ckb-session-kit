@@ -3,6 +3,25 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
+## Unreleased
+
+### Added
+- `fundInSession` and `sendWithSession`: fund a transaction the app built (its
+  own inputs, typed outputs, cell deps and witnesses) from a session without a
+  recipient, with no wallet prompt. The key cell pays the fee (default 2000
+  shannons/KB, `DEFAULT_FUND_FEE_RATE`, the same on every retry). Refused
+  before signing: a session with an on-chain recipient, an input under the
+  owner's lock (owner mode), an outflow over `maxPerTx`. `sendWithSession`
+  retries only when the node names one of the session's own cells as spent, and
+  rethrows any other refusal (the app's own cell taken, an RBF refusal) for the
+  app's loop. For CrowdCell pledges (CKBuilder-projects#6).
+- `deadInputs` exported, `FundedTransaction`, `FundOptions`,
+  `SendWithSessionOptions` types, and `SessionPolicyError` reasons
+  `"session-has-recipient"`, `"owner-lock-input"`, `"app-tx-shape"`.
+- CKB-VM tests of a session-funded pledge against CrowdCell's live testnet
+  scripts (`scripts/fetch-crowdcell.ts` saves them; not committed), and
+  `npm run smoke:fund-pledge`.
+
 ## 2.0.0 (2026-11-03)
 
 ### Upgrading from 1.0.0

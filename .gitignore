@@ -17,6 +17,9 @@ target/
 build/
 *.wasm
 
+# CrowdCell's testnet binaries (scripts/fetch-crowdcell.ts): no licence to redistribute
+test/fixtures/crowdcell/
+
 # compiled ckb script bytecode (rebuilt with `npm run build`)
 dist/
 

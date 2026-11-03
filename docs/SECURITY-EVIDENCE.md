@@ -481,6 +481,30 @@ cells with different scopes" table above.
 |---|---|---|
 | 204-byte and 1,000-byte args, past the 256-byte script buffer | "rejects 204-byte args without reading past its buffer"; "rejects 1000-byte args without reading past its buffer" | refused, 10 |
 
+**A third-party app transaction: a CrowdCell pledge (3 Nov 2026)**
+
+[`test/fund-pledge-vm.test.ts`](../test/fund-pledge-vm.test.ts) runs the
+transaction `fundInSession` builds for a CrowdCell pledge (campaign cell in and
+carried forward, typed pledge cell under pledge-lock, typed receipt under the
+owner's lock) with CrowdCell's five scripts as its live testnet frontend uses
+them (`scripts/fetch-crowdcell.ts`; not committed). Each group runs on its own;
+the key cell's secp256k1 lock is not run.
+
+| Case | Outcome |
+|---|---|
+| Funded from a session without a recipient, outflow exactly `max_per_tx` | accepted by the session lock, campaign lock, campaign type, pledge type and receipt type |
+| Same, with a rate limit: `since` on the session cells, 0 on the campaign cell; then `since` one block short | accepted; refused, 14 |
+| The same session cells under a scope one shannon smaller | refused, 12 |
+| Under a recipient-scoped scope: recipient the pledge lock, or the owner | refused, 13 (the campaign output is neither) |
+| Under a recipient-scoped scope: recipient the campaign lock | refused, 18 (its output is typed) |
+| Change split in two; change typed | refused, 16; refused, 18 |
+| A wallet input added to an over-limit spend | accepted: owner mode skips every rule, which is why `fundInSession` refuses a wallet input |
+
+On testnet (`npm run smoke:fund-pledge`, [log](evidence/2026-11-02-fund-pledge.log)):
+a session without a recipient funded a 100 CKB pledge on a campaign of the
+kit's own, [accepted](https://testnet.explorer.nervos.org/transaction/0x282adf8e8a25bef1bde96d285856c96c1fd7d1f4ff7d28da3e67669879a12b67)
+by the session lock and CrowdCell's scripts, with no wallet input.
+
 ## 4. Summary
 
 | Rule | Code | Testnet, current | Raw node text logged | CKB-VM |
