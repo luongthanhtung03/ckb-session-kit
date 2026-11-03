@@ -174,7 +174,8 @@ replace (RBF) another user's pending transaction on the same app cell.
 
 ### `DEFAULT_FUND_FEE_RATE`
 2000 shannons per 1000 bytes: what `fundInSession` and `sendWithSession` use
-without `feeRate` (CrowdCell's pledge rate).
+without `feeRate`. An app whose own path uses another rate should pass it, so
+both paths compete for its cells at the same rate.
 
 ### Types: `FundedTransaction`, `FundOptions`, `SendWithSessionOptions`
 `FundedTransaction` is `{ tx, outflow, sessionInputs }`. `FundOptions` and

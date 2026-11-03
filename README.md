@@ -315,7 +315,8 @@ cell and the key cell (which pays the fee) to the app's transaction, and
 `sendWithSession` builds, funds, signs with the session key and sends.
 
 ```ts
-const session = createSession({ expiresAt, scope: { maxPerTx: pledge + 552n * CKB } }); // no recipients
+// overhead: what the app's outputs hold beyond the amount; it depends on the app's deployment.
+const session = createSession({ expiresAt, scope: { maxPerTx: amount + overhead } }); // no recipients
 const { binding } = await openSession(wallet, session, TESTNET_DEPLOYMENT, { budget, minInterval: 0n });
 
 const hash = await sendWithSession(session, client, TESTNET_DEPLOYMENT, binding, async () => buildPledgeTx(), {
@@ -334,10 +335,13 @@ What it takes, and why:
   `maxPerTx` per transaction: keep the budget small and the expiry short, and
   show a Close button (see [If a session key leaks](#if-a-session-key-leaks)).
 - **`maxPerTx` covers everything the outputs hold beyond the app's inputs**,
-  not just the amount: for a CrowdCell pledge, the pledge plus the pledge
-  cell's storage (252 CKB) and the receipt's (300 CKB on testnet today), which
-  come back to the backer later. The fee comes from the key cell and never
-  counts.
+  not just the amount: the storage of every cell the app creates, too. That
+  overhead depends on the app and on the version of its scripts it deploys:
+  for a CrowdCell pledge it is the pledge cell's storage (252 CKB) plus the
+  receipt's, which is 300 CKB on testnet today and 262 CKB in CrowdCell's source
+  at 2fd13f6 (514 to 552 CKB in all, returned to the backer later). Compute it
+  from the app's own constants; the kit has none. The fee comes from the key
+  cell and never counts.
 - **No wallet input.** A cell under the owner's lock would switch the lock to
   owner mode and need the wallet's signature: refused
   (`reason: "owner-lock-input"`).
@@ -351,7 +355,15 @@ What it takes, and why:
 A CrowdCell pledge built this way passes CrowdCell's five live testnet scripts
 and the session lock in the CKB-VM (`test/fund-pledge-vm.test.ts`, after
 `npx tsx scripts/fetch-crowdcell.ts`). `npm run smoke:fund-pledge` runs it on
-testnet on a campaign of its own.
+testnet, against CrowdCell's live scripts, on a campaign of its own. Run on 3 Nov 2026
+([log](docs/evidence/2026-11-02-fund-pledge.log)):
+[campaign created](https://testnet.explorer.nervos.org/transaction/0xafbced2f56328fc19db61e9751e1aeb4e3d6f702f3941277bd681fe6460d9fa4)
+→ [session opened, no recipient, 773 CKB, 652 CKB per transaction](https://testnet.explorer.nervos.org/transaction/0x0dc8fdde564befa201a2c92a2ac2ee0fb3a3a660389dfb1a4205709dfbccbf76)
+→ [100 CKB pledged, no wallet](https://testnet.explorer.nervos.org/transaction/0x282adf8e8a25bef1bde96d285856c96c1fd7d1f4ff7d28da3e67669879a12b67)
+(a 101 CKB pledge refused before signing)
+→ [session swept back](https://testnet.explorer.nervos.org/transaction/0x80121445ab4d2d9746afdcd0f0f32ccbc7f30254801d987d618d8824fd4ae381)
+→ after the deadline, [campaign finalized as Failed](https://testnet.explorer.nervos.org/transaction/0xe248c5353d534b99b7b0ec8b0f127253d7e54ff9d6157b1ce216bb845b3836cb)
+→ [pledge refunded, receipt reclaimed](https://testnet.explorer.nervos.org/transaction/0xa2e7acc7f95cf88c42f462ee470502e5d26934356c52fa30d37f444096c07d25).
 
 ## Subscriptions
 

@@ -1017,7 +1017,7 @@ async function spendOnce(
 
 /**
  * The fee rate `fundInSession` and `sendWithSession` use when none is given, in
- * shannons per 1000 bytes: CrowdCell's pledge rate. `sendWithSession` keeps the
+ * shannons per 1000 bytes (twice the usual testnet minimum). `sendWithSession` keeps the
  * same rate on every attempt (see there).
  */
 export const DEFAULT_FUND_FEE_RATE = 2000n;
