@@ -1,0 +1,80 @@
+> smoke-pool-lag-testnet.ckbapp.dev (2026-11-03T13:02:10.349Z)
+
+node: https://testnet.ckbapp.dev/ 0.210.0 (2592ddf 2026-09-17); 4 transactions pending; min_fee_rate 1000
+sends 10 per mode, modes fetch, pinned, polls every 50 ms (+ round trip), done after 10 polls in a row show it not live or 10000 ms
+cell: 0xe248c5353d534b99b7b0ec8b0f127253d7e54ff9d6157b1ce216bb845b3836cb:1 (235.99464966 CKB), spent to itself each send
+
+mode fetch
+  node_id before: QmRLV8vE8n QmRLV8vE8n QmRLV8vE8n QmSdXLJtvu QmSdXLJtvu QmSdXLJtvu
+  send  1: took by QmRLV8vE8n in 156 ms; not live after 0 ms, stays so from 426 ms; 12 polls (~213 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 9 by another node than the send's; live polls: 0 on the send's node, 1 on another; LIVE AGAIN after gone (two views)
+           https://testnet.explorer.nervos.org/transaction/0xeab0c270df51277918f7d5daeb90f3727ef17d996f8c0954eb91bb716854e382
+           polls: 0:unknown@QmRLV8vE8n 210:live@QmSdXLJtvu 426:unknown@QmSdXLJtvu 643:unknown@QmSdXLJtvu 858:unknown@QmSdXLJtvu 1074:unknown@QmSdXLJtvu 1293:unknown@QmSdXLJtvu 1511:unknown@QmRLV8vE8n 1730:unknown@QmSdXLJtvu 1934:unknown@QmRLV8vE8n 2136:unknown@QmSdXLJtvu 2340:unknown@QmSdXLJtvu
+  send  2: took by QmSdXLJtvu in 159 ms; not live after 435 ms, stays so from 435 ms; 12 polls (~217 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 6 by another node than the send's; live polls: 0 on the send's node, 2 on another
+           https://testnet.explorer.nervos.org/transaction/0x0b845121d122db6a4cbd5db0d57abe73c7bdf280fe6886b94dc89910f077759b
+           polls: 1:live@QmRLV8vE8n 219:live@QmRLV8vE8n 435:unknown@QmSdXLJtvu 651:unknown@QmSdXLJtvu 868:unknown@QmRLV8vE8n 1086:unknown@QmSdXLJtvu 1304:unknown@QmSdXLJtvu 1522:unknown@QmRLV8vE8n 1739:unknown@QmRLV8vE8n 1958:unknown@QmRLV8vE8n 2177:unknown@QmSdXLJtvu 2393:unknown@QmSdXLJtvu
+  send  3: took by QmSdXLJtvu in 162 ms; not live after 438 ms, stays so from 438 ms; 12 polls (~217 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 5 by another node than the send's; live polls: 0 on the send's node, 2 on another
+           https://testnet.explorer.nervos.org/transaction/0xacaf2b59cc6d0747134668aba1f85a32fed5fdf7f078e4db0a5768e8eca59416
+           polls: 1:live@QmRLV8vE8n 220:live@QmRLV8vE8n 438:unknown@QmRLV8vE8n 655:unknown@QmSdXLJtvu 874:unknown@QmSdXLJtvu 1092:unknown@QmSdXLJtvu 1296:unknown@QmSdXLJtvu 1515:unknown@QmSdXLJtvu 1734:unknown@QmSdXLJtvu 1951:unknown@QmRLV8vE8n 2167:unknown@QmRLV8vE8n 2386:unknown@QmSdXLJtvu
+  send  4: took by QmRLV8vE8n in 159 ms; not live after 0 ms, stays so from 0 ms; 10 polls (~217 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 3 by another node than the send's; live polls: 0 on the send's node, 0 on another
+           https://testnet.explorer.nervos.org/transaction/0x9534e3c58ecdd0519d2187d52c6de186bb4843a0ce861767d8c9cc6f022dcf1e
+           polls: 0:unknown@QmRLV8vE8n 214:unknown@QmRLV8vE8n 433:unknown@QmRLV8vE8n 651:unknown@QmSdXLJtvu 866:unknown@QmRLV8vE8n 1082:unknown@QmRLV8vE8n 1298:unknown@QmSdXLJtvu 1514:unknown@QmRLV8vE8n 1732:unknown@QmSdXLJtvu 1950:unknown@QmRLV8vE8n
+  send  5: took by QmRLV8vE8n in 160 ms; not live after 208 ms, stays so from 208 ms; 11 polls (~216 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 6 by another node than the send's; live polls: 0 on the send's node, 1 on another
+           https://testnet.explorer.nervos.org/transaction/0xf70af81e46630be5b0e337761e8999466f914da19a7855a2299e10891f5ff3e0
+           polls: 0:live@QmSdXLJtvu 208:unknown@QmRLV8vE8n 424:unknown@QmRLV8vE8n 644:unknown@QmSdXLJtvu 860:unknown@QmRLV8vE8n 1075:unknown@QmSdXLJtvu 1290:unknown@QmSdXLJtvu 1509:unknown@QmSdXLJtvu 1726:unknown@QmRLV8vE8n 1942:unknown@QmSdXLJtvu 2157:unknown@QmRLV8vE8n
+  send  6: took by QmRLV8vE8n in 162 ms; not live after 209 ms, stays so from 645 ms; 13 polls (~217 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 9 by another node than the send's; live polls: 0 on the send's node, 2 on another; LIVE AGAIN after gone (two views)
+           https://testnet.explorer.nervos.org/transaction/0x066cc1b121eca0865365e62eb00b954f57610255c223e44c9ef25bd59241a827
+           polls: 0:live@QmSdXLJtvu 209:unknown@QmRLV8vE8n 426:live@QmSdXLJtvu 645:unknown@QmSdXLJtvu 861:unknown@QmRLV8vE8n 1078:unknown@QmRLV8vE8n 1297:unknown@QmSdXLJtvu 1515:unknown@QmSdXLJtvu 1733:unknown@QmSdXLJtvu 1951:unknown@QmSdXLJtvu 2168:unknown@QmSdXLJtvu 2384:unknown@QmRLV8vE8n 2599:unknown@QmSdXLJtvu
+  send  7: took by QmSdXLJtvu in 160 ms; not live after 0 ms, stays so from 0 ms; 10 polls (~214 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 6 by another node than the send's; live polls: 0 on the send's node, 0 on another
+           https://testnet.explorer.nervos.org/transaction/0x7944b632260cf7fc6ca8185533d1103f0f5865bce2ecdaaa18c4d19bd5d313e6
+           polls: 0:unknown@QmSdXLJtvu 208:unknown@QmSdXLJtvu 426:unknown@QmRLV8vE8n 630:unknown@QmRLV8vE8n 847:unknown@QmSdXLJtvu 1051:unknown@QmSdXLJtvu 1268:unknown@QmRLV8vE8n 1488:unknown@QmRLV8vE8n 1706:unknown@QmRLV8vE8n 1923:unknown@QmRLV8vE8n
+  send  8: took by QmRLV8vE8n in 163 ms; not live after 207 ms, stays so from 207 ms; 11 polls (~216 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 6 by another node than the send's; live polls: 0 on the send's node, 1 on another
+           https://testnet.explorer.nervos.org/transaction/0x39d8638485cb52b7d77f8ffbdd9a666b21fa5fd610db4f307a0c8603a849bf89
+           polls: 0:live@QmSdXLJtvu 207:unknown@QmRLV8vE8n 423:unknown@QmRLV8vE8n 642:unknown@QmSdXLJtvu 862:unknown@QmSdXLJtvu 1081:unknown@QmRLV8vE8n 1300:unknown@QmRLV8vE8n 1517:unknown@QmSdXLJtvu 1732:unknown@QmSdXLJtvu 1948:unknown@QmSdXLJtvu 2164:unknown@QmRLV8vE8n
+  send  9: took by QmRLV8vE8n in 159 ms; not live after 0 ms, stays so from 0 ms; 10 polls (~220 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 5 by another node than the send's; live polls: 0 on the send's node, 0 on another
+           https://testnet.explorer.nervos.org/transaction/0xe7b371613587b08412fe6f562476609061fa55da0ae18dee8387134703d7534c
+           polls: 0:unknown@QmRLV8vE8n 218:unknown@QmRLV8vE8n 434:unknown@QmSdXLJtvu 650:unknown@QmSdXLJtvu 867:unknown@QmSdXLJtvu 1083:unknown@QmRLV8vE8n 1301:unknown@QmSdXLJtvu 1517:unknown@QmSdXLJtvu 1745:unknown@QmRLV8vE8n 1976:unknown@QmRLV8vE8n
+  send 10: took by QmRLV8vE8n in 161 ms; not live after 0 ms, stays so from 654 ms; 13 polls (~218 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 8 by another node than the send's; live polls: 0 on the send's node, 1 on another; LIVE AGAIN after gone (two views)
+           https://testnet.explorer.nervos.org/transaction/0xaca426c995eb6c541bd084b01d4e6088a578088b3063ecabc70293c14827f636
+           polls: 0:unknown@QmRLV8vE8n 219:unknown@QmRLV8vE8n 437:live@QmSdXLJtvu 654:unknown@QmSdXLJtvu 874:unknown@QmRLV8vE8n 1090:unknown@QmSdXLJtvu 1306:unknown@QmSdXLJtvu 1524:unknown@QmSdXLJtvu 1743:unknown@QmSdXLJtvu 1960:unknown@QmRLV8vE8n 2177:unknown@QmRLV8vE8n 2395:unknown@QmSdXLJtvu 2610:unknown@QmSdXLJtvu
+  node_id after: QmSdXLJtvu QmSdXLJtvu QmRLV8vE8n QmSdXLJtvu QmSdXLJtvu QmRLV8vE8n
+
+mode pinned
+  node_id before: QmSdXLJtvu QmRLV8vE8n QmSdXLJtvu QmRLV8vE8n QmSdXLJtvu QmRLV8vE8n
+  send  1: took by QmRLV8vE8n in 259 ms; not live after 526 ms, stays so from 526 ms; 12 polls (~245 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 8 by another node than the send's; live polls: 0 on the send's node, 2 on another
+           https://testnet.explorer.nervos.org/transaction/0x6d904fbc0876ecd0f6ea7deef8a06bffc747c83f697156f901b7a5172b686142
+           polls: 0:live@QmSdXLJtvu 216:live@QmSdXLJtvu 526:unknown@QmSdXLJtvu 777:unknown@QmRLV8vE8n 1028:unknown@QmSdXLJtvu 1261:unknown@QmRLV8vE8n 1475:unknown@QmRLV8vE8n 1692:unknown@QmRLV8vE8n 1922:unknown@QmSdXLJtvu 2154:unknown@QmSdXLJtvu 2434:unknown@QmSdXLJtvu 2697:unknown@QmSdXLJtvu
+  send  2: took by QmSdXLJtvu in 170 ms; not live after 0 ms, stays so from 0 ms; 10 polls (~241 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 4 by another node than the send's; live polls: 0 on the send's node, 0 on another
+           https://testnet.explorer.nervos.org/transaction/0x93d68e9029c1dd90919f4a862c804ae7ba62fcade7b7f804d2719949283b3d82
+           polls: 0:unknown@QmSdXLJtvu 230:unknown@QmSdXLJtvu 461:unknown@QmSdXLJtvu 692:unknown@QmSdXLJtvu 924:unknown@QmRLV8vE8n 1172:unknown@QmRLV8vE8n 1404:unknown@QmSdXLJtvu 1639:unknown@QmRLV8vE8n 1870:unknown@QmRLV8vE8n 2165:unknown@QmSdXLJtvu
+  send  3: took by QmRLV8vE8n in 196 ms; not live after 0 ms, stays so from 0 ms; 10 polls (~230 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 2 by another node than the send's; live polls: 0 on the send's node, 0 on another
+           https://testnet.explorer.nervos.org/transaction/0x76aa1aa411567691e68e042753732b1075b62cdf7f0e779f1df0a678eb8e1c89
+           polls: 0:unknown@QmRLV8vE8n 236:unknown@QmRLV8vE8n 454:unknown@QmRLV8vE8n 685:unknown@QmRLV8vE8n 921:unknown@QmSdXLJtvu 1153:unknown@QmRLV8vE8n 1369:unknown@QmRLV8vE8n 1585:unknown@QmRLV8vE8n 1834:unknown@QmSdXLJtvu 2068:unknown@QmRLV8vE8n
+  send  4: took by QmRLV8vE8n in 301 ms; not live after 0 ms, stays so from 0 ms; 10 polls (~398 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 5 by another node than the send's; live polls: 0 on the send's node, 0 on another
+           https://testnet.explorer.nervos.org/transaction/0xfecadf43e70e00c6e82dc609b6337a0c00142f34e3b5501d6de5b4d3ac895664
+           polls: 0:unknown@QmRLV8vE8n 362:unknown@QmSdXLJtvu 717:unknown@QmRLV8vE8n 1138:unknown@QmRLV8vE8n 1548:unknown@QmSdXLJtvu 2060:unknown@QmSdXLJtvu 2556:unknown@QmSdXLJtvu 2866:unknown@QmRLV8vE8n 3225:unknown@QmSdXLJtvu 3583:unknown@QmRLV8vE8n
+  send  5: took by QmSdXLJtvu in 179 ms; not live after 0 ms, stays so from 673 ms; 13 polls (~221 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 8 by another node than the send's; live polls: 0 on the send's node, 1 on another; LIVE AGAIN after gone (two views)
+           https://testnet.explorer.nervos.org/transaction/0x7d5e599925fec0dc00d858d9fff3c68a4ad74dcf5071c8c2501c97b4671ea0c1
+           polls: 0:unknown@QmSdXLJtvu 224:unknown@QmSdXLJtvu 456:live@QmRLV8vE8n 673:unknown@QmSdXLJtvu 904:unknown@QmRLV8vE8n 1122:unknown@QmRLV8vE8n 1341:unknown@QmRLV8vE8n 1556:unknown@QmSdXLJtvu 1773:unknown@QmRLV8vE8n 2005:unknown@QmRLV8vE8n 2223:unknown@QmSdXLJtvu 2438:unknown@QmRLV8vE8n 2654:unknown@QmRLV8vE8n
+  send  6: took by QmSdXLJtvu in 168 ms; not live after 1 ms, stays so from 436 ms; 12 polls (~219 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 5 by another node than the send's; live polls: 0 on the send's node, 1 on another; LIVE AGAIN after gone (two views)
+           https://testnet.explorer.nervos.org/transaction/0x28287c4759617dfdc273484dbeb5c8872b61a1aefd8beb0be3bdaa289a04f993
+           polls: 1:unknown@QmSdXLJtvu 217:live@QmRLV8vE8n 436:unknown@QmSdXLJtvu 652:unknown@QmSdXLJtvu 871:unknown@QmSdXLJtvu 1088:unknown@QmRLV8vE8n 1304:unknown@QmSdXLJtvu 1524:unknown@QmSdXLJtvu 1741:unknown@QmSdXLJtvu 1958:unknown@QmRLV8vE8n 2178:unknown@QmRLV8vE8n 2408:unknown@QmRLV8vE8n
+  send  7: took by QmRLV8vE8n in 169 ms; not live after 0 ms, stays so from 0 ms; 10 polls (~217 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 5 by another node than the send's; live polls: 0 on the send's node, 0 on another
+           https://testnet.explorer.nervos.org/transaction/0xdc2c6529ff8dd72a4a16f655e98dbe2bc6f98b16220a68504b55512eb59d9771
+           polls: 0:unknown@QmRLV8vE8n 218:unknown@QmRLV8vE8n 437:unknown@QmRLV8vE8n 653:unknown@QmSdXLJtvu 871:unknown@QmRLV8vE8n 1091:unknown@QmSdXLJtvu 1306:unknown@QmRLV8vE8n 1524:unknown@QmSdXLJtvu 1741:unknown@QmSdXLJtvu 1957:unknown@QmSdXLJtvu
+  send  8: took by QmRLV8vE8n in 162 ms; not live after 446 ms, stays so from 446 ms; 12 polls (~218 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 8 by another node than the send's; live polls: 0 on the send's node, 2 on another
+           https://testnet.explorer.nervos.org/transaction/0xf979622b7facbbc393f32813fb92ac8e0a26fd91e9763310c2343350b17a5404
+           polls: 0:live@QmSdXLJtvu 227:live@QmSdXLJtvu 446:unknown@QmRLV8vE8n 662:unknown@QmSdXLJtvu 878:unknown@QmSdXLJtvu 1094:unknown@QmRLV8vE8n 1310:unknown@QmSdXLJtvu 1529:unknown@QmSdXLJtvu 1746:unknown@QmRLV8vE8n 1965:unknown@QmRLV8vE8n 2179:unknown@QmSdXLJtvu 2396:unknown@QmSdXLJtvu
+  send  9: took by QmRLV8vE8n in 178 ms; not live after 430 ms, stays so from 430 ms; 12 polls (~217 ms apart) answered by QmSdXLJtvu,QmRLV8vE8n, 7 by another node than the send's; live polls: 0 on the send's node, 2 on another
+           https://testnet.explorer.nervos.org/transaction/0x1f7946fe05007192d9fa1f35e7c6c23099c19dcceb43190097137ae9982c3604
+           polls: 0:live@QmSdXLJtvu 212:live@QmSdXLJtvu 430:unknown@QmSdXLJtvu 648:unknown@QmRLV8vE8n 865:unknown@QmSdXLJtvu 1082:unknown@QmRLV8vE8n 1301:unknown@QmSdXLJtvu 1517:unknown@QmRLV8vE8n 1736:unknown@QmSdXLJtvu 1953:unknown@QmRLV8vE8n 2168:unknown@QmRLV8vE8n 2387:unknown@QmSdXLJtvu
+  send 10: took by QmSdXLJtvu in 160 ms; not live after 219 ms, stays so from 219 ms; 11 polls (~218 ms apart) answered by QmRLV8vE8n,QmSdXLJtvu, 6 by another node than the send's; live polls: 0 on the send's node, 1 on another
+           https://testnet.explorer.nervos.org/transaction/0xc049b29ca8ffd2a1d85ba8135d1d5567a049ffc75c99f4868257dd65caee44a3
+           polls: 0:live@QmRLV8vE8n 219:unknown@QmSdXLJtvu 435:unknown@QmSdXLJtvu 654:unknown@QmRLV8vE8n 871:unknown@QmSdXLJtvu 1088:unknown@QmRLV8vE8n 1304:unknown@QmRLV8vE8n 1521:unknown@QmSdXLJtvu 1739:unknown@QmRLV8vE8n 1956:unknown@QmSdXLJtvu 2175:unknown@QmRLV8vE8n
+  node_id after: QmRLV8vE8n QmSdXLJtvu QmSdXLJtvu QmRLV8vE8n QmRLV8vE8n QmRLV8vE8n
+  sockets used: 1
+
+summary (https://testnet.ckbapp.dev/)
+  fetch: 10 sends; not live after median 104 ms, max 438 ms; stays not live from median 317 ms, max 654 ms; sends polled from another node 10; came back live 3; live seen on the send's node 0 polls, on another 10
+  pinned: 10 sends; not live after median 1 ms, max 526 ms; stays not live from median 325 ms, max 673 ms; sends polled from another node 10; came back live 2; live seen on the send's node 0 polls, on another 9; sockets 1
+  fees: 0.0023588 CKB, the cell stays the funder's
+log: docs/evidence/2026-11-03-smoke-pool-lag-testnet.ckbapp.dev.log

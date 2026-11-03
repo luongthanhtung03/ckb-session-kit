@@ -21,6 +21,19 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 - CKB-VM tests of a session-funded pledge against CrowdCell's live testnet
   scripts (`scripts/fetch-crowdcell.ts` saves them; not committed), and
   `npm run smoke:fund-pledge`.
+- `npm run smoke:pool-lag`: how long `get_live_cell(include_tx_pool=true)`
+  still shows a just-spent input live, per answering node (mentor review,
+  tracker #47, 3 Nov). On one node (testnet.ckb.dev) the node that took the
+  send never showed the input live (158 polls); on testnet.ckbapp.dev (two
+  backends) only the other backend did, in 13 of 20 sends, for up to about
+  0.5 s. One kept-alive socket does not pin a backend there. Logs and table in
+  docs/SECURITY-EVIDENCE.md.
+
+### Documentation
+- JoyID is accepted as an owner lock but reviewed from its documentation only:
+  its contract is closed source. README and docs/API.md show how an app refuses
+  JoyID owners itself before `openSession` (no option in the kit; no behaviour
+  change).
 
 ## 2.0.0 (2026-11-03)
 

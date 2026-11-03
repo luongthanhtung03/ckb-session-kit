@@ -505,6 +505,48 @@ a session without a recipient funded a 100 CKB pledge on a campaign of the
 kit's own, [accepted](https://testnet.explorer.nervos.org/transaction/0x282adf8e8a25bef1bde96d285856c96c1fd7d1f4ff7d28da3e67669879a12b67)
 by the session lock and CrowdCell's scripts, with no wallet input.
 
+### Payout contention: the pool view after a send (testnet)
+
+`smoke:contention` (2 Nov, [log](evidence/2026-11-02-smoke-contention.log), on
+https://testnet.ckbapp.dev/) found that right after transaction A was sent,
+`get_live_cell` with `include_tx_pool=true` still showed A's input live, for
+887 ms. `pickPayoutCell` relies on that view, so the lag decides how often two
+payers pick the same cell. testnet.ckbapp.dev answers `local_node_info` from two
+node_ids (a load balancer); testnet.ckb.dev from one.
+
+`npm run smoke:pool-lag` (3 Nov) separates the node's own delay from the spread
+between backends. It sends 10 self-transfers per mode (fees only) one at a time,
+each spending a committed cell. `send_transaction` goes in one JSON-RPC batch
+with `local_node_info`, so the node that took the send is known; then, every
+50 ms plus the round trip, `get_live_cell(include_tx_pool=true)` on the spent
+input goes in one batch with `local_node_info`, so each answer has its node.
+Modes: `fetch` (Node's fetch, as CCC uses) and `pinned` (one kept-alive socket).
+
+| Endpoint | Sends | Polls answered | Input shown live by the node that took the send | Input shown live by the other node |
+|---|---|---|---|---|
+| testnet.ckb.dev (one node_id) | 20 (18 with a poll answered) | 158 | never: the first poll, sent as the send's answer arrived, already showed it spent | - |
+| testnet.ckbapp.dev (two node_ids) | 20 | 226 | never | in 13 of 20 sends, last seen live 0 to 456 ms after the send's answer (polls about 215 ms apart, so up to about 670 ms) |
+
+- **One node: no lag.** Once `send_transaction` answers, the node that took the
+  transaction shows its input spent: none of the 263 polls the sending node
+  answered (158 on ckb.dev, 105 on ckbapp) showed it live.
+- **Balanced endpoint: the lag is the other backend.** Every live answer on
+  ckbapp came from the node that did not take the send, before the transaction
+  reached it; 5 sends showed the input live again after a spent answer (two
+  views). That matches the 887 ms seen on 2 Nov.
+- **One kept-alive socket does not pin a backend** on ckbapp: over a single
+  socket both node_ids answered, in every send.
+- testnet.ckb.dev was slow (polls 0.4 to 2.5 s apart, sends up to 7.6 s); 3
+  polls and one send timed out and were retried. Its pool view is measured to
+  that resolution, not to 50 ms.
+
+Logs: [ckb.dev](evidence/2026-11-03-smoke-pool-lag-testnet.ckb.dev.log),
+[ckbapp.dev](evidence/2026-11-03-smoke-pool-lag-testnet.ckbapp.dev.log) (every
+poll, with its node). For an app this means: an RPC URL that is one node gives
+`pickPayoutCell` an up-to-date pool view; behind a load balancer, a payer can
+still pick a cell another payer just spent, and the library's retry (a new cell
+after the node's refusal) is what covers it.
+
 ## 4. Summary
 
 | Rule | Code | Testnet, current | Raw node text logged | CKB-VM |

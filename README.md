@@ -225,6 +225,7 @@ and the error says `"payout-busy"`. Give a creator more cells with
 `createPayoutCells(funder, payTo, { count })`; `npm run setup:creator` gives the
 demo's creator eight.
 `npm run smoke:contention` checks it on testnet: four payers pay one creator at the same moment, every payment must commit, and a hand-built double top-up shows the node's own refusal.
+`npm run smoke:pool-lag` measures how stale the pool view behind `pickPayoutCell` is: on one node, none; behind a load-balanced URL, up to about 0.5 s on the backend that did not take the send ([docs/SECURITY-EVIDENCE.md](docs/SECURITY-EVIDENCE.md#payout-contention-the-pool-view-after-a-send-testnet)).
 
 Chained payments (topping up a cell another payment created while that payment
 is still in the pool) are not used: if the first payment is dropped or slow to
