@@ -19,6 +19,9 @@ import {
   ownerLockCost,
   ownerLockOptions,
   ownerLockVerdict,
+  msStats,
+  poolLagOptions,
+  poolLagResult,
   rpcUrl,
   SMOKE_KEY_FILE,
   smokeKeys,
@@ -195,6 +198,44 @@ CREATOR_KEY=0x${"02".repeat(32)}
   });
 });
 
+describe("pool lag (smoke:pool-lag)", () => {
+  it("parses sends, interval and modes, and refuses an unknown mode", () => {
+    expect(poolLagOptions([], {})).toEqual({ sends: 10, intervalMs: 50, timeoutMs: 10_000, modes: ["fetch", "pinned"] });
+    expect(poolLagOptions(["--sends=3", "--modes=fresh,pinned,fresh"], {})).toMatchObject({ sends: 3, modes: ["fresh", "pinned"] });
+    expect(() => poolLagOptions(["--modes=udp"], {})).toThrow(/modes .* got udp/);
+  });
+
+  it("times the first not-live poll and the point it stays so, per answering node", () => {
+    const r = poolLagResult({
+      sendNode: "A",
+      polls: [
+        { ms: 0, status: "live", node: "B" },
+        { ms: 60, status: "dead", node: "A" },
+        { ms: 120, status: "error" },
+        { ms: 180, status: "live", node: "B" },
+        { ms: 240, status: "dead", node: "B" },
+        { ms: 300, status: "dead", node: "A" },
+      ],
+    });
+    expect(r).toEqual({
+      firstGone: 60,
+      settled: 240,
+      flipped: true,
+      otherNodePolls: 3,
+      liveOnSendNode: 0,
+      liveOnOtherNode: 2,
+      nodes: ["B", "A"],
+    });
+  });
+
+  it("reports a send whose input never left the live view", () => {
+    const r = poolLagResult({ sendNode: "A", polls: [{ ms: 0, status: "live", node: "A" }] });
+    expect(r).toMatchObject({ firstGone: undefined, settled: undefined, flipped: false, liveOnSendNode: 1 });
+    expect(msStats([undefined, 30, 10, 20])).toEqual({ n: 3, median: 20, max: 30 });
+    expect(msStats([])).toEqual({ n: 0 });
+  });
+});
+
 describe("--dry-run", () => {
   const env = { ...process.env, FUNDER_KEY: "", CREATOR_KEY: "", LOG: "" };
   const run = (script: string, ...args: string[]) =>
@@ -219,6 +260,12 @@ describe("--dry-run", () => {
     expect(out).toMatch(/62 CKB left under PW-Lock/);
     expect(out).not.toMatch(/✗/);
     expect(out.match(/✓/g)).toHaveLength(OWNER_LOCK_CASES.length);
+  });
+
+  it("smoke:pool-lag prints the plan, with no key and no network", () => {
+    const out = run("scripts/testnet-pool-lag.ts", "--url=https://example.invalid/", "--sends=4");
+    expect(out).toMatch(/4 self-transfers per mode, modes fetch, pinned/);
+    expect(out).toMatch(/cost: fees only \(8 transactions/);
   });
 
   it("a bad option is refused before anything else", () => {

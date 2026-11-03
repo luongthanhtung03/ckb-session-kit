@@ -58,6 +58,7 @@
     "smoke:clear-planted": "tsx scripts/testnet-clear-planted.ts",
     "smoke:owner-locks": "tsx scripts/testnet-owner-locks.ts",
     "smoke:fund-pledge": "tsx scripts/testnet-fund-pledge.ts",
+    "smoke:pool-lag": "tsx scripts/testnet-pool-lag.ts",
     "matrix:wallets": "tsx scripts/wallet-matrix.ts",
     "prepack": "npm run build",
     "pack:check": "node scripts/pack-check.mjs"

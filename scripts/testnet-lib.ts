@@ -523,3 +523,87 @@ export function ownerLockCost(o: OwnerLockOptions, cases: OwnerLockCase[] = OWNE
     spent: o.pwProof ? PW_CELL + PW_TOP_UP : 0n,
   };
 }
+
+// --- pool lag (smoke:pool-lag) ---------------------------------------------
+
+/** How each RPC call reaches the node: Node's fetch, one kept-alive socket, or a new socket per call. */
+export type PoolLagMode = "fetch" | "pinned" | "fresh";
+export const POOL_LAG_MODES: readonly PoolLagMode[] = ["fetch", "pinned", "fresh"];
+
+export interface PoolLagOptions {
+  sends: number;
+  intervalMs: number;
+  timeoutMs: number;
+  modes: PoolLagMode[];
+}
+
+export function poolLagOptions(argv: string[], env: NodeJS.ProcessEnv = process.env): PoolLagOptions {
+  const flag = argv.find((a) => a.startsWith("--modes="));
+  const raw = flag ? flag.slice("--modes=".length) : env.MODES || "fetch,pinned";
+  const modes = raw.split(",").map((m) => m.trim()).filter(Boolean);
+  const bad = modes.filter((m) => !POOL_LAG_MODES.includes(m as PoolLagMode));
+  if (!modes.length || bad.length) throw new RangeError(`modes (--modes= or MODES) must be a list of ${POOL_LAG_MODES.join(", ")}, got ${raw}`);
+  return {
+    sends: intOption("sends", "SENDS", argv, env, 10, 1, 50),
+    intervalMs: intOption("interval", "INTERVAL_MS", argv, env, 50, 10, 1000),
+    timeoutMs: intOption("timeout", "TIMEOUT_MS", argv, env, 10_000, 1000, 60_000),
+    modes: [...new Set(modes)] as PoolLagMode[],
+  };
+}
+
+/** One poll after a send: ms since send_transaction answered, get_live_cell (include_tx_pool) status, who answered. */
+export interface PoolPoll {
+  ms: number;
+  status: string;
+  node?: string;
+}
+
+export interface PoolLagSend {
+  /** node_id that answered send_transaction (same HTTP request, JSON-RPC batch). */
+  sendNode?: string;
+  polls: PoolPoll[];
+}
+
+export interface PoolLagResult {
+  /** ms until the first poll that no longer shows the input live; undefined if it never did. */
+  firstGone?: number;
+  /** ms from which every later poll showed it not live; undefined if the last poll still showed it live. */
+  settled?: number;
+  /** A poll showed it live again after one showed it gone (two views of the pool). */
+  flipped: boolean;
+  /** Polls answered by another node than the one that took the send. */
+  otherNodePolls: number;
+  /** Polls whose answer showed the input live, by answering node: same node as the send, or another. */
+  liveOnSendNode: number;
+  liveOnOtherNode: number;
+  nodes: string[];
+}
+
+export function poolLagResult(send: PoolLagSend): PoolLagResult {
+  // A poll that failed (status "error") says nothing either way and is left out.
+  const gone = (p: PoolPoll) => p.status !== "live";
+  const polls = send.polls.filter((p) => p.status !== "error");
+  const first = polls.findIndex(gone);
+  let lastLive = -1;
+  polls.forEach((p, i) => {
+    if (!gone(p)) lastLive = i;
+  });
+  const other = (p: PoolPoll) => send.sendNode !== undefined && p.node !== undefined && p.node !== send.sendNode;
+  return {
+    firstGone: first === -1 ? undefined : polls[first].ms,
+    settled: lastLive === polls.length - 1 ? undefined : (polls[lastLive + 1]?.ms ?? undefined),
+    flipped: first !== -1 && lastLive > first,
+    otherNodePolls: polls.filter(other).length,
+    liveOnSendNode: polls.filter((p) => !gone(p) && !other(p)).length,
+    liveOnOtherNode: polls.filter((p) => !gone(p) && other(p)).length,
+    nodes: [...new Set(polls.map((p) => p.node).filter((n): n is string => !!n))],
+  };
+}
+
+/** Median and max of the defined values (ms), for the summary line. */
+export function msStats(values: (number | undefined)[]): { n: number; median?: number; max?: number } {
+  const v = values.filter((x): x is number => x !== undefined).sort((a, b) => a - b);
+  if (!v.length) return { n: 0 };
+  const mid = Math.floor(v.length / 2);
+  return { n: v.length, median: v.length % 2 ? v[mid] : Math.round((v[mid - 1] + v[mid]) / 2), max: v[v.length - 1] };
+}
