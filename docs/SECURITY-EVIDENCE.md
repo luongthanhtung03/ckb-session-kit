@@ -505,6 +505,69 @@ a session without a recipient funded a 100 CKB pledge on a campaign of the
 kit's own, [accepted](https://testnet.explorer.nervos.org/transaction/0x282adf8e8a25bef1bde96d285856c96c1fd7d1f4ff7d28da3e67669879a12b67)
 by the session lock and CrowdCell's scripts, with no wallet input.
 
+### Accounting invariant across groups
+
+Asked in review (#47, 5 Nov 2026). A script group is every input whose lock
+script is byte-identical (code hash, `hash_type`, args). Each group runs once,
+over the whole transaction, and shares nothing with any other group: there is
+no pool and no attribution between groups.
+
+Take a group G with owner lock O, key lock K, `max_per_tx` M (and
+`max_per_tx_token` Mt), `min_interval` I and an optional recipient R. If the
+lock accepts G in a transaction:
+
+- **Owner mode** holds only if an input is locked by O itself. Then nothing else
+  is checked: O's own lock has authorised the transaction. Another group's owner
+  does not count.
+- Otherwise an input is locked by K, and:
+  1. **Net loss.** G's inputs minus the one output under G's own lock (zero if
+     that output holds more) is at most M in CKB, and at most Mt in G's token.
+     Every exit counts: payments, the fee, and value moved into another group's
+     cells. Value arriving in G's output from anywhere (another group, a funding
+     input) only lowers G's loss; it is still the sending group's outflow.
+  2. **Destinations.** Without R, the loss may go anywhere; M is the only bound.
+     With R, every output of the transaction is G's own change (at most one), a
+     cell under K that does not grow (CKB or token), or a cell under O or R with
+     no foreign type. So G's loss reaches only R, O or the fee.
+  3. **Maturity.** With I > 0, every input of G carries a relative block-number
+     `since` of at least I. One young input refuses the whole group.
+
+The one cross-group effect: a transaction's total bound is the sum of its
+groups' bounds. If one key is the key of several sessions, each opened (and so
+authorised) by its own owner, that key can draw up to the sum of their
+`max_per_tx` in one transaction, and each session still loses at most its own.
+
+A subscription is a session with owner the subscriber, key the charger, R the
+payout address, M the price (a token subscription: M 0, Mt the price) and I the
+period. Per transaction, each subscription group pays at most one price. Per
+period the bound is per cell, not per subscription: the lock forbids splitting,
+but anyone may add cells under the same lock with their own money, and a charger
+key could charge each such cell once a period. The library
+(`chargeSubscription`, `subscriptionStatus`) waits out the last charge read
+from the lock's history, whichever cell it came from. Two
+subscriptions with change cannot be charged in one transaction (each refuses
+the other's change, 13); taken whole, each stays within its own price.
+
+**Test.** [`test/property-groups.test.ts`](../test/property-groups.test.ts),
+**CKB-VM only**, run with `npx vitest run test/property-groups.test.ts`. It
+generates 800 seeded transactions with 2 to 4 groups (sessions, CKB and token
+subscriptions) with independent owners, keys and recipients (one charger and one
+payout address shared on purpose in some), mature and young inputs, funding
+inputs from strangers paying the fee, and outputs that include value sent into
+another group's change. For every group the lock accepts it checks the three
+rules above and the sum over one key directly from the transaction, not through
+the model the differential fuzz uses; for every group refused under one of them
+(11 to 14, 16, 17, 20) it checks that the same check would have flagged it. A
+fixed seed set is run twice and must give the same transactions and results.
+Fixed cases: a stranger pays the fee for two subscriptions charged in one
+transaction; token subscriptions with the payout cell and the fee paid by a
+stranger; mature and young subscription inputs together; group A sending into
+group B's change, with and without recipients; one key with two sessions drawing
+the sum of their limits and one shannon more. On the default seed: 1,001
+accepted groups (827 in session mode), 177 transactions every group accepted
+(80 with three or more groups in session mode), 1,294 refusals checked. No case
+found a fault in the lock, and the lock source is unchanged.
+
 ### Payout contention: the pool view after a send (testnet)
 
 `smoke:contention` (2 Nov, [log](evidence/2026-11-02-smoke-contention.log), on
@@ -562,6 +625,7 @@ after the node's refusal) is what covers it.
 | Args, authorisation, overflow, token data | 10, 11, 15, 19 | not run | - | yes |
 | Adversarial cases (section 3, last part) | 10 to 18 | not run | - | yes, 42 tests |
 | Aggregate outflow across inputs | 11 to 14, 20 | not run | - | yes, 23 tests |
+| Accounting invariant across groups | 11 to 14, 16, 17, 20 | not run | - | yes, 800 generated transactions and 5 fixed cases |
 | Expiry | - | not enforceable on chain | - | - |
 
 The 8 Oct deployment's lock smoke
