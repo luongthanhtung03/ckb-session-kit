@@ -144,6 +144,97 @@ cell (only possible when the whole cell is at most the price). `budget` of
 | Anyone adds a fresh cell under the same lock | Harmless: it only adds funds; `chargeSubscription` takes mature cells only (as `spendInSession` does since 14 Oct). Over `MAX_SUBSCRIPTION_CELLS` (16) such cells of the subscription's kind, a status or a charge is refused rather than read in part (30 Oct); the subscriber sweeps them back with `clearPlantedCells` and keeps the subscription (2 Nov) |
 | Subscriber's wallet is a lock that signs nothing | `assertSigningLock`, as for sessions |
 
+## How a payment history is reconstructed
+
+`subscriptionStatus` keeps no database: it rebuilds the paid period from the
+chain on every call. Anyone can create a cell under any lock, including one
+with exactly this subscription's lock script and args, so the rule is about
+which transactions count, not which cells exist. Line numbers are
+`src/subscription.ts` as of this change.
+
+**What renews a period.** A cell under the lock (or, for a charge that took the
+whole balance and left no cell, the charge itself) gives a period of
+`periodBlocks` from its transaction's block only if both hold:
+
+1. The transaction paid the payout address. `paymentOf` (997-1049) sums the
+   prices in the args of every subscription cell the transaction creates for
+   this `payTo` (at least one price) and requires `payTo`'s plain CKB (or, in
+   a token subscription, its units of exactly that token) to grow by that much,
+   outputs minus inputs; every input must be found, and a transaction with
+   over 32 inputs is refused before they are looked up.
+2. The transaction is the proven opening or a charge (`renews`, 1147-1150).
+   The opening is the hash the subscriber presents, and it must also carry
+   `subscriptionMemo(account)` in the witness of an input under the
+   subscriber's lock (`commitsToAccount`, 1052; checked at 1126-1130). A charge
+   is a transaction with an input under the charger's lock (`spends`, 350).
+
+**Why a third party cannot extend or fake it.** A transaction that only
+creates cells under the lock, even one that pays `payTo` the full price in the
+same transaction, is neither: it spends no charger cell, and it cannot be the
+opening, because the account memo must sit on the subscriber's own input,
+under the subscriber's signature. Only the charger can sign for a charger
+input and only the subscriber for a subscriber input. Such cells count toward
+the balance (a gift) but add no period. Tests: "counts a cell created by
+another payment to payTo for nothing; a charge renews"
+(`test/subscription.test.ts:671`), "refuses a stranger's paying transaction
+presented as the opening, memo and all" (`:685`), "gives no paid period for a
+cell the subscriber re-created to reset its age" (`:695`). The charger itself
+can create a cell that renews by paying `payTo`; that is the creator granting
+its own access, which it can always do. (`verifySubscription`, the check for a
+single cell, accepts a paying transaction with an input under either the
+subscriber's or the charger's lock, 951-953.)
+
+**The newest charge, from the history.** The rate limit is per cell, so the
+library also waits out the newest charge, read from the lock's transaction
+history over the last period (`lastCharge`, 322-347). A spend under the lock
+can only be made by the charger or the subscriber; a spend it cannot classify
+(transaction or input not found, over 32 inputs) counts as a charge
+(`isCharge`, 269-283), which can only delay the next charge and never adds a
+period (`paymentOf` refuses such a transaction). Transactions that only created
+cells are paged past without being fetched. Test: "counts a spend it cannot
+tell apart as a charge" (`:1580`).
+
+**Budgets: refuse, never answer from part.** Each call reads at most
+`MAX_SUBSCRIPTION_CELLS` (16) cells of the subscription's kind (126-148,
+216), 64 spends and 1024 creation-only entries in the history within the
+window (`MAX_HISTORY`, `MAX_CREATED_HISTORY`, 222-232). Past any of them a
+status or a charge throws `SessionPolicyError` with reason `"too-many-cells"`
+(241-253) instead of answering from what it read: an unread cell or entry
+could be the newest charge or a mature cell, so a partial answer could deny a
+paid period or let a second price into one. Refusing grants nothing and
+charges nothing. Tests: "reads up to MAX_SUBSCRIPTION_CELLS (16) cells, and
+refuses one more rather than read part" (`:1318`), "refuses a charge over the
+cap" (`:1328`), "still refuses, never stops short, past the budgets: spends,
+then created-only entries" (`:1569`), "transactions that only created cells do
+not count toward the spends read" (`:1555`); the demo's status route answers
+such a refusal with 409 (`demo/app/api/subscription/route.test.ts:111`).
+
+**Cost and recovery of a forced refusal.** A refusal is a denial of service,
+never a wrong answer, and the planter pays for it with CKB it cannot get back
+(only the subscriber and the charger can spend cells under the lock):
+
+- Over the cell cap: 17 cells of the subscription's kind, at least 153 CKB
+  each in a CKB subscription (about 2,600 CKB). The subscriber clears them at
+  with `clearPlantedCells` (764), one signature per batch of up to 30, which
+  sweeps every cell not created by the opening, a charge or the subscriber to
+  the subscriber and leaves the subscription's own cells and charge schedule as they were (tests
+  `:1436`, `:1537`; testnet: `npm run smoke:clear-planted`,
+  `docs/evidence/2026-11-02-smoke-clear-planted.log`). Cancelling also works
+  past the cap (`:1347`).
+- Over the history budget: more than 1024 creating transactions within one
+  period, each locking at least 153 CKB (201 in a token subscription), about
+  157,000 CKB (1025 x 153) per blocked period. `clearPlantedCells` sweeps those
+  cells to the subscriber, but the history entries stay, so status and charges
+  stay refused until the entries are older than the window, one period after
+  they committed (or the subscriber cancels and opens again). Cells typed with
+  a script that refuses to be spent cannot be swept. A full fix needs the lock
+  to record the last charge, and the deployed lock is fixed (see
+  [SECURITY-EVIDENCE](../SECURITY-EVIDENCE.md), "A subscription's history can
+  still be flooded, at a price").
+
+The indexer and RPC node the library reads are trusted: a lying indexer can
+hide cells or history, which this rule does not defend against.
+
 ## Open questions for review
 
 1. Is there any path where the charger key, combining several subscribers' cells

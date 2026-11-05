@@ -576,7 +576,13 @@ describe("verifySubscription", () => {
 describe("subscriptionStatus (a server with no database)", () => {
   const OPEN = h("0a");
   async function setup(
-    opts: { liveCreatedBy?: "opening" | "recreate" | "read" | "charge" | "none"; memo?: string; history?: Touched[] } = {},
+    opts: {
+      liveCreatedBy?: "opening" | "recreate" | "read" | "charge" | "none";
+      memo?: string;
+      history?: Touched[];
+      /** The account memo the stranger puts in its own input's witness in `read`. */
+      strangerMemo?: string;
+    } = {},
   ) {
     const { client: c0 } = fakeClient([]);
     const r = await roles(c0);
@@ -604,6 +610,7 @@ describe("subscriptionStatus (a server with no database)", () => {
       outputs: [{ lock, capacity: 173n * CKB }, { lock: r.payToLock, capacity: 210n * CKB }],
       outputsData: ["0x", "0x"],
     });
+    if (opts.strangerMemo !== undefined) read.setWitnessArgsAt(1, { inputType: subscriptionMemo(opts.strangerMemo) });
     const READ = h("0c");
     // A charge: the charger's own cell is an input.
     const fee = cellOf(r.chargerLock, 100n * CKB);
@@ -647,6 +654,8 @@ describe("subscriptionStatus (a server with no database)", () => {
       client,
       status: (account = "alice", options?: { minConfirmations?: number | bigint }) =>
         subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }, options),
+      /** A status that presents the stranger's `read` as the opening. */
+      statusFromRead: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: READ, account }),
     };
   }
 
@@ -668,6 +677,14 @@ describe("subscriptionStatus (a server with no database)", () => {
       ok: true,
       status: { paidThroughBlock: 990n + PERIOD, active: true },
     });
+  });
+
+  // Review #47 point 4: a third party's transaction that pays payTo the price and
+  // creates a cell under the lock cannot stand in for the opening, even with the
+  // account memo in a witness: the memo must sit on an input under the subscriber's lock.
+  it("refuses a stranger's paying transaction presented as the opening, memo and all", async () => {
+    const { statusFromRead } = await setup({ liveCreatedBy: "read", strangerMemo: "alice" });
+    expect(await statusFromRead()).toMatchObject({ ok: false, reason: "the opening does not commit to this account" });
   });
 
   it("refuses an account the opening did not commit to", async () => {
