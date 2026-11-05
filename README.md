@@ -716,9 +716,15 @@ What has and has not been shown on testnet is in
   lost key.
 - **An owner sweep can be raced.** A key holder can replace a pending sweep by
   paying a higher fee. Sweep early and sweep again.
-- **Paid access is checked at zero confirmations.** `verifyAccess` accepts a
-  payment once it is committed in a block; a reorg could undo it after the
-  content was released. Fine for articles and pixels, not for anything costly.
+- **Paid access needs no confirmations unless you ask.** By default
+  `verifyAccess`, `verifySubscription` and `subscriptionStatus` accept a payment
+  once it is committed in a block; a reorg could undo it after the content was
+  released. Fine for articles and pixels. For anything costly, pass
+  `minConfirmations` (e.g. `verifyAccess(client, proof, { ...expect,
+  minConfirmations: 6 })`): the payment's own block counts as the first
+  confirmation, a payment short of the depth comes back as `code:
+  "unconfirmed"` (ask again later; it is not unpaid), and one whose block left
+  the main chain as `code: "reorged"`. See docs/API.md, "Confirmation depth".
 - **An access proof does not expire.** It is a bearer token for one article:
   whoever holds the signed proof can fetch that article again. It cannot be
   used for another article or by another payment.

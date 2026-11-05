@@ -413,7 +413,7 @@ A memo for `spendInSession`, e.g. `paymentMemo("read:article-1")`.
 ### `signAccess(session, txHash, memo) → AccessProof`
 The payer proves that the key which paid `txHash` is asking.
 
-### `verifyAccess(client, proof, { to, minAmount, memo, token? }) → AccessCheck`
+### `verifyAccess(client, proof, { to, minAmount, memo, token?, minConfirmations? }) → AccessCheck`
 The server's check, with no database: the request is signed by the key that
 paid; the payment is committed, carries exactly this memo and no other, and the
 recipient gained at least `minAmount`. One payment buys one claim. Only memos in
@@ -425,9 +425,42 @@ and cannot void the payment. With
 exactly that type under `to` count, and CKB counts for nothing (nor tokens
 toward a CKB price). The payment is read with `getTransactionNoCache`: a payment
 the node no longer knows (reorged out, replaced) is "payment not found", never
-an answer from the CCC client's cache.
+an answer from the CCC client's cache. `minConfirmations` (default 0) asks for
+depth: see below.
 
 ### Types: `AccessProof`, `AccessCheck`
+`AccessCheck` is `{ ok: true, paid }`, `{ ok: false, reason }`, or a
+`ConfirmationFault`.
+
+### Confirmation depth: `minConfirmations`, `MAX_MIN_CONFIRMATIONS`, `ConfirmationFault`
+`verifyAccess`, `verifySubscription` and `subscriptionStatus` (the checks that
+take a payment as proof of access) accept `minConfirmations`: a non-negative
+integer (number or bigint) up to `MAX_MIN_CONFIRMATIONS` (10000, about a day of
+blocks). Anything else (negative, fractional, NaN, a string, past the maximum)
+throws a `RangeError` before any RPC call.
+
+- **Counting.** A transaction in block `b`, with the tip at block `t`, has
+  `t - b + 1` confirmations: its own block is the first, so a payment in the tip
+  block has 1. A tip read behind the payment's block (a lagging node) counts as 0.
+- **0 (the default)** is the check as it was before the option: committed is
+  enough, and nothing more is fetched. 1 is the same depth, plus the main-chain
+  check.
+- **Not deep enough.** A payment that passes every other check but is short of
+  the depth gives `{ ok: false, code: "unconfirmed", reason, confirmations,
+  minConfirmations }`, e.g. reason `"payment has 2 of 6 confirmations"`: ask again
+  later, do not treat it as unpaid. Depth is checked last, so an invalid payment
+  keeps its own reason (and `code` is undefined).
+- **Off the main chain.** With enough depth, the node's header at the payment's
+  block number (`getHeaderByNumberNoCache`) must be the block the node said holds
+  it; otherwise `{ ok: false, code: "reorged", reason }`: not counted.
+- **One tip per call**, read with `getTip()` after the other checks pass.
+
+In `subscriptionStatus` (the fifth argument, `{ minConfirmations }`) the opening
+must have the depth (else the fault above, its reason naming "the opening"); a
+charge short of it does not extend `paidThroughBlock` yet, and the block it will
+pay through appears as `status.unconfirmedThroughBlock` when that is later. A
+charge whose block left the main chain counts for nothing. Choose a depth well
+under `periodBlocks`.
 
 ## Subscriptions
 
@@ -523,7 +556,7 @@ subscriber's own input, so a status does not take it for a cancel.
 `nothingFound` when nothing is planted. Pass `openTx` when you have it: an
 opening with over 32 inputs cannot be told apart otherwise.
 
-### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance?, account?, token? }) → SubscriptionCheck`
+### `verifySubscription(client, deployment, outPoint, { charger, payTo, price, periodBlocks, minBalance?, account?, token?, minConfirmations? }) → SubscriptionCheck`
 The creator's check, from the chain alone: the cell is live, under this
 deployment (never an older one), untyped and without data, 112-byte args with
 exactly these terms, at least `minBalance`; and the transaction that created it
@@ -538,9 +571,11 @@ and paid means token units into `payTo`'s cells of the token, covering every tok
 subscription the transaction creates for that address. Without `token`, a
 160-byte cell is refused, and the reverse. `tokenBalance` is returned for tokens.
 The creating transaction (here and in `subscriptionStatus`) is read with
-`getTransactionNoCache`, never from the CCC client's cache.
+`getTransactionNoCache`, never from the CCC client's cache. With
+`minConfirmations`, the creating transaction must be that deep, or the result is
+a `ConfirmationFault` (see "Confirmation depth").
 
-### `subscriptionStatus(client, deployment, subscription, { openTx, account }) → { ok, status: SubscriptionStatus }`
+### `subscriptionStatus(client, deployment, subscription, { openTx, account }, { minConfirmations? }?) → { ok, status: SubscriptionStatus }`
 For a creator's server with no database: the subscriber sends its lock hash, the
 opening's hash and its account id with every request. The opening must have paid
 the first price into a cell under exactly this subscription's lock and committed

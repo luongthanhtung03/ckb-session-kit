@@ -3,6 +3,30 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
+## Unreleased
+
+### Added
+- `minConfirmations` on `verifyAccess`, `verifySubscription` and (as a new
+  fifth argument, `{ minConfirmations }`) `subscriptionStatus` (review, tracker
+  #47 point 5). Default 0: committed is enough, exactly as before, with no
+  extra RPC call. Confirmations are `tip - block + 1` (the payment's own block
+  is the first). A payment valid in every other way but short of the depth
+  gives `{ ok: false, code: "unconfirmed", reason, confirmations,
+  minConfirmations }`; one whose block is no longer on the main chain (the
+  node's header at that height, read without cache, has another hash) gives
+  `code: "reorged"`. The tip is read once per call. In `subscriptionStatus` an
+  opening short of the depth is refused that way, and a charge short of it does
+  not renew yet: it shows as `status.unconfirmedThroughBlock`.
+- `MAX_MIN_CONFIRMATIONS` (10000) and the `ConfirmationFault` type. A
+  `minConfirmations` that is negative, fractional, not a number or bigint, or
+  past the maximum throws a `RangeError` before any RPC call.
+
+### Changed
+- `AccessCheck`, `SubscriptionCheck` and `subscriptionStatus`'s result add the
+  `ConfirmationFault` variant; the plain `{ ok: false, reason }` variant has
+  `code?: undefined`, so `r.code === "unconfirmed"` narrows. Callers that only
+  read `ok` and `reason` need no change.
+
 ## 2.1.0 (2026-11-05)
 
 ### Added
