@@ -434,9 +434,6 @@ function randomCase(seed: number): Plan {
 
 // ---------------------------------------------------------------------------
 
-/** ckb-debugger runs synchronously: let the worker answer vitest between cases, or a long sweep times out its RPC. */
-const yieldToRunner = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-
 async function runCase(plan: Plan) {
   const { problems, runs } = await compare(plan.cells, plan.tx);
   const { violations, accepted } = checkInvariant(plan.cells, plan.tx, plan.groups, runs);
@@ -450,7 +447,6 @@ describe.skipIf(skipLock)("accounting invariant across script groups (review #47
     const codes = new Map<number, number>();
     const stats = { groupsAccepted: 0, sessionModeAccepted: 0, txAllAccepted: 0, txAllAcceptedMulti: 0, txAllAccepted3: 0, crossAccepted: 0, strangerFeeSubs: 0, tokenMoved: 0, sharedKeyAccepted: 0, refusalsChecked: 0 };
     for (const seed of seeds) {
-      await yieldToRunner();
       const plan = randomCase(seed);
       const { problems, runs, violations, accepted } = await runCase(plan);
       for (const r of runs) codes.set(r.code, (codes.get(r.code) ?? 0) + 1);
@@ -493,7 +489,6 @@ describe.skipIf(skipLock)("accounting invariant across script groups (review #47
     const once = async () => {
       const out: string[] = [];
       for (const seed of seeds) {
-        await yieldToRunner();
         const plan = randomCase(seed);
         const { runs } = await runCase(plan);
         out.push(`${plan.tx.hash()}:${runs.map((r) => `${r.lockHash.slice(2, 10)}=${r.code}`).join(",")}`);

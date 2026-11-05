@@ -175,6 +175,11 @@ export class Cells {
    * cells of this store. Cell deps become the session lock's code alone.
    */
   async run(txLike: ccc.TransactionLike): Promise<LockRun[]> {
+    // ckb-debugger runs through spawnSync: give the worker's event loop a turn first, or a long
+    // sweep under a loaded machine times out vitest's RPC ("Timeout calling onTaskUpdate").
+    // setImmediate, not setTimeout(0): a timer already due when added in the timers phase runs in
+    // that same phase, and the loop would never reach the poll phase where the reply waits.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     // A shallow copy, not clone(): CCC's clone re-parses each since and refuses flag patterns it has no name for.
     const src = ccc.Transaction.from(txLike);
     const tx: ccc.Transaction = Object.assign(Object.create(Object.getPrototypeOf(src)), src, {
