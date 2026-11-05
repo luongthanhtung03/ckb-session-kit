@@ -29,6 +29,7 @@ import {
 } from "./onchain.js";
 import { assertCurrentDeployment } from "./deployment.js";
 import { SessionPolicyError } from "./session.js";
+import { confirmationFault, minConfirmationsFrom, type ConfirmationFault } from "./confirmations.js";
 
 /**
  * Subscriptions (docs/design/subscriptions.md): the same session lock, with the
@@ -511,7 +512,13 @@ type Created = Awaited<ReturnType<ccc.Client["getTransaction"]>>;
  * cell's creating transaction and age (undefined while not committed), so a
  * charge or a status fetches each of them once (review, 28 Oct).
  */
-async function subscriptionState(client: ccc.Client, deployment: SessionLockDeployment, sub: Subscription) {
+async function subscriptionState(
+  client: ccc.Client,
+  deployment: SessionLockDeployment,
+  sub: Subscription,
+  /** The tip, when the caller already read it (one tip per call). */
+  knownTip?: bigint,
+) {
   const lock = subscriptionLock(deployment, sub);
   const token = tokenOf(sub);
   const cells = await subscriptionCells(client, lock, token, MAX_SUBSCRIPTION_CELLS);
@@ -523,7 +530,7 @@ async function subscriptionState(client: ccc.Client, deployment: SessionLockDepl
     if (!byHash.has(h)) byHash.set(h, client.getTransactionNoCache(h)); // the node's answer, not the cache's
     return byHash.get(h)!;
   };
-  const [tip, created] = await Promise.all([client.getTip(), Promise.all(cells.map((c) => creating(c.outPoint.txHash)))]);
+  const [tip, created] = await Promise.all([knownTip ?? client.getTip(), Promise.all(cells.map((c) => creating(c.outPoint.txHash)))]);
   const ages = created.map((res) => {
     const born = res?.blockNumber;
     return born === undefined || born === null ? undefined : tip - ccc.numFrom(born);
@@ -822,7 +829,8 @@ export type SubscriptionCheck =
       /** The block until which the subscriber has paid: the block that created this cell, plus one period. */
       paidThroughBlock: bigint;
     }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; code?: undefined }
+  | ConfirmationFault;
 
 /** How many more prices a subscription's cells can pay. */
 function chargesLeftOf(sub: Subscription, lock: ccc.Script, balance: bigint, tokenBalance: bigint): bigint {
@@ -854,6 +862,13 @@ function chargesLeftOf(sub: Subscription, lock: ccc.Script, balance: bigint, tok
  * type hash, `price` in token units as `max_per_tx_token`); `minBalance` is in token
  * units, and the payment counted is token units into `payTo`'s cells of the token.
  * Without `token`, a 160-byte cell is refused, and the reverse.
+ *
+ * With `minConfirmations` (default 0: committed is enough), the creating
+ * transaction must be that many blocks deep, its own block counting as 1: a cell
+ * valid in every other way gives `code: "unconfirmed"` until then, and
+ * `code: "reorged"` if that block left the main chain (src/confirmations.ts).
+ * Throws a `RangeError` for a `minConfirmations` that is not an integer from 0
+ * to `MAX_MIN_CONFIRMATIONS`.
  */
 export async function verifySubscription(
   client: ccc.Client,
@@ -867,8 +882,10 @@ export async function verifySubscription(
     minBalance?: bigint;
     account?: string;
     token?: ccc.ScriptLike;
+    minConfirmations?: number | bigint;
   },
 ): Promise<SubscriptionCheck> {
+  const minConfirmations = minConfirmationsFrom(expected.minConfirmations);
   const cell = await client.getCellLive(outPoint, true, false);
   if (!cell) return { ok: false, reason: "no live cell at that out point" };
   const lock = cell.cellOutput.lock;
@@ -937,6 +954,17 @@ export async function verifySubscription(
   if (expected.account !== undefined && !commitsToAccount(created, sub, expected.account)) {
     return { ok: false, reason: "the opening does not commit to this account" };
   }
+  // Depth last: "unconfirmed" then means the cell is good, only too recent.
+  if (minConfirmations > 0n) {
+    const fault = await confirmationFault(
+      client,
+      await client.getTip(),
+      { blockNumber: created.block, blockHash: created.blockHash },
+      minConfirmations,
+      "the transaction that created the cell",
+    );
+    if (fault) return fault;
+  }
   return {
     ok: true,
     subscription: sub,
@@ -950,6 +978,7 @@ export async function verifySubscription(
 interface Payment {
   tx: ccc.Transaction;
   block: bigint;
+  blockHash?: ccc.Hex;
   inputs: (ccc.Cell | undefined)[];
 }
 
@@ -1016,7 +1045,7 @@ async function paymentOf(
   if (inputs.some((c) => !c)) return "an input of the transaction could not be looked up";
   const paid = out - amount(toPayTo(inputs.map((c) => ({ cellOutput: c!.cellOutput, data: c!.outputData }))));
   if (paid < owed) return notPaid;
-  return { tx, block: ccc.numFrom(created.blockNumber), inputs };
+  return { tx, block: ccc.numFrom(created.blockNumber), blockHash: created.blockHash, inputs };
 }
 
 /** Whether `p` carries `subscriptionMemo(account)` in the witness of an input under the subscriber's lock. */
@@ -1043,6 +1072,11 @@ export interface SubscriptionStatus {
   chargesLeft: bigint;
   /** Blocks until the creator may charge again (0 = now). */
   nextChargeIn: bigint | undefined;
+  /**
+   * With `minConfirmations`: the block a charge still short of that depth will
+   * pay through once it has it, when that is past `paidThroughBlock`. Not access yet.
+   */
+  unconfirmedThroughBlock?: bigint;
 }
 
 /**
@@ -1059,13 +1093,22 @@ export interface SubscriptionStatus {
  * `MAX_SUBSCRIPTION_CELLS` cells (or recent transactions) sit under the lock:
  * not a verdict on the subscription, so not an `ok: false`. A server should
  * answer it as a conflict the subscriber can clear by cancelling and opening again.
+ *
+ * With `minConfirmations` (default 0: committed is enough), only payments that
+ * many blocks deep count, their own block counting as 1, and still on the main
+ * chain. An opening short of it gives `code: "unconfirmed"` (or `"reorged"`); a
+ * charge short of it does not extend `paidThroughBlock` yet, and shows in
+ * `unconfirmedThroughBlock`. The tip is read once. Throws a `RangeError` for a
+ * `minConfirmations` that is not an integer from 0 to `MAX_MIN_CONFIRMATIONS`.
  */
 export async function subscriptionStatus(
   client: ccc.Client,
   deployment: SessionLockDeployment,
   sub: Subscription,
   proof: { openTx: ccc.HexLike; account: string },
-): Promise<{ ok: true; status: SubscriptionStatus } | { ok: false; reason: string }> {
+  options: { minConfirmations?: number | bigint } = {},
+): Promise<{ ok: true; status: SubscriptionStatus } | { ok: false; reason: string; code?: undefined } | ConfirmationFault> {
+  const minConfirmations = minConfirmationsFrom(options.minConfirmations);
   try {
     assertTerms(sub);
     const token = tokenOf(sub);
@@ -1085,8 +1128,21 @@ export async function subscriptionStatus(
   if (typeof opening === "string") return { ok: false, reason: `opening: ${opening}` };
   if (!opening.tx.outputs.some((o) => o.lock.eq(lock))) return { ok: false, reason: "the opening created no cell under this subscription's lock" };
   if (!commitsToAccount(opening, sub, proof.account)) return { ok: false, reason: "the opening does not commit to this account" };
+  // One tip for the whole call: the opening's depth, each charge's, and `active`.
+  const knownTip = minConfirmations > 0n ? await client.getTip() : undefined;
+  const depthFault = (p: Payment, what: string) =>
+    knownTip === undefined
+      ? Promise.resolve(undefined)
+      : confirmationFault(client, knownTip, { blockNumber: p.block, blockHash: p.blockHash }, minConfirmations, what);
+  const openingFault = await depthFault(opening, "the opening");
+  if (openingFault) return openingFault;
 
-  const { cells, balance, tokenBalance, nextChargeIn, tip, created, spent, ownerAfter } = await subscriptionState(client, deployment, sub);
+  const { cells, balance, tokenBalance, nextChargeIn, tip, created, spent, ownerAfter } = await subscriptionState(
+    client,
+    deployment,
+    sub,
+    knownTip,
+  );
   let paidThroughBlock: bigint | undefined;
   const renews = (p: Payment | string, txHash: ccc.Hex): p is Payment =>
     // Only the proven opening or a charge renews; another payment to payTo that
@@ -1097,11 +1153,24 @@ export async function subscriptionStatus(
   // (30 Oct), unless the subscriber spent cells after it: a cancel ends access at once.
   if (spent && !ownerAfter && !paying.some((c) => c.txHash === spent.txHash)) paying.push({ txHash: spent.txHash, fetched: spent.fetched });
   const payments = await Promise.all(paying.map((c) => payment(c.txHash, c.fetched)));
+  let unconfirmedThroughBlock: bigint | undefined;
   for (const [i, { txHash }] of paying.entries()) {
     const p = payments[i];
     if (!renews(p, txHash)) continue;
     const through = p.block + sub.periodBlocks;
+    // The opening's depth was checked above; a charge's is checked here.
+    const fault = txHash === openHash ? undefined : await depthFault(p, "a charge");
+    if (fault) {
+      // Too recent: it counts later. Reorged: it never does.
+      if (fault.code === "unconfirmed" && (unconfirmedThroughBlock === undefined || through > unconfirmedThroughBlock)) {
+        unconfirmedThroughBlock = through;
+      }
+      continue;
+    }
     if (paidThroughBlock === undefined || through > paidThroughBlock) paidThroughBlock = through;
+  }
+  if (unconfirmedThroughBlock !== undefined && paidThroughBlock !== undefined && unconfirmedThroughBlock <= paidThroughBlock) {
+    unconfirmedThroughBlock = undefined;
   }
   return {
     ok: true,
@@ -1113,6 +1182,7 @@ export async function subscriptionStatus(
       ...(sub.token && { tokenBalance }),
       chargesLeft: chargesLeftOf(sub, lock, balance, tokenBalance),
       nextChargeIn,
+      ...(unconfirmedThroughBlock !== undefined && { unconfirmedThroughBlock }),
     },
   };
 }

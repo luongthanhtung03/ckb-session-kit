@@ -2,6 +2,7 @@ import { ccc } from "@ckb-ccc/core";
 import type { Session } from "./session.js";
 import { tokenAmount } from "./onchain.js";
 import { sessionSigner } from "./transfer.js";
+import { confirmationFault, minConfirmationsFrom, type ConfirmationFault } from "./confirmations.js";
 
 /**
  * Paid access, checked against the chain with no database.
@@ -111,18 +112,26 @@ export async function signAccess(session: Session, txHash: ccc.HexLike, memo: cc
   return { txHash: ccc.hexFrom(txHash), memo: ccc.hexFrom(memo), publicKey: signer.publicKey, signature: ccc.hexFrom(signature) };
 }
 
-export type AccessCheck = { ok: true; paid: bigint } | { ok: false; reason: string };
+export type AccessCheck = { ok: true; paid: bigint } | { ok: false; reason: string; code?: undefined } | ConfirmationFault;
 
 /**
  * The server's side. `to` is the recipient that must have been paid, as a lock
  * script; `minAmount` in shannons. With `token` (an xUDT type script), the
  * payment is counted in that token's units instead, and `minAmount` is in units.
+ *
+ * With `minConfirmations` (default 0: committed is enough), a payment that is
+ * valid in every other way but fewer than that many blocks deep (counting its
+ * own block as 1) gives `code: "unconfirmed"` with its `confirmations`, and one
+ * whose block left the main chain `code: "reorged"` (src/confirmations.ts).
+ * Throws a `RangeError` for a `minConfirmations` that is not an integer from 0
+ * to `MAX_MIN_CONFIRMATIONS`.
  */
 export async function verifyAccess(
   client: ccc.Client,
   proof: AccessProof,
-  expect: { to: ccc.ScriptLike; minAmount: bigint; memo: ccc.HexLike; token?: ccc.ScriptLike },
+  expect: { to: ccc.ScriptLike; minAmount: bigint; memo: ccc.HexLike; token?: ccc.ScriptLike; minConfirmations?: number | bigint },
 ): Promise<AccessCheck> {
+  const minConfirmations = minConfirmationsFrom(expect.minConfirmations);
   if (ccc.hexFrom(proof.memo) !== ccc.hexFrom(expect.memo)) return { ok: false, reason: "memo does not match" };
 
   // Always the CKB secp256k1 scheme: a sign type chosen by the caller is not trusted.
@@ -206,6 +215,11 @@ export async function verifyAccess(
   if (paid < expect.minAmount) {
     const shown = token ? `${paid} units` : `${ccc.fixedPointToString(paid)} CKB`;
     return { ok: false, reason: `paid ${shown}, below the price` };
+  }
+  // Depth last: "unconfirmed" then means the payment is good, only too recent.
+  if (minConfirmations > 0n) {
+    const fault = await confirmationFault(client, await client.getTip(), res, minConfirmations, "payment");
+    if (fault) return fault;
   }
   return { ok: true, paid };
 }

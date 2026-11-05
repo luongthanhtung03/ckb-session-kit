@@ -2,6 +2,7 @@ import { ccc } from "@ckb-ccc/core";
 import { describe, expect, it } from "vitest";
 import { createSession } from "../src/session.js";
 import { paymentMemo, signAccess, verifyAccess, type AccessProof } from "../src/paywall.js";
+import { MAX_MIN_CONFIRMATIONS } from "../src/confirmations.js";
 
 const CKB = 100_000_000n;
 const MEMO = paymentMemo("read:since");
@@ -257,5 +258,107 @@ describe("verifyAccess with a token price", () => {
     const { client, proof, creator } = await setupToken(90n);
     const r = await verifyAccess(client, proof, { to: creator, minAmount: 1n * CKB, memo: MEMO });
     expect(r.ok).toBe(false);
+  });
+});
+
+// Review #47 point 5: an optional confirmation depth. Confirmations = tip - block + 1.
+describe("verifyAccess with minConfirmations", () => {
+  const blockHash = (n: bigint) => ("0x" + n.toString(16).padStart(64, "0")) as ccc.Hex;
+
+  /** The payment in block `block`, the tip at `tip`; `canonical` is the main chain's hash at a height. */
+  async function deep(block: bigint, tip: bigint, opts: { paid?: bigint; canonical?: (n: bigint) => ccc.Hex | undefined } = {}) {
+    const s = await setup({ paid: opts.paid });
+    const res = await s.client.getTransactionNoCache(TX_HASH);
+    const calls = { tip: 0, header: 0 };
+    s.client.getTransactionNoCache = (async () => ({ ...res, blockNumber: block, blockHash: blockHash(block) })) as never;
+    s.client.getTip = (async () => (calls.tip++, tip)) as never;
+    s.client.getHeaderByNumberNoCache = (async (n: ccc.NumLike) => {
+      calls.header++;
+      const hash = (opts.canonical ?? blockHash)(ccc.numFrom(n));
+      return hash && { hash, number: ccc.numFrom(n) };
+    }) as never;
+    const proof = await signAccess(s.payer, TX_HASH, MEMO);
+    const check = (minConfirmations?: number | bigint) =>
+      verifyAccess(s.client, proof, { to: s.creator, minAmount: 1n * CKB, memo: MEMO, minConfirmations });
+    return { check, calls };
+  }
+
+  it("0 or unset is today's check: no tip read, no block needed", async () => {
+    const { client, payer, creator } = await setup();
+    client.getTip = (async () => {
+      throw new Error("no tip read at depth 0");
+    }) as never;
+    const proof = await signAccess(payer, TX_HASH, MEMO);
+    for (const minConfirmations of [undefined, 0, 0n]) {
+      expect(await verifyAccess(client, proof, { to: creator, minAmount: 1n * CKB, memo: MEMO, minConfirmations })).toEqual({
+        ok: true,
+        paid: 1n * CKB,
+      });
+    }
+  });
+
+  it("counts the payment's own block as the first confirmation: exactly at the boundary passes", async () => {
+    const { check, calls } = await deep(991n, 1000n); // 1000 - 991 + 1 = 10
+    expect(await check(10)).toEqual({ ok: true, paid: 1n * CKB });
+    expect(calls).toEqual({ tip: 1, header: 1 });
+    expect(await (await deep(1000n, 1000n)).check(1)).toEqual({ ok: true, paid: 1n * CKB }); // in the tip block: 1
+  });
+
+  it("one below the boundary is unconfirmed, with how many it has, not unpaid", async () => {
+    const { check, calls } = await deep(991n, 1000n);
+    expect(await check(11)).toEqual({
+      ok: false,
+      code: "unconfirmed",
+      reason: "payment has 10 of 11 confirmations",
+      confirmations: 10n,
+      minConfirmations: 11n,
+    });
+    expect(calls).toEqual({ tip: 1, header: 0 });
+  });
+
+  it("counts 0 confirmations when the tip read is behind the payment's block (a lagging node)", async () => {
+    const { check } = await deep(1001n, 1000n);
+    expect(await check(1)).toMatchObject({ ok: false, code: "unconfirmed", confirmations: 0n });
+  });
+
+  it("does not count a payment whose block is no longer on the main chain", async () => {
+    const other = await deep(991n, 1000n, { canonical: () => ("0x" + "ee".repeat(32)) as ccc.Hex });
+    expect(await other.check(5)).toEqual({ ok: false, code: "reorged", reason: "payment's block is no longer on the main chain" });
+    const gone = await deep(991n, 1000n, { canonical: () => undefined });
+    expect(await gone.check(5)).toMatchObject({ ok: false, code: "reorged" });
+  });
+
+  it("an invalid payment keeps its own reason, never 'unconfirmed'", async () => {
+    const { check, calls } = await deep(1000n, 1000n, { paid: 1n * CKB - 1n });
+    expect(await check(6)).toMatchObject({ ok: false, reason: expect.stringMatching(/below the price/) });
+    expect(calls.tip).toBe(0);
+  });
+
+  it("is unconfirmed when the node gave no block for a committed payment", async () => {
+    const { client, payer, creator } = await setup();
+    client.getTip = (async () => 1000n) as never;
+    const proof = await signAccess(payer, TX_HASH, MEMO);
+    const r = await verifyAccess(client, proof, { to: creator, minAmount: 1n * CKB, memo: MEMO, minConfirmations: 1 });
+    expect(r).toMatchObject({ ok: false, code: "unconfirmed", confirmations: 0n });
+  });
+
+  it.each([-1, 1.5, Number.NaN, Infinity, MAX_MIN_CONFIRMATIONS + 1, -1n, BigInt(MAX_MIN_CONFIRMATIONS) + 1n, "3", null])(
+    "rejects minConfirmations %s before any RPC",
+    async (bad) => {
+      const { client, payer, creator } = await setup();
+      let rpc = 0;
+      client.getTransactionNoCache = (async () => (rpc++, undefined)) as never;
+      const proof = await signAccess(payer, TX_HASH, MEMO);
+      await expect(
+        verifyAccess(client, proof, { to: creator, minAmount: 1n * CKB, memo: MEMO, minConfirmations: bad as never }),
+      ).rejects.toThrow(RangeError);
+      expect(rpc).toBe(0);
+    },
+  );
+
+  it(`accepts the largest value, ${MAX_MIN_CONFIRMATIONS}, and bigints`, async () => {
+    const { check } = await deep(1n, BigInt(MAX_MIN_CONFIRMATIONS));
+    expect(await check(MAX_MIN_CONFIRMATIONS)).toEqual({ ok: true, paid: 1n * CKB });
+    expect(await check(BigInt(MAX_MIN_CONFIRMATIONS))).toEqual({ ok: true, paid: 1n * CKB });
   });
 });

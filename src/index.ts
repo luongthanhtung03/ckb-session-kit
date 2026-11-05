@@ -70,6 +70,8 @@ export {
 export type { Subscription, SubscriptionCheck, SubscriptionStatus } from "./subscription.js";
 export { paymentMemo, signAccess, verifyAccess } from "./paywall.js";
 export type { AccessCheck, AccessProof } from "./paywall.js";
+export { MAX_MIN_CONFIRMATIONS } from "./confirmations.js";
+export type { ConfirmationFault } from "./confirmations.js";
 export {
   applyPlacements,
   checkPlacement,

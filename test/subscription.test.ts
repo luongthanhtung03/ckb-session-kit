@@ -102,6 +102,29 @@ const cellOf = (lock: ccc.Script, capacity: bigint, extra: Partial<ccc.CellOutpu
 
 afterEach(() => vi.restoreAllMocks());
 
+const blockHash = (n: bigint) => ("0x" + n.toString(16).padStart(64, "0")) as ccc.Hex;
+/**
+ * Puts `client`'s transactions in blocks with hashes, at `blockOf[txHash]` (else
+ * where it said), with a main chain whose hash at each height is `canonical`'s
+ * (undefined: no such block). Counts tip reads.
+ */
+function onChain(client: ccc.Client, blockOf: Record<string, bigint> = {}, canonical: (n: bigint) => ccc.Hex | undefined = blockHash) {
+  const calls = { tip: 0 };
+  const get = client.getTransactionNoCache.bind(client);
+  client.getTransactionNoCache = (async (hash: ccc.HexLike) => {
+    const res = await get(hash);
+    const block = blockOf[ccc.hexFrom(hash)] ?? ccc.numFrom(res!.blockNumber!);
+    return { ...res, blockNumber: block, blockHash: blockHash(block) };
+  }) as never;
+  const tip = client.getTip.bind(client);
+  client.getTip = (async () => (calls.tip++, tip())) as never;
+  client.getHeaderByNumberNoCache = (async (n: ccc.NumLike) => {
+    const hash = canonical(ccc.numFrom(n));
+    return hash && { hash, number: ccc.numFrom(n) };
+  }) as never;
+  return calls;
+}
+
 describe("subscriptionLock", () => {
   it("is the 112-byte session lock layout: subscriber, charger, price, period, payout", async () => {
     const { sub } = await roles(fakeClient([]).client);
@@ -432,9 +455,10 @@ describe("verifySubscription", () => {
     const charger = (await r.charger.getRecommendedAddressObj()).toString();
     const expected = { charger, payTo: r.payTo, price: 10n * CKB, periodBlocks: PERIOD };
     return {
-      check: (e: Partial<typeof expected & { account: string; minBalance: bigint }> = {}) =>
+      check: (e: Partial<typeof expected & { account: string; minBalance: bigint; minConfirmations: number | bigint }> = {}) =>
         verifySubscription(client, d, cell.outPoint, { ...expected, ...e }),
       r,
+      client,
     };
   }
 
@@ -498,6 +522,54 @@ describe("verifySubscription", () => {
   it("refuses an 80-byte session (no payout address) with the same prefix", async () => {
     const { check } = await setup((lock) => cellOf(ccc.Script.from({ ...lock, args: lock.args.slice(0, 2 + 160) }), 500n * CKB));
     expect(await check()).toMatchObject({ ok: false, reason: expect.stringMatching(/112 bytes/) });
+  });
+
+  // Review #47 point 5. The cell was created in block 900, the tip is 1000: 101 confirmations.
+  describe("minConfirmations", () => {
+    const accepted = (r: Subscription) => ({ ok: true, subscription: r, balance: 500n * CKB, chargesLeft: 34n, paidThroughBlock: 900n + PERIOD });
+
+    it("0 is today's check, with no tip read", async () => {
+      const { check, r, client } = await setup((lock) => cellOf(lock, 500n * CKB));
+      const calls = onChain(client);
+      expect(await check({ minConfirmations: 0 })).toEqual(accepted(r.sub));
+      expect(calls.tip).toBe(0);
+    });
+
+    it("accepts exactly at the boundary, the creating block counting as 1, with one tip read", async () => {
+      const { check, r, client } = await setup((lock) => cellOf(lock, 500n * CKB));
+      const calls = onChain(client);
+      expect(await check({ minConfirmations: 101 })).toEqual(accepted(r.sub));
+      expect(calls.tip).toBe(1);
+    });
+
+    it("one below is unconfirmed, not unpaid", async () => {
+      const { check, client } = await setup((lock) => cellOf(lock, 500n * CKB));
+      onChain(client);
+      expect(await check({ minConfirmations: 102 })).toEqual({
+        ok: false,
+        code: "unconfirmed",
+        reason: "the transaction that created the cell has 101 of 102 confirmations",
+        confirmations: 101n,
+        minConfirmations: 102n,
+      });
+    });
+
+    it("does not count a creating transaction whose block left the main chain", async () => {
+      const { check, client } = await setup((lock) => cellOf(lock, 500n * CKB));
+      onChain(client, {}, () => h("ee"));
+      expect(await check({ minConfirmations: 1 })).toMatchObject({ ok: false, code: "reorged" });
+    });
+
+    it("a cell that did not pay keeps its own reason", async () => {
+      const { check, client } = await setup((lock) => cellOf(lock, 500n * CKB), 10n * CKB - 1n);
+      onChain(client);
+      expect(await check({ minConfirmations: 500 })).toEqual({ ok: false, reason: expect.stringMatching(/did not pay/) });
+    });
+
+    it.each([-1, 0.5, 10_001, "1"])("rejects minConfirmations %s", async (bad) => {
+      const { check } = await setup((lock) => cellOf(lock, 500n * CKB));
+      await expect(check({ minConfirmations: bad as never })).rejects.toThrow(RangeError);
+    });
   });
 });
 
@@ -571,7 +643,11 @@ describe("subscriptionStatus (a server with no database)", () => {
     };
     const liveCells = opts.liveCreatedBy === "none" ? [] : [live];
     const { client } = fakeClient([...liveCells, payIn, own, stranger, fee], 990n, (hash) => txs[hash] ?? opening, opts.history);
-    return { client, status: (account = "alice") => subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }) };
+    return {
+      client,
+      status: (account = "alice", options?: { minConfirmations?: number | bigint }) =>
+        subscriptionStatus(client, d, r.sub, { openTx: OPEN, account }, options),
+    };
   }
 
   it("is active through the opening's block plus one period, with the charges left", async () => {
@@ -630,6 +706,80 @@ describe("subscriptionStatus (a server with no database)", () => {
     ];
     expect(await (await setup({ liveCreatedBy: "none", history })).status()).toMatchObject({
       status: { paidThroughBlock: 990n + PERIOD, active: true },
+    });
+  });
+
+  // Review #47 point 5. Every transaction is in block 990 unless moved; the tip is 1000.
+  describe("minConfirmations", () => {
+    const CHARGE = h("0d");
+    const CHARGE_ALL = h("0e");
+    const today = { paidThroughBlock: 990n + PERIOD, tip: 1000n, active: true, balance: 173n * CKB, chargesLeft: 2n, nextChargeIn: 10n };
+
+    it("0 is today's status, and the tip is read once", async () => {
+      const { client, status } = await setup();
+      const calls = onChain(client);
+      expect(await status("alice", { minConfirmations: 0 })).toEqual({ ok: true, status: today });
+      expect(calls.tip).toBe(1);
+    });
+
+    it("at the boundary (11 = 1000 - 990 + 1) is the same status, with the tip still read once", async () => {
+      const { client, status } = await setup();
+      const calls = onChain(client);
+      expect(await status("alice", { minConfirmations: 11 })).toEqual({ ok: true, status: today });
+      expect(calls.tip).toBe(1);
+    });
+
+    it("an opening one confirmation short is unconfirmed", async () => {
+      const { client, status } = await setup();
+      onChain(client);
+      expect(await status("alice", { minConfirmations: 12 })).toEqual({
+        ok: false,
+        code: "unconfirmed",
+        reason: "the opening has 11 of 12 confirmations",
+        confirmations: 11n,
+        minConfirmations: 12n,
+      });
+    });
+
+    it("an opening whose block left the main chain is refused", async () => {
+      const { client, status } = await setup();
+      onChain(client, {}, () => h("ee"));
+      expect(await status("alice", { minConfirmations: 1 })).toMatchObject({ ok: false, code: "reorged" });
+    });
+
+    it("a charge short of the depth does not renew yet, and shows as unconfirmedThroughBlock", async () => {
+      const deepEnough = await setup({ liveCreatedBy: "charge" });
+      onChain(deepEnough.client, { [OPEN]: 900n, [CHARGE]: 995n }); // the charge: 6 confirmations
+      expect(await deepEnough.status("alice", { minConfirmations: 6 })).toMatchObject({
+        ok: true,
+        status: { paidThroughBlock: 995n + PERIOD, active: true },
+      });
+      const short = await setup({ liveCreatedBy: "charge" });
+      onChain(short.client, { [OPEN]: 900n, [CHARGE]: 995n });
+      const r = await short.status("alice", { minConfirmations: 7 });
+      expect(r).toMatchObject({ ok: true, status: { paidThroughBlock: undefined, active: false, unconfirmedThroughBlock: 995n + PERIOD } });
+    });
+
+    it("the same for a charge that took the whole balance, read from the history", async () => {
+      const { client, status } = await setup({ liveCreatedBy: "none", history: [{ txHash: CHARGE_ALL, blockNumber: 995n, spent: true }] });
+      onChain(client, { [OPEN]: 900n, [CHARGE_ALL]: 995n });
+      expect(await status("alice", { minConfirmations: 7 })).toMatchObject({
+        ok: true,
+        status: { paidThroughBlock: undefined, active: false, unconfirmedThroughBlock: 995n + PERIOD },
+      });
+    });
+
+    it("a charge whose block left the main chain counts for nothing, not even as unconfirmed", async () => {
+      const { client, status } = await setup({ liveCreatedBy: "charge" });
+      onChain(client, { [OPEN]: 900n, [CHARGE]: 995n }, (n) => (n === 995n ? h("ee") : blockHash(n)));
+      const r = await status("alice", { minConfirmations: 2 });
+      expect(r).toMatchObject({ ok: true, status: { paidThroughBlock: undefined, active: false } });
+      expect(r.ok && r.status).not.toHaveProperty("unconfirmedThroughBlock");
+    });
+
+    it.each([-1, 2.5, Number.MAX_SAFE_INTEGER, 10_001n])("rejects minConfirmations %s", async (bad) => {
+      const { status } = await setup();
+      await expect(status("alice", { minConfirmations: bad })).rejects.toThrow(RangeError);
     });
   });
 });
