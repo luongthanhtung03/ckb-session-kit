@@ -614,6 +614,44 @@ session](#which-wallets-can-own-a-session).
 A session-lock cell occupies 121 CKB (153 CKB with a recipient), so its balance
 and its change must stay above that.
 
+### If the page is compromised
+
+The session key is a raw secp256k1 private key, held as a hex string in
+JavaScript memory (`Session.privateKey`) and saved as such in IndexedDB by
+`indexedDbStore` (or kept in memory by `memoryStore`). Web Crypto has no
+secp256k1 keys, so it cannot be held as a non-extractable key. Any script
+running on the same origin (an XSS bug, a compromised dependency, an injected
+script) can read it, copy it off the device, and sign with it. Treat that as a
+leaked key: everything in [If a session key leaks](#if-a-session-key-leaks)
+applies. Such a script can also ask the connected wallet to sign; the wallet
+shows that prompt to the user.
+
+What still holds, because the lock enforces it on chain and not the page:
+
+- at most `max_per_tx` shannons leave the session per transaction, fees
+  included (and, in a token session, at most its token limit);
+- with a recipient, only to that recipient (or to the miner as fee); the key
+  cell may not grow;
+- with `min_interval`, once per interval per session cell;
+- the session's balance and the 62–64 CKB key cell are the most it can lose;
+  the owner's other cells are out of reach, since owner mode needs the owner's
+  own signature;
+- the owner can sweep at any time with `closeSession` or `recoverSessions`.
+
+What does not help: browser expiry (`expiresAt`) and clearing the store revoke
+nothing on chain; a copied key stays valid until the owner's sweep is confirmed.
+
+What an app should do:
+
+- serve a strict Content Security Policy and keep third-party scripts off the
+  origin that holds sessions (the demo's headers are in `demo/next.config.ts`);
+- keep budgets small, and set a recipient and `min_interval` where the app has
+  one payee;
+- check paid access on the server, from the chain (`verifyAccess`,
+  `subscriptionStatus`), never from what the page says, and pass
+  `minConfirmations` for anything valuable;
+- sweep at once on any suspicion, and sweep again if a spend raced it.
+
 ### Enforced by the real network
 
 Deployed on testnet: code hash `0xab419466…4c08ce` (`data2`, [deploy tx](https://testnet.explorer.nervos.org/transaction/0xf3098bdb9a7bb1c500990be0f1159b7e66f507fef6b7a4f904046024284877f2)),

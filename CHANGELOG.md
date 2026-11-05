@@ -27,6 +27,22 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   `code?: undefined`, so `r.code === "unconfirmed"` narrows. Callers that only
   read `ok` and `reason` need no change.
 
+### Docs
+- `docs/design/subscriptions.md`, "How a payment history is reconstructed"
+  (review, tracker #47 point 4): which transactions renew a period (the proven
+  opening, or a charge, and either must pay `payTo` the prices of the cells it
+  creates), why cells a third party creates under the same lock add no period,
+  how the scan and history budgets refuse rather than answer from a partial
+  read, and what a forced refusal costs and how it is cleared, with file:line
+  and test references. New test: a stranger's transaction that pays `payTo`
+  and carries the account memo in its own witness is refused as an opening.
+- README, "If the page is compromised" (tracker #47 point 5): the session key
+  is raw hex in JavaScript memory and IndexedDB, so same-origin script can read
+  it and sign within the lock's scope; what the lock still bounds on chain, what
+  browser expiry does not, and what an app should do (CSP, small budgets,
+  recipient and rate limit, server-side checks with `minConfirmations`, sweep
+  on suspicion).
+
 ## 2.1.0 (2026-11-05)
 
 ### Added
