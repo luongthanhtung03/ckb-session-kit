@@ -3,7 +3,7 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
-## Unreleased
+## 2.1.0 (2026-11-05)
 
 ### Added
 - `fundInSession` and `sendWithSession`: fund a transaction the app built (its
