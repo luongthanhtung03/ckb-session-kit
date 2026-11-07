@@ -514,6 +514,19 @@ await assertSigningLock(ownerLock, owner.client); // the kit's own check; openSe
 await openSession(owner, session, deployment, { budget });
 ```
 
+Owner-mode safety rests on the deployed code of the owner's lock, not only on
+this kit. Every unlocking path of each accepted lock, and what it signs, is
+listed in [docs/design/owner-locks.md](docs/design/owner-locks.md): in the
+accepted configurations every path signs the whole transaction, and the mainnet
+Omnilock build has no CoBuild or open-transaction mode. Two things follow:
+
+- **Never sign an open or partial transaction with a lock that owns sessions.**
+  Anyone holding that piece could spend your sessions with it.
+- **Omnilock, JoyID and the Nostr lock are deployed under type ids**, which
+  their deployers can upgrade. The review covers the code deployed on 5 Nov
+  2026; an upgrade that added a partial-signing mode would also apply to
+  sessions that are already open.
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in

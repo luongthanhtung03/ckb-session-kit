@@ -28,6 +28,15 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
   read `ok` and `reason` need no change.
 
 ### Docs
+- `docs/design/owner-locks.md` (review, tracker #47 point 2): every unlocking
+  path of each owner lock `assertSigningLock` accepts, what it signs, and
+  whether it is accepted, from the deployed code (Omnilock `cd764d7`, the
+  genesis secp256k1 and multisig scripts, nostr-lock `eef134e`; JoyID from its
+  documentation only). No accepted path signs less than the whole transaction;
+  the mainnet Omnilock has no CoBuild/open-transaction code. README, "Which
+  wallets can own a session": never sign a partial transaction with a lock that
+  owns sessions, and type-id upgrades of Omnilock, JoyID and the Nostr lock
+  apply to open sessions.
 - `docs/design/subscriptions.md`, "How a payment history is reconstructed"
   (review, tracker #47 point 4): which transactions renew a period (the proven
   opening, or a charge, and either must pay `payTo` the prices of the cells it
