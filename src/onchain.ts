@@ -761,7 +761,7 @@ export const REVIEWED_OWNER_LOCK_BUILDS: readonly OwnerLockBuild[] = Object.free
     network: "mainnet",
     codeHash: "0xd00c84f0ec8fd441c38bc3f87a371f547190f2fcff88e642bc5bf54b9e318323",
     dataHash: "0x4af7d832e7c328aa4ad6f2deb669743446aea7b9a2f0c25646897501ac4f1ebe",
-    review: "closed source: documentation and a string scan of this binary only; deployed 21 Nov 2025; reviewed 5 Nov 2026",
+    review: "closed source: documentation and a string scan of this binary only; reviewed 5 Nov 2026",
   },
   {
     lock: "Nostr lock",
@@ -775,14 +775,14 @@ export const REVIEWED_OWNER_LOCK_BUILDS: readonly OwnerLockBuild[] = Object.free
     network: "testnet",
     codeHash: "0xf329effd1c475a2978453c8600e1eaf0bc2087ee093c3ee64cc96ec6847752cb",
     dataHash: "0x6b29b6f10346b43c540e53806ba88ba0fe3a0c3a29d7448ef555840c8f8318fa",
-    review: "the build deployed on testnet since 12 Apr 2024; its source is not identified (testnet funds only)",
+    review: "the build live on testnet when read on 7 Nov 2026; its source is not identified (testnet funds only)",
   },
   {
     lock: "JoyID",
     network: "testnet",
     codeHash: "0xd23761b364210735c19c60561d213fb3beae2fd6172743719eff6920e020baac",
     dataHash: "0xd2c0f2f621a337007e046f0ed65f8fe29112c32a00ea1e43c2f8059fd42ca6d7",
-    review: "the build deployed on testnet on 7 Nov 2026; documentation review only, as on mainnet",
+    review: "the build live on testnet when read on 7 Nov 2026, a different binary from mainnet; not examined, documentation review only",
   },
   {
     lock: "Nostr lock",
