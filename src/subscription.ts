@@ -11,6 +11,7 @@ import {
   assertSigningLock,
   checkSigningLock,
   type SigningLockOptions,
+  type SessionWarning,
   isAnyoneCanPay,
   keyCellFloor,
   ownerSweep,
@@ -24,6 +25,7 @@ import {
   signAndSend,
   tokenAmount,
   tokenData,
+  warnOwnerLockBuild,
   withoutDeadCached,
   withinU128,
 } from "./onchain.js";
@@ -393,6 +395,12 @@ export async function openSubscription(
     beforeSend?: (sub: Subscription) => Promise<void>;
     /** Let an unreviewed charger lock through, with a warning (`allowUnreviewedOwnerLock` covers the subscriber's own lock only). */
     allowUnreviewedChargerLock?: boolean;
+    /**
+     * Called before anything is signed with a `SessionWarning` about the
+     * subscriber's lock (`"owner-lock-build-unreviewed"` or
+     * `"owner-lock-build-unresolved"`); throw to stop. Without it, `console.warn`.
+     */
+    onWarning?: (warning: SessionWarning) => void | Promise<void>;
   } & SigningLockOptions,
 ): Promise<{ txHash: ccc.Hex; subscription: Subscription }> {
   const client = subscriber.client;
@@ -405,6 +413,7 @@ export async function openSubscription(
   }
   const subscriberLock = (await subscriber.getRecommendedAddressObj()).script;
   await assertSigningLock(subscriberLock, client, opts);
+  await warnOwnerLockBuild(subscriberLock, client, opts.onWarning);
   const [chargerLock, payToLock] = await Promise.all(
     [opts.charger, opts.payTo].map(async (a) => (await ccc.Address.fromString(a, client)).script),
   );

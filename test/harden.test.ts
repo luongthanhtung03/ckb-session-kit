@@ -22,6 +22,8 @@ async function owner(lock: (c: ccc.Client) => Promise<ccc.Script>, send: (tx: cc
   vi.spyOn(signer, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
   vi.spyOn(client, "sendTransaction").mockImplementation(async (tx) => send(ccc.Transaction.from(tx)));
   vi.spyOn(client, "getCellLive").mockImplementation(async (op) => codeCellAt(op));
+  // No network: a JoyID owner's code cell is not read (checkOwnerLockBuild then warns that it could not be).
+  vi.spyOn(client, "findSingletonCellByType").mockResolvedValue(undefined);
   vi.spyOn(ccc.Transaction.prototype, "completeInputsByCapacity").mockResolvedValue(0 as never);
   vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
   return { client, signer };

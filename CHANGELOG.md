@@ -20,6 +20,18 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 - `MAX_MIN_CONFIRMATIONS` (10000) and the `ConfirmationFault` type. A
   `minConfirmations` that is negative, fractional, not a number or bigint, or
   past the maximum throws a `RangeError` before any RPC call.
+- Build pinning for type-id owner locks (review, tracker #47 point 2).
+  `openSession` and `openSubscription` read the live code cell of an Omnilock,
+  JoyID or Nostr owner lock referenced by type id and compare `ccc.hashCkb` of
+  its data with the new `REVIEWED_OWNER_LOCK_BUILDS` (type `OwnerLockBuild`):
+  mainnet Omnilock `0x768f3066…118d`, JoyID `0x4af7d832…1ebe`, Nostr lock
+  `0x2effea19…9795`, and the builds deployed on testnet. A build not listed
+  raises a `SessionWarning` with code `"owner-lock-build-unreviewed"` and the
+  observed `dataHash`; a code cell that cannot be read raises
+  `"owner-lock-build-unresolved"`. Neither refuses: throw from `onWarning` to
+  stop. One indexer query per opening for these three locks; none for others.
+  `checkOwnerLockBuild(lock, client, reviewed?)` runs the check alone.
+  `openSubscription` takes `onWarning` too.
 
 ### Changed
 - `AccessCheck`, `SubscriptionCheck` and `subscriptionStatus`'s result add the

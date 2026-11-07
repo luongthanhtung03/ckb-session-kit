@@ -73,7 +73,10 @@ live on the owner's network (or does not hash to `codeHash`) is refused with
 `SessionPolicyError`.
 
 The owner's lock must pass `assertSigningLock`. `opts.allowUnreviewedOwnerLock`
-lets an unreviewed one through with a warning. A recipient equal to the session
+lets an unreviewed one through with a warning. Then `checkOwnerLockBuild` compares
+the build of a type-id owner lock (Omnilock, JoyID, Nostr lock) with
+`REVIEWED_OWNER_LOCK_BUILDS`, and a build not listed is a `SessionWarning`, not
+a refusal. A recipient equal to the session
 key's own lock is refused too.
 
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
@@ -274,6 +277,40 @@ await assertSigningLock(ownerLock, owner.client); // the kit's own check; openSe
 await openSession(owner, session, deployment, { budget });
 ```
 
+### `checkOwnerLockBuild(lock, client, reviewed?) → SessionWarning | undefined`
+Omnilock, JoyID and the Nostr lock are deployed under type ids, which their
+deployers can upgrade: an owner lock references the type id, not the binary.
+For an owner lock that is one of these three under hash_type `type`, this reads
+the live code cell (by its type id, with `client.findSingletonCellByType`) and
+compares `ccc.hashCkb` of its data with `REVIEWED_OWNER_LOCK_BUILDS` (or the
+`reviewed` list passed). A build not in the list gives a `SessionWarning` with
+code `"owner-lock-build-unreviewed"` and the observed `dataHash`. A code cell
+that cannot be read (an RPC error, or no live cell) gives
+`"owner-lock-build-unresolved"`; it never throws. Every other lock gives
+`undefined` with no RPC call: secp256k1 and multisig, and any lock referenced by
+a data hash, which already names the binary.
+
+`openSession` and `openSubscription` call it after `assertSigningLock`, for the
+owner's (subscriber's) lock, and pass the warning to `opts.onWarning`, or
+`console.warn` without one. They do not refuse: throw from `onWarning` to stop.
+`assertSigningLock` itself does not read the code cell. The check covers new
+sessions only; a session already open follows the type id to whatever code it
+holds later.
+
+### `REVIEWED_OWNER_LOCK_BUILDS`, type `OwnerLockBuild`
+The reviewed builds, frozen: `{ lock, network, codeHash, dataHash, review }`
+per entry, where `codeHash` is the type id and `dataHash` the hash of the code
+cell's data, read from the live cells on 7 Nov 2026:
+
+| Lock | Network | Data hash | Review |
+|---|---|---|---|
+| Omnilock | mainnet | `0x768f306681da232ceb0b94f436c5f813377179762a831c5ad8797bd4fd2d118d` | source, nervosnetwork/omnilock `cd764d7` |
+| JoyID | mainnet | `0x4af7d832e7c328aa4ad6f2deb669743446aea7b9a2f0c25646897501ac4f1ebe` | documentation only (closed source) |
+| Nostr lock | mainnet | `0x2effea19ff3024b5b0fb4c0c59c379e7610110e7e3fe7ae003247b1115e59795` | source, cryptape/nostr-binding `eef134e` |
+| Omnilock | testnet | `0x6b29b6f10346b43c540e53806ba88ba0fe3a0c3a29d7448ef555840c8f8318fa` | the deployed build; source not identified |
+| JoyID | testnet | `0xd2c0f2f621a337007e046f0ed65f8fe29112c32a00ea1e43c2f8059fd42ca6d7` | the deployed build; documentation only |
+| Nostr lock | testnet | `0x2effea19ff3024b5b0fb4c0c59c379e7610110e7e3fe7ae003247b1115e59795` | the same binary as mainnet |
+
 ### `assertPlainXudt(type, client)`
 Throws `SessionPolicyError` unless `type` is this network's xUDT with every
 args flag clear: no extension scripts, no other owner (minting) modes. `openSession` calls it for `opts.token`.
@@ -351,11 +388,13 @@ then be asked whether it has the transaction. It may still commit: look for
 `txHash` before paying again. `cause` is the send's own error. Never retried.
 
 ### `SessionWarning`
-`{ code, message }`, passed to `openSession`'s `opts.onWarning` before anything
-is signed. One code so far: `"no-rate-limit"`, for `minInterval` 0 or 1. The lock
-will enforce such a session as written; the warning says what that allows. Match
-on `code`, not on the message. Subscriptions do not warn: `openSubscription`
-refuses a period of 0.
+`{ code, message, dataHash? }`, passed to `openSession`'s (and `openSubscription`'s)
+`opts.onWarning` before anything is signed. Codes: `"no-rate-limit"`, for
+`minInterval` 0 or 1 (sessions only; `openSubscription` refuses a period of 0):
+the lock will enforce such a session as written, and the warning says what that
+allows. `"owner-lock-build-unreviewed"` (with `dataHash`) and
+`"owner-lock-build-unresolved"`, from `checkOwnerLockBuild`. Match on `code`, not
+on the message.
 
 ## The session lock
 
@@ -477,7 +516,7 @@ leaves the cell, and the price as `max_per_tx_token`. `price` is always in the
 subscription's asset: shannons, or token units. The payout address must be
 anyone-can-pay and hold a cell of the token; charges top it up.
 
-### `openSubscription(subscriber, deployment, { charger, payTo, price, periodBlocks, budget?, token?, account?, beforeSend? }) → { txHash, subscription }`
+### `openSubscription(subscriber, deployment, { charger, payTo, price, periodBlocks, budget?, token?, account?, beforeSend?, onWarning? }) → { txHash, subscription }`
 One transaction, one subscriber signature: the first period's price goes to
 `payTo` at once (a new cell cannot be charged for a whole period), and one cell of
 `budget` goes under the session lock; no key cell. With `account`,
@@ -494,6 +533,8 @@ the charger's locks must both pass `assertSigningLock`;
 `allowUnreviewedOwnerLock: true` lets an unreviewed subscriber lock through with
 a warning, and `allowUnreviewedChargerLock: true` an unreviewed charger lock:
 opting in for one's own wallet does not waive review of the creator's lock.
+The subscriber's lock also goes through `checkOwnerLockBuild`; its warning goes
+to `opts.onWarning`, or `console.warn` without one.
 
 With `token: { type, amount }` (a plain xUDT; flags refused), the cell is typed
 with the token and holds `amount` units plus its own size (282 CKB; `budget` may

@@ -527,6 +527,15 @@ Omnilock build has no CoBuild or open-transaction mode. Two things follow:
   2026; an upgrade that added a partial-signing mode would also apply to
   sessions that are already open.
 
+`openSession` and `openSubscription` read the live code cell of an Omnilock,
+JoyID or Nostr owner lock and compare its data hash with
+`REVIEWED_OWNER_LOCK_BUILDS`, the builds reviewed above (mainnet and testnet).
+A build not in that list is reported as a warning (`"owner-lock-build-unreviewed"`,
+with the observed hash, to `onWarning` or `console.warn`), not refused, so a
+vendor upgrade does not stop sessions from opening; if the code cell cannot be
+read, the warning is `"owner-lock-build-unresolved"`. This covers new sessions
+only: one already open follows the type id.
+
 ## The on-chain session lock
 
 [`contracts/session-lock`](contracts/session-lock/src/main.rs) is a CKB lock script in

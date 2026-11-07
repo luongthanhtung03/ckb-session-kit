@@ -18,6 +18,7 @@ export { assertCurrentDeployment } from "./deployment.js";
 export {
   assertPlainXudt,
   assertSigningLock,
+  checkOwnerLockBuild,
   closeSession,
   createPayoutCells,
   DEFAULT_FUND_FEE_RATE,
@@ -35,6 +36,7 @@ export {
   pickPayoutCell,
   poolConflict,
   recoverSessions,
+  REVIEWED_OWNER_LOCK_BUILDS,
   SendOutcomeUnknownError,
   sendWithSession,
   SessionBalanceError,
@@ -46,6 +48,7 @@ export type {
   FundedTransaction,
   FundOptions,
   OnChainBinding,
+  OwnerLockBuild,
   RetryOptions,
   SendWithSessionOptions,
   SessionBalanceReason,

@@ -33,6 +33,9 @@ that piece could spend your sessions with it.
 Upgrades. Omnilock, JoyID and the Nostr lock are deployed under type ids that their
 deployers can upgrade. This review covers the code deployed on 5 Nov 2026. A future
 upgrade that added a partial-signing mode would apply to existing sessions too.
+`openSession` and `openSubscription` compare the live build of these three locks with
+`REVIEWED_OWNER_LOCK_BUILDS` and warn (they do not refuse) when it is not listed; see
+docs/API.md, `checkOwnerLockBuild`.
 
 JoyID. Its contract is not open source, so the rows above come from its documentation.
 Its deployed binary also contains sub-key and social-recovery structures whose rules we

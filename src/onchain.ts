@@ -78,10 +78,18 @@ export class SessionBalanceError extends Error {
  *   spend is held to `maxPerTx`, but the change of one spend can be spent again in
  *   the next block (with 1, a block later), so a leaked key can repeat spends until the
  *   session is empty.
+ * - `owner-lock-build-unreviewed`: the owner's lock is Omnilock, JoyID or the
+ *   Nostr lock under its type id, and its live code cell is not a build listed
+ *   in `REVIEWED_OWNER_LOCK_BUILDS` (`dataHash` is what it runs now). The
+ *   deployer may have upgraded it; the opening is not refused.
+ * - `owner-lock-build-unresolved`: the same locks, but the code cell could not be
+ *   read, so the build was not checked.
  */
 export interface SessionWarning {
-  code: "no-rate-limit";
+  code: "no-rate-limit" | "owner-lock-build-unreviewed" | "owner-lock-build-unresolved";
   message: string;
+  /** With `"owner-lock-build-unreviewed"`: the data hash of the owner lock's live code cell. */
+  dataHash?: ccc.Hex;
 }
 
 /** The warnings for a session opened with these terms. */
@@ -720,6 +728,144 @@ export async function checkSigningLock(lock: ccc.Script, client: ccc.Client, all
   return unreviewed("is not one this kit has reviewed: it may open without the owner's signature");
 }
 
+/** A build of a type-id owner lock: the data hash (ckb blake2b) of its code cell. */
+export type OwnerLockBuild = {
+  lock: "Omnilock" | "JoyID" | "Nostr lock";
+  network: "mainnet" | "testnet";
+  /** The type-id code hash owner locks reference (hash_type `type`). */
+  codeHash: ccc.Hex;
+  /** `ccc.hashCkb` of the code cell's data. */
+  dataHash: ccc.Hex;
+  /** What was checked, and when. */
+  review: string;
+};
+
+/**
+ * The builds of the type-id owner locks this kit has looked at. An owner lock
+ * hash binds the type id, not the binary, so the deployer can replace the code
+ * under every lock at once. `openSession` and `openSubscription` read the live
+ * code cell and warn (`"owner-lock-build-unreviewed"`) when its data hash is not
+ * listed here; they do not refuse. Data hashes read from the live code cells
+ * (resolved by type id, as CCC resolves them) on 7 Nov 2026.
+ */
+export const REVIEWED_OWNER_LOCK_BUILDS: readonly OwnerLockBuild[] = Object.freeze([
+  {
+    lock: "Omnilock",
+    network: "mainnet",
+    codeHash: "0x9b819793a64463aed77c615d6cb226eea5487ccfc0783043a587254cda2b6f26",
+    dataHash: "0x768f306681da232ceb0b94f436c5f813377179762a831c5ad8797bd4fd2d118d",
+    review: "source: nervosnetwork/omnilock cd764d7, whose tests pin this hash; reviewed 5 Nov 2026",
+  },
+  {
+    lock: "JoyID",
+    network: "mainnet",
+    codeHash: "0xd00c84f0ec8fd441c38bc3f87a371f547190f2fcff88e642bc5bf54b9e318323",
+    dataHash: "0x4af7d832e7c328aa4ad6f2deb669743446aea7b9a2f0c25646897501ac4f1ebe",
+    review: "closed source: documentation and a string scan of this binary only; deployed 21 Nov 2025; reviewed 5 Nov 2026",
+  },
+  {
+    lock: "Nostr lock",
+    network: "mainnet",
+    codeHash: "0x641a89ad2f77721b803cd50d01351c1f308444072d5fa20088567196c0574c68",
+    dataHash: "0x2effea19ff3024b5b0fb4c0c59c379e7610110e7e3fe7ae003247b1115e59795",
+    review: "source: cryptape/nostr-binding eef134e (strings consistent, not rebuilt); reviewed 5 Nov 2026",
+  },
+  {
+    lock: "Omnilock",
+    network: "testnet",
+    codeHash: "0xf329effd1c475a2978453c8600e1eaf0bc2087ee093c3ee64cc96ec6847752cb",
+    dataHash: "0x6b29b6f10346b43c540e53806ba88ba0fe3a0c3a29d7448ef555840c8f8318fa",
+    review: "the build deployed on testnet since 12 Apr 2024; its source is not identified (testnet funds only)",
+  },
+  {
+    lock: "JoyID",
+    network: "testnet",
+    codeHash: "0xd23761b364210735c19c60561d213fb3beae2fd6172743719eff6920e020baac",
+    dataHash: "0xd2c0f2f621a337007e046f0ed65f8fe29112c32a00ea1e43c2f8059fd42ca6d7",
+    review: "the build deployed on testnet on 7 Nov 2026; documentation review only, as on mainnet",
+  },
+  {
+    lock: "Nostr lock",
+    network: "testnet",
+    codeHash: "0x6ae5ee0cb887b2df5a9a18137315b9bdc55be8d52637b2de0624092d5f0c91d5",
+    dataHash: "0x2effea19ff3024b5b0fb4c0c59c379e7610110e7e3fe7ae003247b1115e59795",
+    review: "the same binary as the mainnet Nostr lock",
+  },
+]);
+
+const BUILD_PINNED: [ccc.KnownScript, OwnerLockBuild["lock"]][] = [
+  [ccc.KnownScript.OmniLock, "Omnilock"],
+  [ccc.KnownScript.JoyId, "JoyID"],
+  [ccc.KnownScript.NostrLock, "Nostr lock"],
+];
+
+/**
+ * For an owner lock that is Omnilock, JoyID or the Nostr lock referenced by type
+ * id: reads its live code cell and returns a warning unless the cell's data hash
+ * is in `reviewed` (default `REVIEWED_OWNER_LOCK_BUILDS`). `undefined` for every other lock (secp256k1,
+ * multisig, and any lock referenced by data hash, which already binds the binary).
+ *
+ * Never throws: if the code cell cannot be read (RPC error, or no live cell),
+ * the warning is `"owner-lock-build-unresolved"`. The pin is advisory, so a
+ * failed read cannot be stricter than an unknown build; and a client that cannot
+ * read cells will fail later in the opening anyway.
+ */
+export async function checkOwnerLockBuild(
+  lockLike: ccc.ScriptLike,
+  client: ccc.Client,
+  reviewed: readonly OwnerLockBuild[] = REVIEWED_OWNER_LOCK_BUILDS,
+): Promise<SessionWarning | undefined> {
+  const lock = ccc.Script.from(lockLike);
+  if (lock.hashType !== "type") return undefined;
+  let found: { info: ccc.ScriptInfo; name: OwnerLockBuild["lock"] } | undefined;
+  for (const [known, name] of BUILD_PINNED) {
+    try {
+      const info = await client.getKnownScript(known);
+      if (info.codeHash === lock.codeHash && info.hashType === "type") found = { info, name };
+    } catch {
+      // not deployed on this network
+    }
+    if (found) break;
+  }
+  if (!found) return undefined;
+  const { info, name } = found;
+  const whose = `the owner's lock (${name}, type id ${lock.codeHash})`;
+  let dataHash: ccc.Hex | undefined;
+  try {
+    const type = info.cellDeps.map((d) => d.type).find((t) => t && t.hash() === lock.codeHash);
+    const cell = type && (await client.findSingletonCellByType(type, true));
+    if (cell && cell.cellOutput.type?.hash() === lock.codeHash) dataHash = ccc.hashCkb(cell.outputData);
+  } catch {
+    dataHash = undefined;
+  }
+  if (!dataHash) {
+    return {
+      code: "owner-lock-build-unresolved",
+      message: `${whose}: its live code cell could not be read, so its build was not checked against the reviewed builds`,
+    };
+  }
+  if (reviewed.some((b) => b.codeHash === lock.codeHash && b.dataHash === dataHash)) return undefined;
+  return {
+    code: "owner-lock-build-unreviewed",
+    dataHash,
+    message:
+      `${whose} now runs code with data hash ${dataHash}, not a build this kit has reviewed: ` +
+      "the deployer may have upgraded it. Check that every way to unlock it still signs the whole transaction",
+  };
+}
+
+/** Reports `checkOwnerLockBuild`'s warning, if any, to `onWarning` or `console.warn` (internal; not exported from the package). */
+export async function warnOwnerLockBuild(
+  lock: ccc.Script,
+  client: ccc.Client,
+  onWarning?: (warning: SessionWarning) => void | Promise<void>,
+): Promise<void> {
+  const w = await checkOwnerLockBuild(lock, client);
+  if (!w) return;
+  if (onWarning) await onWarning(w);
+  else console.warn(`ckb-session-kit: ${w.message}`);
+}
+
 /**
  * Owner funds the session: one transaction, one signature from `owner`.
  * The on-chain recipient comes from `session.policy.scope.recipients`.
@@ -762,6 +908,7 @@ export async function openSession(
   if (opts.minInterval !== undefined) relativeBlocksSince(opts.minInterval); // a spend must be able to meet it
   const ownerLock = (await owner.getRecommendedAddressObj()).script;
   await assertSigningLock(ownerLock, client, opts);
+  await warnOwnerLockBuild(ownerLock, client, opts.onWarning);
   const floor = keyCellFloor(ownerLock);
   const feeBudget = opts.feeBudget ?? floor + FEE_MARGIN;
   if (feeBudget <= floor) {
