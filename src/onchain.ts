@@ -1188,7 +1188,7 @@ async function spendOnce(
   tx.inputs.push(ccc.CellInput.from({ previousOutput: largestCell(state.keyCells).outPoint }));
   if (request.memo !== undefined) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: request.memo });
   tx.addOutput({ lock: state.keyLock, capacity: 0n });
-  await completeFeeOrNoFeeCell(tx, sessionSigner(session, client), "the key cell cannot cover the fee; top it up");
+  await completeFeeOrNoFeeCell(tx, keyFeeSigner(session, client), "the key cell cannot cover the fee; top it up");
   // Below this, the key cell could no longer go back to the owner at the end.
   if (tx.outputs[tx.outputs.length - 1].capacity < keyCellFloor(binding.ownerLock)) {
     throw new SessionBalanceError("the key cell cannot cover another fee; top it up", "no-fee-cell");
@@ -1362,7 +1362,7 @@ export async function fundInSession(
   tx.addOutput({ lock: state.keyLock, capacity: 0n }, "0x");
   await completeFeeOrNoFeeCell(
     tx,
-    sessionSigner(session, client),
+    keyFeeSigner(session, client),
     "the key cell cannot cover the fee; top it up",
     opts.feeRate ?? DEFAULT_FUND_FEE_RATE,
   );
@@ -1467,6 +1467,22 @@ export async function completeFeeOrNoFeeCell(
     if (short) throw new SessionBalanceError(message, "no-fee-cell");
     throw e;
   }
+}
+
+/**
+ * The session key, for completing a fee only: it lists the key's own lock and
+ * nothing else. CCC's private-key signer also lists anyone-can-pay addresses
+ * under the same key hash, and a fee top-up taking a cell from one of them would
+ * grow the key cell from an input the lock does not count as a key input: a
+ * recipient session then fails with error 17 instead of `no-fee-cell` (review,
+ * 24 Nov). Anyone can create such a cell.
+ */
+function keyFeeSigner(session: Session, client: ccc.Client): ccc.Signer {
+  return new (class extends ccc.SignerCkbPrivateKey {
+    override async getAddressObjs(): Promise<ccc.Address[]> {
+      return [await this.getAddressObjSecp256k1()];
+    }
+  })(client, session.privateKey);
 }
 
 /** The largest of `cells` by capacity; on a tie, the lowest out point (tx hash, then index), whatever the indexer order. */

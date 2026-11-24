@@ -26,6 +26,12 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
   session as `failed`. Now that case throws the clear `SessionBalanceError`
   ("the owner needs one plain cell to prove ownership") before anything is
   signed.
+- The fee of `spendInSession` and `fundInSession` comes only from cells under
+  the session key's own lock. CCC's private-key signer also lists the
+  anyone-can-pay addresses under the key's hash (anyone can create a cell
+  there); when the key cell could not pay the fee, CCC took such a cell, and in
+  a session with a recipient the lock refused the payment (error 17, key-cell
+  growth) instead of the kit reporting `SessionBalanceError` `"no-fee-cell"`.
 
 ### Changed
 - `openSession` refuses a session that is already open: `session.onchain` is

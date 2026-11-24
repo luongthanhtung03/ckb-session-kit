@@ -30,10 +30,14 @@ afterEach(() => vi.restoreAllMocks());
 const cellOf = (txHash: ccc.Hex, index: number, out: ccc.CellOutputLike, data: ccc.HexLike = "0x") =>
   ccc.Cell.from({ outPoint: { txHash, index }, cellOutput: out, outputData: data });
 
-async function setup(o: { maxPerTx: bigint; sessionCells: bigint[]; keyCells?: bigint[]; ownerKey?: ccc.Hex }) {
+async function setup(o: { maxPerTx: bigint; sessionCells: bigint[]; keyCells?: bigint[]; ownerKey?: ccc.Hex; recipient?: ccc.Script }) {
   const client = new ccc.ClientPublicTestnet();
   const owner = new ccc.SignerCkbPrivateKey(client, o.ownerKey ?? h("07"));
-  const session = createSession({ expiresAt: new Date(Date.now() + 3_600_000), scope: { maxPerTx: o.maxPerTx } });
+  const recipient = o.recipient && ccc.Address.fromScript(o.recipient, client).toString();
+  const session = createSession({
+    expiresAt: new Date(Date.now() + 3_600_000),
+    scope: { maxPerTx: o.maxPerTx, ...(recipient && { recipients: [recipient] }) },
+  });
   const live: ccc.Cell[] = [];
   const chain = { live, tip: 1000n };
   const c = client as unknown as Record<string, unknown>;
@@ -54,12 +58,13 @@ async function setup(o: { maxPerTx: bigint; sessionCells: bigint[]; keyCells?: b
   const binding: OnChainBinding = {
     ownerLock: { codeHash: ownerLock.codeHash, hashType: ownerLock.hashType, args: ownerLock.args },
     minInterval: 0n,
+    ...(o.recipient && { recipientLockHash: o.recipient.hash() }),
   };
   const lock = await sessionLockOf(session, client, d, binding);
   const keyLock = await keyLockOf(session, client);
   live.push(...o.sessionCells.map((cap, i) => cellOf(h("a1"), i, { lock, capacity: cap })));
   live.push(...(o.keyCells ?? [100n * CKB]).map((cap, i) => cellOf(h("b1"), i, { lock: keyLock, capacity: cap })));
-  return { client, owner, ownerLock, session, binding, lock, keyLock, chain, sent };
+  return { client, owner, ownerLock, session, binding, lock, keyLock, chain, sent, recipient };
 }
 
 /** Capacity of the inputs of `tx` under `lock`, and of its outputs under it. */
@@ -232,6 +237,32 @@ describe("review 24 Nov, 3: a session opens once, and its stored binding is not 
       reason: "session-already-open",
     });
     expect(sent).toHaveLength(0);
+  });
+});
+
+describe("review 24 Nov, 4: the fee comes only from cells under the key's own lock", () => {
+  it("a recipient session whose key cell cannot pay the fee refuses with no-fee-cell, not taking the key's anyone-can-pay cell", async () => {
+    const sec = await new ccc.ClientPublicTestnet().getKnownScript(ccc.KnownScript.Secp256k1Blake160);
+    const recipient = ccc.Script.from({ codeHash: sec.codeHash, hashType: sec.hashType, args: "0x" + "33".repeat(20) });
+    // The key cell holds its floor and a few shannons: not enough for a fee.
+    const p = await setup({ maxPerTx: 100n * CKB, sessionCells: [500n * CKB], keyCells: [61n * CKB + 100n], recipient });
+    // Anyone can create a cell at the key's anyone-can-pay address (same key hash).
+    const acp = await p.client.getKnownScript(ccc.KnownScript.AnyoneCanPay);
+    const acpLock = ccc.Script.from({ codeHash: acp.codeHash, hashType: acp.hashType, args: p.keyLock.args });
+    p.chain.live.push(cellOf(h("e1"), 0, { lock: acpLock, capacity: 200n * CKB }));
+    const e = await spendInSession(p.session, p.client, d, p.binding, { to: p.recipient!, amount: 70n * CKB }).catch((x) => x);
+    expect(e).toBeInstanceOf(SessionBalanceError);
+    expect(e).toMatchObject({ reason: "no-fee-cell" });
+    expect(p.sent).toHaveLength(0);
+  });
+
+  it("the same payment goes through once the key cell can pay the fee, with only key-lock cells as key inputs", async () => {
+    const sec = await new ccc.ClientPublicTestnet().getKnownScript(ccc.KnownScript.Secp256k1Blake160);
+    const recipient = ccc.Script.from({ codeHash: sec.codeHash, hashType: sec.hashType, args: "0x" + "33".repeat(20) });
+    const p = await setup({ maxPerTx: 100n * CKB, sessionCells: [500n * CKB], keyCells: [100n * CKB], recipient });
+    await expect(spendInSession(p.session, p.client, d, p.binding, { to: p.recipient!, amount: 70n * CKB })).resolves.toMatch(/^0x/);
+    const locks = await Promise.all(p.sent[0].inputs.map(async (i) => (await p.client.getCell(i.previousOutput))!.cellOutput.lock));
+    expect(locks.every((l) => l.eq(p.lock) || l.eq(p.keyLock))).toBe(true);
   });
 });
 
