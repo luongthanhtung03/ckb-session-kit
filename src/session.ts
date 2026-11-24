@@ -112,21 +112,47 @@ export function isActive(session: Session, now: Date = new Date()): boolean {
   return now.getTime() < session.policy.expiresAt.getTime();
 }
 
-export type ScopeCheck = { ok: true } | { ok: false; reason: string };
+/**
+ * Why a request is outside the session's scope (`ScopeError.reason`,
+ * `ScopeCheck.code`), to tell refusals apart without matching the message:
+ * - `session-expired`: past `expiresAt`.
+ * - `amount-not-positive`: the amount (or token units) is zero or negative.
+ * - `over-max-per-tx`: over `maxPerTx` (or the token's), counting what the
+ *   session pays for a new cell or, in `fundInSession`, the whole outflow.
+ * - `recipient-not-in-scope`: `to` is not the session's recipient.
+ * - `no-token`: a token payment from a session that holds no token.
+ * - `top-up-not-anyone-can-pay`: `topUp` to an address that is not anyone-can-pay.
+ * - `request-shape`: a request with both `amount` and `token`, or neither.
+ */
+export type ScopeReason =
+  | "session-expired"
+  | "amount-not-positive"
+  | "over-max-per-tx"
+  | "recipient-not-in-scope"
+  | "no-token"
+  | "top-up-not-anyone-can-pay"
+  | "request-shape";
+
+/** `reason` is the message; `code` says which rule refused (added 24 Nov). */
+export type ScopeCheck = { ok: true } | { ok: false; reason: string; code: ScopeReason };
 
 export function checkRequest(
   session: Session,
   request: { to: string; amount: bigint },
   now: Date = new Date(),
 ): ScopeCheck {
-  if (!isActive(session, now)) return { ok: false, reason: "session expired" };
+  if (!isActive(session, now)) return { ok: false, reason: "session expired", code: "session-expired" };
   const { scope } = session.policy;
-  if (request.amount <= 0n) return { ok: false, reason: "amount must be positive" };
+  if (request.amount <= 0n) return { ok: false, reason: "amount must be positive", code: "amount-not-positive" };
   if (request.amount > scope.maxPerTx) {
-    return { ok: false, reason: `amount exceeds maxPerTx (${ccc.fixedPointToString(scope.maxPerTx)} CKB)` };
+    return {
+      ok: false,
+      reason: `amount exceeds maxPerTx (${ccc.fixedPointToString(scope.maxPerTx)} CKB)`,
+      code: "over-max-per-tx",
+    };
   }
   if (scope.recipients && !scope.recipients.includes(request.to)) {
-    return { ok: false, reason: "recipient not in scope" };
+    return { ok: false, reason: "recipient not in scope", code: "recipient-not-in-scope" };
   }
   return { ok: true };
 }

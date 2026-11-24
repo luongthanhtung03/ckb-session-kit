@@ -55,6 +55,7 @@ describe("checkRequest", () => {
     expect(checkRequest(big, { to: "ckt1x", amount: 150_00000000n }, now)).toEqual({
       ok: false,
       reason: "amount exceeds maxPerTx (100 CKB)",
+      code: "over-max-per-tx",
     });
   });
 

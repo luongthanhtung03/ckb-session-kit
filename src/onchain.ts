@@ -1077,28 +1077,28 @@ async function spendOnce(
   // The types allow one or the other; plain JS could pass both, and the shannons
   // would then leave the session for the key cell (review, 24 Nov).
   if ((request.amount === undefined) === (request.token === undefined)) {
-    throw new ScopeError("a payment has either amount (shannons) or token (units), not both or neither");
+    throw new ScopeError("a payment has either amount (shannons) or token (units), not both or neither", "request-shape");
   }
   const tokenType = binding.token && ccc.Script.from(binding.token.type);
   const tokenOut = request.token ?? 0n;
   if (request.token !== undefined) {
-    if (!binding.token || !tokenType) throw new ScopeError("this session holds no token");
-    if (!isActive(session, now)) throw new ScopeError("session expired");
-    if (tokenOut <= 0n) throw new ScopeError("token amount must be positive");
+    if (!binding.token || !tokenType) throw new ScopeError("this session holds no token", "no-token");
+    if (!isActive(session, now)) throw new ScopeError("session expired", "session-expired");
+    if (tokenOut <= 0n) throw new ScopeError("token amount must be positive", "amount-not-positive");
     if (tokenOut > binding.token.maxPerTx) {
-      throw new ScopeError(`token amount exceeds the session's token maxPerTx (${binding.token.maxPerTx})`);
+      throw new ScopeError(`token amount exceeds the session's token maxPerTx (${binding.token.maxPerTx})`, "over-max-per-tx");
     }
     const { recipients } = session.policy.scope;
-    if (recipients && !recipients.includes(request.to)) throw new ScopeError("recipient not in scope");
+    if (recipients && !recipients.includes(request.to)) throw new ScopeError("recipient not in scope", "recipient-not-in-scope");
   } else {
     const check = checkRequest(session, { to: request.to, amount: request.amount }, now);
-    if (!check.ok) throw new ScopeError(check.reason);
+    if (!check.ok) throw new ScopeError(check.reason, check.code);
   }
 
   const state = await findSessionCells(session, client, deployment, binding);
   const { script: toLock } = await ccc.Address.fromString(request.to, client);
   if (binding.recipientLockHash && toLock.hash() !== binding.recipientLockHash) {
-    throw new ScopeError("recipient not in scope");
+    throw new ScopeError("recipient not in scope", "recipient-not-in-scope");
   }
   if (!state.keyCells.length) throw new SessionBalanceError("no key cell left to pay fees", "no-fee-cell");
 
@@ -1109,7 +1109,7 @@ async function spendOnce(
   // The payment: output 0, plus the recipient's cell when topping up.
   let ckbOut: bigint;
   if (request.topUp) {
-    if (!(await isAnyoneCanPay(toLock, client))) throw new ScopeError("top-up needs an anyone-can-pay recipient");
+    if (!(await isAnyoneCanPay(toLock, client))) throw new ScopeError("top-up needs an anyone-can-pay recipient", "top-up-not-anyone-can-pay");
     // Payers at once compete for a cell: a confirmed one no pool transaction spends,
     // at random among the recipient's (pickPayoutCell).
     ckbOut = request.token !== undefined ? 0n : request.amount;
@@ -1123,6 +1123,7 @@ async function spendOnce(
     if (ckbOut > session.policy.scope.maxPerTx) {
       throw new ScopeError(
         `a new token cell needs ${ccc.fixedPointToString(ckbOut)} CKB, over maxPerTx; pay with topUp instead`,
+        "over-max-per-tx",
       );
     }
   } else {
@@ -1276,7 +1277,7 @@ export async function fundInSession(
   opts: FundOptions = {},
 ): Promise<FundedTransaction> {
   const now = opts.now ?? new Date();
-  if (!isActive(session, now)) throw new ScopeError("session expired");
+  if (!isActive(session, now)) throw new ScopeError("session expired", "session-expired");
   if (binding.recipientLockHash) {
     throw new SessionPolicyError(
       "an app transaction with typed outputs to other locks needs a session without a recipient: " +
@@ -1326,6 +1327,7 @@ export async function fundInSession(
     throw new ScopeError(
       `the transaction needs ${ccc.fixedPointToString(need)} CKB from the session, over maxPerTx ` +
         `(${ccc.fixedPointToString(maxPerTx)} CKB)`,
+      "over-max-per-tx",
     );
   }
 
@@ -1386,7 +1388,10 @@ export async function fundInSession(
   // The lock's own rules on the result (1: outflow; 3 and 5: one plain change cell).
   const outflow = taken.reduce((s, c) => s + c.cellOutput.capacity, 0n) - change;
   if (outflow > maxPerTx) {
-    throw new ScopeError(`outflow ${ccc.fixedPointToString(outflow)} CKB exceeds maxPerTx (${ccc.fixedPointToString(maxPerTx)} CKB)`);
+    throw new ScopeError(
+      `outflow ${ccc.fixedPointToString(outflow)} CKB exceeds maxPerTx (${ccc.fixedPointToString(maxPerTx)} CKB)`,
+      "over-max-per-tx",
+    );
   }
   const changeCells = tx.outputs.filter((o) => o.lock.eq(state.lock));
   if (changeCells.length > 1 || changeCells.some((o) => o.type)) {

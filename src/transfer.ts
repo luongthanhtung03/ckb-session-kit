@@ -1,10 +1,13 @@
 import { ccc } from "@ckb-ccc/core";
-import { checkRequest, type Session } from "./session.js";
+import { checkRequest, type ScopeReason, type Session } from "./session.js";
 
+/** A request outside the session's scope. `reason` says which rule (`ScopeReason`); the message may change. */
 export class ScopeError extends Error {
-  constructor(reason: string) {
-    super(`refused by session scope: ${reason}`);
+  readonly reason?: ScopeReason;
+  constructor(message: string, reason?: ScopeReason) {
+    super(`refused by session scope: ${message}`);
     this.name = "ScopeError";
+    if (reason) this.reason = reason;
   }
 }
 
@@ -31,7 +34,7 @@ export async function sendInScope(
   now: Date = new Date(),
 ): Promise<ccc.Hex> {
   const check = checkRequest(session, request, now);
-  if (!check.ok) throw new ScopeError(check.reason);
+  if (!check.ok) throw new ScopeError(check.reason, check.code);
 
   const signer = sessionSigner(session, client);
   const { script: lock } = await ccc.Address.fromString(request.to, client);

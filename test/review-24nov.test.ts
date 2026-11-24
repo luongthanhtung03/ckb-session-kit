@@ -22,7 +22,7 @@ import {
   spendInSession,
   type OnChainBinding,
 } from "../src/onchain.js";
-import { createSession, SessionPolicyError } from "../src/session.js";
+import { checkRequest, createSession, SessionPolicyError } from "../src/session.js";
 import { ScopeError } from "../src/transfer.js";
 import { indexedDbStore, memoryStore, SessionStoreConflict } from "../src/store.js";
 
@@ -288,6 +288,7 @@ describe("review 24 Nov, 5: a payment is amount or token, never both", () => {
     ]) {
       const e = await spendInSession(p.session, p.client, d, p.binding, request as never).catch((x) => x);
       expect(e).toBeInstanceOf(ScopeError);
+      expect(e).toMatchObject({ reason: "request-shape" });
       expect(String(e)).toMatch(/either amount .* or token/);
     }
     expect(p.sent).toHaveLength(0);
@@ -337,6 +338,28 @@ describe("review 24 Nov, 7: hardening", () => {
     expect(sessionInputs[0].eq(ccc.OutPoint.from({ txHash: h("a1"), index: 1 }))).toBe(true);
     expect(sessionInputs).toHaveLength(2); // the 200 CKB cell and the key cell
     expect(tx.outputs.filter((o) => o.lock.eq(p.lock))).toHaveLength(0); // no change cell
+  });
+});
+
+describe("review 24 Nov, 7: ScopeError carries a reason code", () => {
+  it("one code per rule, from checkRequest and from each spend path", async () => {
+    const p = await setup({ maxPerTx: 100n * CKB, sessionCells: [500n * CKB] });
+    const to = ccc.Address.fromScript(p.ownerLock, p.client).toString();
+    const reasonOf = (request: object, now?: Date) =>
+      spendInSession(p.session, p.client, d, p.binding, request as never, now).then(
+        () => "sent",
+        (e) => (e instanceof ScopeError ? e.reason : String(e)),
+      );
+    expect(await reasonOf({ to, amount: 70n * CKB }, new Date(Date.now() + 7_200_000))).toBe("session-expired");
+    expect(await reasonOf({ to, amount: 0n })).toBe("amount-not-positive");
+    expect(await reasonOf({ to, amount: 101n * CKB })).toBe("over-max-per-tx");
+    expect(await reasonOf({ to, token: 1n })).toBe("no-token");
+    expect(await reasonOf({ to, amount: 70n * CKB, topUp: true })).toBe("top-up-not-anyone-can-pay");
+    const scoped = { ...p.session, policy: { ...p.session.policy, scope: { maxPerTx: 100n * CKB, recipients: ["ckt1other"] } } };
+    expect(checkRequest(scoped, { to, amount: 1n * CKB })).toMatchObject({ ok: false, code: "recipient-not-in-scope" });
+    const app = ccc.Transaction.from({ outputs: [{ lock: p.ownerLock, capacity: 150n * CKB }], outputsData: ["0x"] });
+    await expect(fundInSession(p.session, p.client, d, p.binding, app)).rejects.toMatchObject({ reason: "over-max-per-tx" });
+    expect(p.sent).toHaveLength(0);
   });
 });
 

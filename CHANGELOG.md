@@ -8,6 +8,16 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 Library only: the session lock is unchanged (same code hash, no redeployment).
 From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
 
+### Added
+- `ScopeError.reason` (type `ScopeReason`), as on `SessionPolicyError` and
+  `SessionBalanceError`: `"session-expired"`, `"amount-not-positive"`,
+  `"over-max-per-tx"`, `"recipient-not-in-scope"`, `"no-token"`,
+  `"top-up-not-anyone-can-pay"`, `"request-shape"`. Apps no longer have to
+  match the message to tell an expired session from an amount over `maxPerTx`.
+  `checkRequest`'s refusal carries the same value as `code` (its `reason`
+  stays the message). `new ScopeError(message, reason?)`: the second argument
+  is optional, so existing calls are unchanged.
+
 ### Fixed
 - `spendInSession` takes one more session cell rather than leave change below
   a session cell's size, as `fundInSession` already did: two 200 CKB cells now

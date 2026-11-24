@@ -19,7 +19,8 @@ script can prove time has passed, never that it has not.
 
 ### `checkRequest(session, { to, amount }, now?) → ScopeCheck`
 The browser-side scope check: active, `amount` positive and at most `maxPerTx`,
-`to` in `recipients` if set. `{ ok: true }` or `{ ok: false, reason }`. Runs
+`to` in `recipients` if set. `{ ok: true }` or `{ ok: false, reason, code }`
+(`reason` the message, `code` a `ScopeReason`). Runs
 before any network call; the session lock checks again on-chain.
 
 ### Types: `Session`, `SessionPolicy`, `SessionScope`, `CreateOptions`, `ScopeCheck`
@@ -768,4 +769,10 @@ The session key as a plain secp256k1 key, with the scope checked only in the
 browser. Kept for the v0.1 flow; on-chain sessions use `spendInSession`.
 
 ### `ScopeError`
-A request outside the session's scope.
+A request outside the session's scope. `reason` (type `ScopeReason`) says which
+rule refused it, as on the other error types: `"session-expired"`,
+`"amount-not-positive"`, `"over-max-per-tx"` (also a new token cell or a
+`fundInSession` outflow over it), `"recipient-not-in-scope"`, `"no-token"` (a
+token payment from a session without one), `"top-up-not-anyone-can-pay"`, or
+`"request-shape"` (`amount` and `token` together, or neither). Match on
+`reason`, not the message. `new ScopeError(message, reason?)`.
