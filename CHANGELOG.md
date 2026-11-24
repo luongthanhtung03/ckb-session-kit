@@ -3,10 +3,22 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
-## Unreleased
+## 2.3.0 (2026-11-24)
 
 Library only: the session lock is unchanged (same code hash, no redeployment).
 From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
+
+### Upgrading from 2.2.0
+Every 2.2.0 export keeps its signature. Some calls that 2.2.0 accepted are now
+refused, on purpose (details under Changed and Fixed):
+- `openSession` on a session that is already open (`session.onchain` set, or a
+  live cell under its key) throws `SessionPolicyError` with reason
+  `"session-already-open"`. Call `createSession` for each opening.
+- `openSession` on an expired session throws `SessionPolicyError`.
+- A session store refuses to replace a stored on-chain binding with a
+  different one (`SessionStoreConflict`).
+- `spendInSession` with both `amount` and `token`, or neither, throws
+  `ScopeError`.
 
 ### Added
 - `ScopeError.reason` (type `ScopeReason`), as on `SessionPolicyError` and
