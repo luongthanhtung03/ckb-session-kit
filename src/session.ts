@@ -51,7 +51,13 @@ export interface CreateOptions {
  * mode; "app-tx-shape", the app transaction already holds cells only the kit
  * may add (session or key cells), or its inputs exceed its outputs. From
  * `openSession`: "session-already-open", the session was opened before (its
- * `onchain` is set, or its key holds a cell); create a new one.
+ * `onchain` is set, or its key holds a cell); create a new one;
+ * "session-expired", the session is past `expiresAt` (create a new one).
+ * "wrong-signer": the connected wallet is not the one the action needs
+ * (`closeSession`: the session's owner; `chargeSubscription`: the charger;
+ * `cancelSubscription`, `clearPlantedCells`: the subscriber), refused before it
+ * is asked to sign; connect the right wallet. From `openSubscription`:
+ * "subscription-already-open", a subscription with exactly these terms is open.
  */
 export type SessionPolicyReason =
   | "payto-not-anyone-can-pay"
@@ -61,7 +67,10 @@ export type SessionPolicyReason =
   | "session-has-recipient"
   | "owner-lock-input"
   | "app-tx-shape"
-  | "session-already-open";
+  | "session-already-open"
+  | "session-expired"
+  | "wrong-signer"
+  | "subscription-already-open";
 
 export class SessionPolicyError extends Error {
   readonly reason?: SessionPolicyReason;

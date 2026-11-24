@@ -55,12 +55,15 @@ export interface SessionCells {
  * - `payout-busy`: every payout cell checked is being spent by a transaction in
  *   the node's pool (other payers at the same moment). Nothing was sent; try
  *   again after a block, or give the recipient more cells (`createPayoutCells`).
+ * - `no-owner-cell`: an owner sweep (`closeSession`, `recoverSessions`,
+ *   `ownerSweep`) needs one plain cell (no type, no data) under the owner's lock
+ *   itself to prove ownership, and the owner holds none; send some CKB to it.
  *
- * Neither is about the session's or the subscription's own balance or timing: the
+ * None is about the session's or the subscription's own balance or timing: the
  * missing cells belong to the key's holder or the recipient (in a subscription,
  * both are the creator's). Other balance errors have no `reason`.
  */
-export type SessionBalanceReason = "no-fee-cell" | "no-payout-cell" | "payout-busy";
+export type SessionBalanceReason = "no-fee-cell" | "no-payout-cell" | "payout-busy" | "no-owner-cell";
 
 export class SessionBalanceError extends Error {
   readonly reason?: SessionBalanceReason;
@@ -913,7 +916,7 @@ export async function openSession(
     );
   }
   // Every spend would refuse it; only closeSession would get the funds back (review, 24 Nov).
-  if (!isActive(session)) throw new SessionPolicyError("this session has expired: create a new one to open");
+  if (!isActive(session)) throw new SessionPolicyError("this session has expired: create a new one to open", "session-expired");
   const token = opts.token && ccc.Script.from(opts.token.type);
   if (token && opts.token) {
     await assertPlainXudt(token, client);
@@ -1568,7 +1571,7 @@ export async function closeSession(
   // be shown a sweep of someone else's session to itself (audit, 31 Oct).
   const signerLock = (await owner.getRecommendedAddressObj()).script;
   if (signerLock.hash() !== ownerLock.hash()) {
-    throw new SessionPolicyError("this signer is not the session's owner: connect the wallet that opened it");
+    throw new SessionPolicyError("this signer is not the session's owner: connect the wallet that opened it", "wrong-signer");
   }
   // Built on a cell another tab spent since: rebuilt once from live cells.
   return rebuildOnDeadInputs(client, () => closeOnce(owner, session, deployment, binding));
@@ -1815,7 +1818,7 @@ export async function ownerSweep(
     // A sweep the node took but whose reply was lost is still the sweep (review, 28 Oct).
     return signAndSend(owner, tx);
   }
-  throw new SessionBalanceError("the owner needs one plain cell to prove ownership");
+  throw new SessionBalanceError("the owner needs one plain cell to prove ownership", "no-owner-cell");
 }
 
 /**

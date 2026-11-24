@@ -2,7 +2,7 @@ import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TESTNET_DEPLOYMENT as d } from "../src/lock.js";
 import { closeSession, sessionLockOf } from "../src/onchain.js";
-import { createSession } from "../src/session.js";
+import { createSession, SessionPolicyError } from "../src/session.js";
 
 /**
  * Round 2 of the 30 Oct audit (browser side). These tests describe the wanted
@@ -56,14 +56,18 @@ describe("R2-1: closeSession with a wallet that is not the session's owner", () 
     } as unknown as ccc.Signer;
     vi.spyOn(client, "sendTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx).hash());
 
+    let error: unknown;
     const outcome = await closeSession(walletB, session, d, binding).then(
       () => "asked wallet B to sign",
-      (e: Error) => e.message,
+      (e: Error) => ((error = e), e.message),
     );
     // Before the fix: wallet B was handed a sweep that spends A's 200 CKB session cell
     // (its change, filled in by completeFeeBy, goes to B's lock).
     const spent = signed.flatMap((t) => t.inputs.map((i) => i.previousOutput.txHash));
     expect(spent, "session cells wallet B was asked to sweep").not.toContain(h("01"));
     expect(outcome).toMatch(/not the (session'?s )?owner/i);
+    // A machine-readable reason, so a UI need not match the message.
+    expect(error).toBeInstanceOf(SessionPolicyError);
+    expect(error).toMatchObject({ reason: "wrong-signer" });
   });
 });

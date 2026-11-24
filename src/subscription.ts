@@ -453,7 +453,7 @@ export async function openSubscription(
   // Two live cells under the same lock are one group with two rate-limited cells:
   // two charges per period (review M1).
   if ((await subscriptionCells(client, lock, token)).length) {
-    throw new SessionPolicyError("a subscription with exactly these terms is already open: cancel it first");
+    throw new SessionPolicyError("a subscription with exactly these terms is already open: cancel it first", "subscription-already-open");
   }
 
   const tx = ccc.Transaction.from({
@@ -607,7 +607,7 @@ async function chargeOnce(
   assertTerms(sub);
   const token = tokenOf(sub);
   const chargerLock = (await charger.getRecommendedAddressObj()).script;
-  if (chargerLock.hash() !== sub.chargerLockHash) throw new SessionPolicyError("this signer is not the subscription's charger");
+  if (chargerLock.hash() !== sub.chargerLockHash) throw new SessionPolicyError("this signer is not the subscription's charger", "wrong-signer");
   const { script: payToLock } = await ccc.Address.fromString(opts.payTo, client);
   if (payToLock.hash() !== sub.payToLockHash) throw new SessionPolicyError("payTo is not the subscription's payout address");
 
@@ -711,7 +711,7 @@ export async function cancelSubscription(
   sub: Subscription,
 ): Promise<{ txHash?: ccc.Hex; refunded: bigint; refundedTokens?: bigint; nothingFound?: true }> {
   const lock = (await subscriber.getRecommendedAddressObj()).script;
-  if (lock.hash() !== sub.subscriberLockHash) throw new SessionPolicyError("this signer is not the subscriber");
+  if (lock.hash() !== sub.subscriberLockHash) throw new SessionPolicyError("this signer is not the subscriber", "wrong-signer");
   // Every cell, without MAX_SUBSCRIPTION_CELLS: cancelling is how a subscriber
   // clears cells planted under its lock, and the reads are its own.
   const subLock = subscriptionLock(deployment, sub);
@@ -777,7 +777,7 @@ export async function clearPlantedCells(
 ): Promise<{ txHash?: ccc.Hex; swept: number; refunded: bigint; refundedTokens?: bigint; more: boolean; nothingFound?: true }> {
   const client = subscriber.client;
   const lock = (await subscriber.getRecommendedAddressObj()).script;
-  if (lock.hash() !== sub.subscriberLockHash) throw new SessionPolicyError("this signer is not the subscriber");
+  if (lock.hash() !== sub.subscriberLockHash) throw new SessionPolicyError("this signer is not the subscriber", "wrong-signer");
   const subLock = subscriptionLock(deployment, sub);
   const token = tokenOf(sub);
   // At most CLEAR_SCAN cells of the kind, from at most twice as many listed (review W6 M1).

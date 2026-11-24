@@ -14,7 +14,8 @@ refused, on purpose (details under Changed and Fixed):
 - `openSession` on a session that is already open (`session.onchain` set, or a
   live cell under its key) throws `SessionPolicyError` with reason
   `"session-already-open"`. Call `createSession` for each opening.
-- `openSession` on an expired session throws `SessionPolicyError`.
+- `openSession` on an expired session throws `SessionPolicyError` with reason
+  `"session-expired"`.
 - A session store refuses to replace a stored on-chain binding with a
   different one (`SessionStoreConflict`).
 - `spendInSession` with both `amount` and `token`, or neither, throws
@@ -29,6 +30,15 @@ refused, on purpose (details under Changed and Fixed):
   `checkRequest`'s refusal carries the same value as `code` (its `reason`
   stays the message). `new ScopeError(message, reason?)`: the second argument
   is optional, so existing calls are unchanged.
+- More `reason` codes where a UI branches on the refusal (messages unchanged):
+  `SessionPolicyReason` gains `"session-expired"` (`openSession` on an expired
+  session), `"wrong-signer"` (`closeSession` by a wallet that is not the
+  session's owner; `chargeSubscription` by one that is not the charger;
+  `cancelSubscription` and `clearPlantedCells` by one that is not the
+  subscriber) and `"subscription-already-open"` (`openSubscription` with the
+  terms of an open subscription). `SessionBalanceReason` gains
+  `"no-owner-cell"` (an owner sweep in `closeSession`, `recoverSessions` or
+  `ownerSweep` finds no plain cell under the owner's lock to prove ownership).
 
 ### Fixed
 - `spendInSession` takes one more session cell rather than leave change below

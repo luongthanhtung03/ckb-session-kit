@@ -42,7 +42,13 @@ session has an on-chain recipient (it cannot fund outputs to other locks);
 lock (the lock would switch to owner mode and need the wallet);
 `"app-tx-shape"` when the app's transaction already holds session or key cells,
 or its inputs exceed its outputs. From `openSession`: `"session-already-open"`
-when the session was opened before. Other policy errors leave it undefined.
+when the session was opened before; `"session-expired"` when it is past
+`expiresAt`. `"wrong-signer"` when the connected wallet is not the one the call
+needs (`closeSession`: the session's owner; `chargeSubscription`: the charger;
+`cancelSubscription`, `clearPlantedCells`: the subscriber), refused before
+anything is signed. From `openSubscription`: `"subscription-already-open"` when
+a subscription with exactly these terms is open. Other policy errors leave it
+undefined.
 
 ## On-chain sessions
 
@@ -395,7 +401,9 @@ CCC's "Insufficient CKB" when the cell holds its floor but not the fee) or
 `"no-payout-cell"` (the recipient or `payTo` has no cell to top up, or none of its
 token cells can take the payment without passing 2^128 - 1 units) or
 `"payout-busy"` (every payout cell is being spent by another payment in the
-node's pool: nothing was sent; try again after a block). Match on it,
+node's pool: nothing was sent; try again after a block) or `"no-owner-cell"` (an
+owner sweep, in `closeSession`, `recoverSessions` or `ownerSweep`, needs a plain
+cell under the owner's lock to prove ownership, and there is none). Match on it,
 not on the message, which may change. Other balance errors leave it undefined.
 
 ### `SendOutcomeUnknownError`

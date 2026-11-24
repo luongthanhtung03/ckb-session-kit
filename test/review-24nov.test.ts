@@ -249,6 +249,16 @@ describe("review 24 Nov, 3: a session opens once, and its stored binding is not 
     await expect(openSession(signer, s, TEST_DEPLOYMENT, { budget: 200n * CKB })).rejects.toThrow(/expired/);
     expect(sent).toHaveLength(0);
   });
+
+  it("openSession's expired refusal carries reason session-expired (message unchanged)", async () => {
+    const { signer, sent } = await opener();
+    const s = fresh();
+    s.policy.expiresAt = new Date(Date.now() - 1000);
+    const e = await openSession(signer, s, TEST_DEPLOYMENT, { budget: 200n * CKB }).catch((x) => x);
+    expect(e).toBeInstanceOf(SessionPolicyError);
+    expect(e).toMatchObject({ reason: "session-expired", message: "this session has expired: create a new one to open" });
+    expect(sent).toHaveLength(0);
+  });
 });
 
 describe("review 24 Nov, 4: the fee comes only from cells under the key's own lock", () => {

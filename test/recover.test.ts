@@ -1,7 +1,7 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionLockScript, TESTNET_DEPLOYMENT as d, TESTNET_LEGACY_DEPLOYMENTS } from "../src/lock.js";
-import { assertSigningLock, openSession, recoverSessions, SessionBalanceError } from "../src/onchain.js";
+import { assertSigningLock, openSession, ownerSweep, recoverSessions, SessionBalanceError } from "../src/onchain.js";
 import { sessionAddress } from "../src/transfer.js";
 import { createSession } from "../src/session.js";
 
@@ -106,6 +106,17 @@ describe("recoverSessions", () => {
     vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
     const { owner } = fakeOwner([cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)], () => true, { plain: false });
     await expect(recoverSessions(owner, d)).rejects.toThrow(/plain cell to prove ownership/);
+  });
+
+  it("the no-plain-cell refusal carries reason no-owner-cell, from recoverSessions and ownerSweep", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const cells = [cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)];
+    const { owner, sent } = fakeOwner(cells, () => true, { plain: false });
+    const e = await recoverSessions(owner, d).catch((x) => x);
+    expect(e).toBeInstanceOf(SessionBalanceError);
+    expect(e).toMatchObject({ reason: "no-owner-cell", message: "the owner needs one plain cell to prove ownership" });
+    await expect(ownerSweep(owner, d, cells)).rejects.toMatchObject({ reason: "no-owner-cell" });
+    expect(sent).toHaveLength(0);
   });
 });
 

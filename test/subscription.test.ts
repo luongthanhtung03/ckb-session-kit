@@ -185,6 +185,9 @@ describe("openSubscription refuses terms the lock would not enforce as meant", (
     await expect(
       openSubscription(subscriber, d, { charger, payTo: r.payTo, price: 10n * CKB, periodBlocks: PERIOD, budget: 500n * CKB }),
     ).rejects.toThrow(/already open/);
+    await expect(
+      openSubscription(subscriber, d, { charger, payTo: r.payTo, price: 10n * CKB, periodBlocks: PERIOD, budget: 500n * CKB }),
+    ).rejects.toMatchObject({ name: "SessionPolicyError", reason: "subscription-already-open" });
   });
 
   it("a price below the size of a new payout cell, when payTo is not anyone-can-pay", async () => {
@@ -257,6 +260,20 @@ describe("chargeSubscription", () => {
     const { client } = fakeClient([]);
     const r = await roles(client);
     await expect(chargeSubscription(r.subscriber, d, r.sub, { payTo: r.payTo })).rejects.toThrow(/not the subscription's charger/);
+    await expect(chargeSubscription(r.subscriber, d, r.sub, { payTo: r.payTo })).rejects.toMatchObject({
+      name: "SessionPolicyError",
+      reason: "wrong-signer",
+    });
+  });
+
+  it("cancelSubscription refuses a signer that is not the subscriber, with reason wrong-signer", async () => {
+    const { client, sent } = fakeClient([]);
+    const r = await roles(client);
+    const e = await cancelSubscription(r.charger, d, r.sub).catch((x) => x);
+    expect(e).toBeInstanceOf(SessionPolicyError);
+    expect(e).toMatchObject({ reason: "wrong-signer" });
+    expect(String(e)).toMatch(/this signer is not the subscriber/);
+    expect(sent).toHaveLength(0);
   });
 
   it("takes exactly the price with the period as since, tops up payTo, and the charger pays the fee", async () => {
@@ -1524,6 +1541,9 @@ describe("third-party cells over the cap, without cancelling", () => {
     await expect(clearPlantedCells(new ccc.SignerCkbPrivateKey(clean.client, keys.charger), d, clean.r.sub)).rejects.toThrow(
       /not the subscriber/,
     );
+    await expect(clearPlantedCells(new ccc.SignerCkbPrivateKey(clean.client, keys.charger), d, clean.r.sub)).rejects.toMatchObject({
+      reason: "wrong-signer",
+    });
     const { r, client, subscriber, opening } = await setup(2);
     const find = client.findCells.bind(client);
     client.findCells = (async function* (key: ccc.ClientIndexerSearchKeyLike, ...rest: unknown[]) {
