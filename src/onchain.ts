@@ -58,12 +58,18 @@ export interface SessionCells {
  * - `no-owner-cell`: an owner sweep (`closeSession`, `recoverSessions`,
  *   `ownerSweep`) needs one plain cell (no type, no data) under the owner's lock
  *   itself to prove ownership, and the owner holds none; send some CKB to it.
+ * - `not-indexed-yet`: `closeSession` found no cell under the session or the key,
+ *   but cannot yet tell that none is left: the funding transaction is still
+ *   pending or proposed, or committed with outputs the indexer has not listed, or
+ *   the indexer is behind the chain. Nothing was sent; the key must be kept.
+ *   Close again in a minute.
  *
  * None is about the session's or the subscription's own balance or timing: the
  * missing cells belong to the key's holder or the recipient (in a subscription,
- * both are the creator's). Other balance errors have no `reason`.
+ * both are the creator's), and `not-indexed-yet` is about the node's indexer.
+ * Other balance errors have no `reason`.
  */
-export type SessionBalanceReason = "no-fee-cell" | "no-payout-cell" | "payout-busy" | "no-owner-cell";
+export type SessionBalanceReason = "no-fee-cell" | "no-payout-cell" | "payout-busy" | "no-owner-cell" | "not-indexed-yet";
 
 export class SessionBalanceError extends Error {
   readonly reason?: SessionBalanceReason;
@@ -1623,16 +1629,16 @@ async function closeOnce(
         // Spent, but a later spend's new key cell may not be indexed yet: trust the
         // empty search only once the indexer has reached the tip, and search again.
         if ((await indexerCaughtUp(client)) === false) {
-          throw new SessionBalanceError("the indexer is behind the chain; close again in a minute");
+          throw new SessionBalanceError("the indexer is behind the chain; close again in a minute", "not-indexed-yet");
         }
         const again = await findSessionCells(session, client, deployment, binding);
         if (!again.sessionCells.length && !again.keyCells.length) return { nothingFound: true };
-        throw new SessionBalanceError("the session's cells were not indexed yet; close again");
+        throw new SessionBalanceError("the session's cells were not indexed yet; close again", "not-indexed-yet");
       }
-      throw new SessionBalanceError("the session's funding transaction is not indexed yet; close again in a minute");
+      throw new SessionBalanceError("the session's funding transaction is not indexed yet; close again in a minute", "not-indexed-yet");
     }
     if (open && (open.status === "pending" || open.status === "proposed")) {
-      throw new SessionBalanceError(`the session's funding transaction is ${open.status}; close again in a minute`);
+      throw new SessionBalanceError(`the session's funding transaction is ${open.status}; close again in a minute`, "not-indexed-yet");
     }
     return { nothingFound: true };
   }

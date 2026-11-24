@@ -7,7 +7,7 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TESTNET_DEPLOYMENT as d } from "../src/lock.js";
-import { closeSession, keyLockOf, sessionLockOf, spendInSession, type OnChainBinding } from "../src/onchain.js";
+import { closeSession, keyLockOf, SessionBalanceError, sessionLockOf, spendInSession, type OnChainBinding } from "../src/onchain.js";
 import { paymentMemo, signAccess, verifyAccess } from "../src/paywall.js";
 import { createSession } from "../src/session.js";
 
@@ -94,6 +94,11 @@ describe("closeSession after the session is already empty on-chain", () => {
     // from the search: the key is kept.
     chain.indexerTip = chain.tip - 3n;
     await expect(closeSession(owner, session, d, binding)).rejects.toThrow(/indexer is behind/);
+    await expect(closeSession(owner, session, d, binding)).rejects.toMatchObject({
+      name: "SessionBalanceError",
+      reason: "not-indexed-yet",
+      message: "the indexer is behind the chain; close again in a minute",
+    });
 
     // Everything has committed and the indexer is at the tip. Closing again must be able to finish.
     chain.indexerTip = chain.tip;
@@ -121,6 +126,77 @@ describe("closeSession after the session is already empty on-chain", () => {
     (client as unknown as Record<string, unknown>).getCellLiveNoCache = async (op: ccc.OutPointLike) =>
       sessionCell.outPoint.eq(ccc.OutPoint.from(op)) ? sessionCell : undefined;
     await expect(closeSession(owner, session, d, binding)).rejects.toThrow(/not indexed yet/);
+    await expect(closeSession(owner, session, d, binding)).rejects.toMatchObject({
+      name: "SessionBalanceError",
+      reason: "not-indexed-yet",
+      message: "the session's funding transaction is not indexed yet; close again in a minute",
+    });
+  });
+});
+
+describe("closeSession's try-again-in-a-minute refusals carry reason not-indexed-yet", () => {
+  async function emptySession() {
+    const client = new ccc.ClientPublicTestnet();
+    const chain = fakeChain(client);
+    const ownerLock = await secpLock(client, "11");
+    const owner = new ccc.SignerCkbPrivateKey(client, "0x" + "42".repeat(32));
+    vi.spyOn(owner, "getRecommendedAddressObj").mockResolvedValue({ script: ownerLock } as never);
+    const session = createSession({ expiresAt: new Date(Date.now() + 3_600_000), scope: { maxPerTx: 5n * CKB } });
+    const binding: OnChainBinding = {
+      ownerLock: { codeHash: ownerLock.codeHash, hashType: ownerLock.hashType, args: ownerLock.args },
+      minInterval: 0n,
+      openTx: h("0f"),
+    };
+    const lock = await sessionLockOf(session, client, d, binding);
+    const keyLock = await keyLockOf(session, client);
+    const opening = ccc.Transaction.from({ outputs: [{ lock, capacity: 300n * CKB }, { lock: keyLock, capacity: 62n * CKB }], outputsData: ["0x", "0x"] });
+    // Nothing may be sent: a send is recorded and refused, never reaches a node.
+    (client as unknown as Record<string, unknown>).sendTransactionNoCache = async (tx: ccc.TransactionLike) => {
+      chain.sent.push(ccc.Transaction.from(tx));
+      throw new Error("no send expected");
+    };
+    return { client, chain, owner, session, binding, keyLock, opening };
+  }
+
+  for (const status of ["pending", "proposed"] as const) {
+    it(`while the funding transaction is ${status} (message unchanged)`, async () => {
+      const { chain, owner, session, binding, opening } = await emptySession();
+      chain.txs.set(h("0f"), { transaction: opening, status });
+      const e = await closeSession(owner, session, d, binding).catch((x) => x);
+      expect(e).toBeInstanceOf(SessionBalanceError);
+      expect(e).toMatchObject({
+        reason: "not-indexed-yet",
+        message: `the session's funding transaction is ${status}; close again in a minute`,
+      });
+      expect(chain.sent).toHaveLength(0);
+    });
+  }
+
+  it("when the indexer reaches the tip only between two searches and the second finds cells", async () => {
+    const { client, chain, owner, session, binding, keyLock, opening } = await emptySession();
+    chain.txs.set(h("0f"), { transaction: opening, status: "committed", blockNumber: 100n });
+    // The funding's outputs are spent; a later spend's key cell exists, but the
+    // indexer lists it only once it has caught up (after get_indexer_tip is asked).
+    chain.live = [ccc.Cell.from({ outPoint: { txHash: h("b2"), index: 1 }, cellOutput: { lock: keyLock, capacity: 62n * CKB }, outputData: "0x" })];
+    let caughtUp = false;
+    const c = client as unknown as Record<string, unknown>;
+    c.getCellLiveNoCache = async () => undefined;
+    c.findCellsPagedNoCache = async (key: ccc.ClientIndexerSearchKeyLike) => {
+      const script = ccc.Script.from(key.script);
+      return { cells: caughtUp ? chain.live.filter((x) => x.cellOutput.lock.eq(script)) : [], lastCursor: "0x" };
+    };
+    c.requestor = {
+      request: async (method: string) => {
+        if (method !== "get_indexer_tip") throw new Error(`unexpected RPC ${method}`);
+        caughtUp = true;
+        return { block_number: "0x" + chain.tip.toString(16) };
+      },
+    };
+    const e = await closeSession(owner, session, d, binding).catch((x) => x);
+    expect(caughtUp).toBe(true);
+    expect(e).toBeInstanceOf(SessionBalanceError);
+    expect(e).toMatchObject({ reason: "not-indexed-yet", message: "the session's cells were not indexed yet; close again" });
+    expect(chain.sent).toHaveLength(0);
   });
 });
 

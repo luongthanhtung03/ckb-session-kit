@@ -214,8 +214,9 @@ why and the key should be kept for a retry. `nothingFound` means no cell is
 left under the session or the key, and the key can be forgotten. While the
 funding transaction (`binding.openTx`) is still pending, or committed with an
 output under the session or the key that the node still holds live (not indexed
-yet), it throws `SessionBalanceError` instead: forget a key only after `keyTx`
-or `nothingFound`. Once the funding is committed and every one of those outputs
+yet), or while the indexer is behind the chain, it throws `SessionBalanceError`
+with reason `"not-indexed-yet"` instead (close again in a minute): forget a key
+only after `keyTx` or `nothingFound`. Once the funding is committed and every one of those outputs
 is spent (a close whose reply was lost, or a close from another tab), it reports
 `nothingFound`. A key return the node took but whose reply was lost counts as
 `keyTx`. `owner` must be the wallet whose lock is `binding.ownerLock`: any other
@@ -403,7 +404,11 @@ token cells can take the payment without passing 2^128 - 1 units) or
 `"payout-busy"` (every payout cell is being spent by another payment in the
 node's pool: nothing was sent; try again after a block) or `"no-owner-cell"` (an
 owner sweep, in `closeSession`, `recoverSessions` or `ownerSweep`, needs a plain
-cell under the owner's lock to prove ownership, and there is none). Match on it,
+cell under the owner's lock to prove ownership, and there is none) or
+`"not-indexed-yet"` (`closeSession` found no cell under the session or the key
+but cannot yet tell that none is left: the funding transaction is pending or
+proposed, or committed with outputs not indexed yet, or the indexer is behind
+the chain; nothing was sent, keep the key and close again in a minute). Match on it,
 not on the message, which may change. Other balance errors leave it undefined.
 
 ### `SendOutcomeUnknownError`

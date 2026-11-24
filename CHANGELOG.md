@@ -38,7 +38,11 @@ refused, on purpose (details under Changed and Fixed):
   subscriber) and `"subscription-already-open"` (`openSubscription` with the
   terms of an open subscription). `SessionBalanceReason` gains
   `"no-owner-cell"` (an owner sweep in `closeSession`, `recoverSessions` or
-  `ownerSweep` finds no plain cell under the owner's lock to prove ownership).
+  `ownerSweep` finds no plain cell under the owner's lock to prove ownership)
+  and `"not-indexed-yet"` (`closeSession`'s "close again in a minute"
+  refusals: the funding transaction is pending or proposed, or committed but
+  not indexed yet, the session's cells are not indexed yet, or the indexer is
+  behind the chain).
 
 ### Fixed
 - `spendInSession` takes one more session cell rather than leave change below
