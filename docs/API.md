@@ -160,7 +160,9 @@ before anything is signed:
 5. `outflow` (session inputs less change, what the lock holds to `maxPerTx`) is
    checked again, then the change rules (one plain cell), then `check(tx)`:
    the app's own policy on the finished transaction. Throw there to refuse it.
-   It guards against app bugs; a leaked key is bounded only by the lock.
+   It guards against app bugs; a leaked key is bounded only by the lock. It is
+   given a copy: a change it makes is not in the returned (or signed)
+   transaction.
 
 `avoid` lists out points (`ccc.hexFrom(outPoint.toBytes())`) of session or key
 cells not to take. Returns `{ tx, outflow, sessionInputs }`, `sessionInputs`

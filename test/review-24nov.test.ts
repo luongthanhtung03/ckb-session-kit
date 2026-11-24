@@ -17,6 +17,7 @@ import {
   openSession,
   recoverSessions,
   SessionBalanceError,
+  sendWithSession,
   sessionLockOf,
   spendInSession,
   type OnChainBinding,
@@ -300,6 +301,24 @@ describe("review 24 Nov, 6: recovery leaves out token-session args under a legac
     expect(ids).toContain(h("a1")); // the owner's own session
     expect(ids).toContain(h("f9")); // a token-session cell the current lock can sweep
     for (const c of planted) expect(ids).not.toContain(c.outPoint.txHash);
+  });
+});
+
+describe("review 24 Nov, 7: hardening", () => {
+  it("the check hook gets a copy: what it changes is neither returned nor signed", async () => {
+    const p = await setup({ maxPerTx: 200n * CKB, sessionCells: [500n * CKB] });
+    const app = () => ccc.Transaction.from({ outputs: [{ lock: p.ownerLock, capacity: 150n * CKB }], outputsData: ["0x"] });
+    const meddle = (tx: ccc.Transaction) => {
+      tx.outputs[0].capacity += 40n * CKB; // after the kit's outflow checks
+      tx.addOutput({ lock: p.ownerLock, capacity: 100n * CKB }, "0x");
+    };
+    const { tx, outflow } = await fundInSession(p.session, p.client, d, p.binding, app(), { check: meddle });
+    expect(outflow).toBe(150n * CKB);
+    expect(tx.outputs[0].capacity).toBe(150n * CKB);
+    expect(tx.outputs).toHaveLength(3); // payment, change, key cell
+    await sendWithSession(p.session, p.client, d, p.binding, async () => app(), { check: meddle });
+    expect(p.sent[0].outputs.map((o) => o.capacity).slice(0, 2)).toEqual([150n * CKB, 350n * CKB]);
+    expect(p.sent[0].outputs).toHaveLength(3);
   });
 });
 

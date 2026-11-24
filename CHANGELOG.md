@@ -42,6 +42,10 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
   A stranger could plant one (about 169 CKB, locked for good) to make every
   recovery that includes the legacy deployments fall back to one signature per
   session and report `failed >= 1`.
+- `fundInSession`'s `check` hook (and so `sendWithSession`'s) gets a copy of
+  the finished transaction. A `check` that changed it did so after the kit's
+  outflow, change and key-cell checks, and `sendWithSession` signed the changed
+  transaction; now the returned and signed transaction is the one checked.
 
 ### Changed
 - `openSession` refuses a session that is already open: `session.onchain` is

@@ -1216,7 +1216,9 @@ export interface FundOptions {
   /**
    * The app's own policy on the finished transaction (which outputs it may hold),
    * run last, before anything is signed: throw to refuse it. It guards against
-   * app bugs; a leaked key is bounded by the lock, not by this.
+   * app bugs; a leaked key is bounded by the lock, not by this. It gets a copy:
+   * a change it makes is not in the returned (or signed) transaction, which is
+   * the one the kit checked.
    */
   check?: (tx: ccc.Transaction) => void | Promise<void>;
   now?: Date;
@@ -1385,7 +1387,9 @@ export async function fundInSession(
   if (changeCells.length > 1 || changeCells.some((o) => o.type)) {
     throw new SessionPolicyError("the session lock allows one plain change cell", "app-tx-shape");
   }
-  await opts.check?.(tx);
+  // A copy: a check that changed the transaction would do so after the kit's own
+  // checks, and `sendWithSession` would sign that (review, 24 Nov).
+  await opts.check?.(tx.clone());
   return { tx, outflow, sessionInputs: tx.inputs.slice(appInputs).map((i) => i.previousOutput) };
 }
 
