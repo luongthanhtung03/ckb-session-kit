@@ -49,7 +49,9 @@ export interface CreateOptions {
  * fund outputs to other locks; "owner-lock-input", the app transaction spends a
  * cell under the owner's lock, which would switch the session lock to owner
  * mode; "app-tx-shape", the app transaction already holds cells only the kit
- * may add (session or key cells), or its inputs exceed its outputs.
+ * may add (session or key cells), or its inputs exceed its outputs. From
+ * `openSession`: "session-already-open", the session was opened before (its
+ * `onchain` is set, or its key holds a cell); create a new one.
  */
 export type SessionPolicyReason =
   | "payto-not-anyone-can-pay"
@@ -58,7 +60,8 @@ export type SessionPolicyReason =
   | "owner-lock-unreviewed"
   | "session-has-recipient"
   | "owner-lock-input"
-  | "app-tx-shape";
+  | "app-tx-shape"
+  | "session-already-open";
 
 export class SessionPolicyError extends Error {
   readonly reason?: SessionPolicyReason;

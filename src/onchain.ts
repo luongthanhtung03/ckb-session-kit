@@ -878,6 +878,12 @@ export async function warnOwnerLockBuild(
  *
  * The key cell (`feeBudget`) must be able to return to the owner at the end: by
  * default it is the size of a cell under the owner's lock plus 1 CKB for fees.
+ *
+ * A session opens once: one already open (`session.onchain` set, or a live cell
+ * under its key) is refused with `SessionPolicyError` ("session-already-open")
+ * before anything is signed. Opened again with another wallet or other terms, it
+ * would get a second session lock, and closing either would send the other's
+ * key cell to its owner. Create a new session (`createSession`) for each opening.
  */
 export async function openSession(
   owner: ccc.Signer,
@@ -898,6 +904,12 @@ export async function openSession(
   } & SigningLockOptions,
 ): Promise<{ txHash: ccc.Hex; binding: OnChainBinding }> {
   const client = owner.client;
+  if (session.onchain) {
+    throw new SessionPolicyError(
+      "this session is already open on-chain: create a new session for another opening",
+      "session-already-open",
+    );
+  }
   const token = opts.token && ccc.Script.from(opts.token.type);
   if (token && opts.token) {
     await assertPlainXudt(token, client);
@@ -942,6 +954,13 @@ export async function openSession(
   // Not a legacy lock, and its code is live on this network (audit round 2, 31 Oct).
   await assertCurrentDeployment(client, deployment);
   const lock = sessionLockScript(deployment, params(session, keyLock, binding));
+  // The same key opened before, without `onchain` on this copy (review, 24 Nov).
+  for await (const _ of client.findCells({ script: keyLock, scriptType: "lock", scriptSearchMode: "exact" }, "asc", 1)) {
+    throw new SessionPolicyError(
+      "this session's key already holds a cell: it was opened before; create a new session for another opening",
+      "session-already-open",
+    );
+  }
 
   const tx = ccc.Transaction.from({
     outputs: [

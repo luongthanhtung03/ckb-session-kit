@@ -36,6 +36,8 @@ async function owner(client: ccc.Client, codeCell: (op: ccc.OutPoint) => ccc.Cel
   vi.spyOn(client, "getCell").mockImplementation(async (op) => codeCell(ccc.OutPoint.from(op)));
   vi.spyOn(client, "getCellLive").mockImplementation(async (op) => codeCell(ccc.OutPoint.from(op)));
   vi.spyOn(client, "getTransaction").mockResolvedValue(undefined);
+  // No network: nothing under the new session key yet (openSession checks it was never opened).
+  vi.spyOn(client, "findCells").mockImplementation(async function* () {} as never);
   vi.spyOn(client, "findCellsByLock").mockImplementation(async function* () {} as never);
   vi.spyOn(ccc.Transaction.prototype, "completeInputsByCapacity").mockResolvedValue(0 as never);
   vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);

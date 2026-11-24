@@ -40,7 +40,8 @@ session has an on-chain recipient (it cannot fund outputs to other locks);
 `"owner-lock-input"` when the app's transaction spends a cell under the owner's
 lock (the lock would switch to owner mode and need the wallet);
 `"app-tx-shape"` when the app's transaction already holds session or key cells,
-or its inputs exceed its outputs. Other policy errors leave it undefined.
+or its inputs exceed its outputs. From `openSession`: `"session-already-open"`
+when the session was opened before. Other policy errors leave it undefined.
 
 ## On-chain sessions
 
@@ -78,6 +79,13 @@ the build of a type-id owner lock (Omnilock, JoyID, Nostr lock) with
 `REVIEWED_OWNER_LOCK_BUILDS`, and a build not listed is a `SessionWarning`, not
 a refusal. A recipient equal to the session
 key's own lock is refused too.
+
+A session opens once. One already open (`session.onchain` set, or a live cell
+under its key) is refused with `SessionPolicyError`, reason
+`"session-already-open"`, before anything is signed: opened again with another
+wallet or other terms, it would get a second session lock, and closing either
+would send both key cells to that one's owner. Call `createSession` for each
+opening.
 
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
 cell also holds `amount` units of the xUDT `type` (taken from the owner's
@@ -731,7 +739,9 @@ A placement that cannot be encoded, or a board that does not fit the format
 One session per `key` in IndexedDB. `save` refuses to replace a different
 stored session (`SessionStoreConflict`: another tab got there first), and to
 replace the same session's on-chain binding with none (a stale tab that never saw
-the funding); `clear(session)` forgets it only if it is still the stored one.
+the funding) or with a different one (another owner lock, `minInterval`,
+recipient or token: the stored one finds the cells already funded); adding or
+changing `openTx` alone is allowed. `clear(session)` forgets it only if it is still the stored one.
 
 ### `memoryStore() → SessionStore`
 The same contract in memory, for tests and servers.
@@ -743,7 +753,8 @@ JSON with bigints and dates preserved; a newer storage version is refused.
 
 ### `SessionStoreConflict`
 A different session is already stored under this key, or the stored copy of
-this session has an on-chain binding the one being saved lacks.
+this session has an on-chain binding the one being saved lacks or differs from
+(its message then says so). `new SessionStoreConflict(message?)`.
 
 ## Off-chain transfers (v0.1)
 

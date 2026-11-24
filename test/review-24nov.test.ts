@@ -7,18 +7,21 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { indexerFind } from "./fixtures/indexer.js";
+import { codeCellAt, TEST_DEPLOYMENT } from "./fixtures/deployment.js";
 import { TESTNET_DEPLOYMENT as d } from "../src/lock.js";
 import {
   closeSession,
   fundInSession,
   keyLockOf,
+  openSession,
   recoverSessions,
   SessionBalanceError,
   sessionLockOf,
   spendInSession,
   type OnChainBinding,
 } from "../src/onchain.js";
-import { createSession } from "../src/session.js";
+import { createSession, SessionPolicyError } from "../src/session.js";
+import { indexedDbStore, memoryStore, SessionStoreConflict } from "../src/store.js";
 
 const CKB = 100_000_000n;
 const h = (b: string) => ("0x" + b.repeat(32)) as ccc.Hex;
@@ -165,3 +168,100 @@ describe("review 24 Nov, 2: the owner sweep proves ownership with a cell under t
     expect(proof!.cellOutput.lock.eq(p.ownerLock)).toBe(true);
   });
 });
+
+describe("review 24 Nov, 3: a session opens once, and its stored binding is not replaced by another", () => {
+  const binding = (owner: string, minInterval = 10n) => ({
+    ownerLock: { codeHash: h("aa"), hashType: "type" as const, args: ("0x" + owner.repeat(20)) as ccc.Hex },
+    minInterval,
+  });
+  const fresh = () => createSession({ expiresAt: new Date(Date.now() + 3_600_000), scope: { maxPerTx: 10n * CKB } });
+
+  it.each([
+    ["memoryStore", () => memoryStore()],
+    ["indexedDbStore", () => indexedDbStore(fakeIdb())],
+  ])("%s refuses another binding over a stored one, and allows adding or changing openTx", async (_, make) => {
+    const store = make();
+    const s = fresh();
+    await store.save({ ...s, onchain: binding("11") });
+    await store.save({ ...s, onchain: { ...binding("11"), openTx: h("01") } }); // the funding's hash
+    await store.save({ ...s, onchain: { ...binding("11"), openTx: h("02") } }); // a resent funding
+    for (const other of [binding("22"), binding("11", 0n), { ...binding("11"), recipientLockHash: h("33") }]) {
+      const e = await store.save({ ...s, onchain: { ...other, openTx: h("03") } }).catch((x) => x);
+      expect(e).toBeInstanceOf(SessionStoreConflict);
+      expect(String(e)).toMatch(/another on-chain binding/);
+    }
+    expect((await store.load())!.onchain).toEqual({ ...binding("11"), openTx: h("02") });
+  });
+
+  /** A secp256k1 owner on a mocked testnet client whose indexer holds `cells`; sends are recorded. */
+  async function opener(cells: ccc.Cell[] = []) {
+    const client = new ccc.ClientPublicTestnet();
+    const signer = new ccc.SignerCkbPrivateKey(client, h("42"));
+    const sent: ccc.Transaction[] = [];
+    vi.spyOn(signer, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
+    vi.spyOn(client, "sendTransaction").mockImplementation(async (tx) => {
+      const t = ccc.Transaction.from(tx);
+      sent.push(t);
+      return t.hash();
+    });
+    vi.spyOn(client, "getCellLive").mockImplementation(async (op) => codeCellAt(op));
+    vi.spyOn(client, "findCells").mockImplementation(async function* (k: ccc.ClientIndexerSearchKeyLike) {
+      yield* indexerFind(cells, k);
+    } as never);
+    vi.spyOn(ccc.Transaction.prototype, "completeInputsByCapacity").mockResolvedValue(0 as never);
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    return { client, signer, sent };
+  }
+
+  it("openSession refuses a session whose onchain is set, before anything is signed", async () => {
+    const { signer, sent } = await opener();
+    const { binding: b } = await openSession(signer, fresh(), TEST_DEPLOYMENT, { budget: 200n * CKB });
+    expect(sent).toHaveLength(1);
+    const e = await openSession(signer, { ...fresh(), onchain: b }, TEST_DEPLOYMENT, { budget: 200n * CKB }).catch((x) => x);
+    expect(e).toBeInstanceOf(SessionPolicyError);
+    expect(e).toMatchObject({ reason: "session-already-open" });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("openSession refuses a session whose key already holds a cell (opened before, from a copy without onchain)", async () => {
+    const s = fresh();
+    const client = new ccc.ClientPublicTestnet();
+    const keyCell = cellOf(h("b1"), 0, { lock: await keyLockOf(s, client), capacity: 62n * CKB });
+    const { signer, sent } = await opener([keyCell]);
+    await expect(openSession(signer, s, TEST_DEPLOYMENT, { budget: 200n * CKB })).rejects.toMatchObject({
+      reason: "session-already-open",
+    });
+    expect(sent).toHaveLength(0);
+  });
+});
+
+/** Just enough of IndexedDB for the store (as in store.test.ts). */
+function fakeIdb(): IDBFactory {
+  const backing = new Map<string, unknown>();
+  const req = <T>(fn: () => T) => {
+    const r: { result?: T; onsuccess?: () => void } = {};
+    queueMicrotask(() => {
+      r.result = fn();
+      r.onsuccess?.();
+    });
+    return r;
+  };
+  const store = {
+    get: (k: string) => req(() => backing.get(k)),
+    put: (v: unknown, k: string) => req(() => void backing.set(k, v)),
+    delete: (k: string) => req(() => void backing.delete(k)),
+  };
+  // A transaction completes once the requests made on it have run.
+  const db = {
+    transaction: () => {
+      const tx: { objectStore: () => typeof store; oncomplete?: () => void; abort: () => void } = {
+        objectStore: () => store,
+        abort: () => {},
+      };
+      setTimeout(() => tx.oncomplete?.(), 0);
+      return tx;
+    },
+    close: () => {},
+  };
+  return { open: () => req(() => db) } as unknown as IDBFactory;
+}

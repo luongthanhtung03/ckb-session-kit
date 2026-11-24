@@ -27,6 +27,21 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
   ("the owner needs one plain cell to prove ownership") before anything is
   signed.
 
+### Changed
+- `openSession` refuses a session that is already open: `session.onchain` is
+  set, or a live cell is under its key. `SessionPolicyError` with the new reason
+  `"session-already-open"`, before anything is signed. Opening the same session
+  again with another wallet or other terms gave it a second session lock, and
+  closing either sent both key cells to that one's owner. Call `createSession`
+  for each opening, as the demos and examples already do. This costs one more
+  indexer query per opening.
+- A session store (`memoryStore`, `indexedDbStore`) refuses to replace a stored
+  on-chain binding with a different one (another owner lock, `minInterval`,
+  recipient or token), with a `SessionStoreConflict` that says so: the stored
+  binding is what finds the cells already funded under it. Adding or changing
+  `openTx` alone is still allowed. `SessionStoreConflict` takes an optional
+  message.
+
 ## 2.2.0 (2026-11-07)
 
 ### Added

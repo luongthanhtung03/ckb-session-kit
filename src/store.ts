@@ -10,7 +10,9 @@ export interface SessionStore {
   /**
    * Stores `session`. Refuses (SessionStoreConflict) to replace a *different*
    * session: its key may hold funds, and another tab may have just saved it. Also
-   * refuses to replace the same session's on-chain binding with none.
+   * refuses to replace the same session's on-chain binding with none, or with a
+   * different one (another owner, interval, recipient or token); adding or
+   * changing `openTx` alone is allowed.
    */
   save(session: Session): Promise<void>;
   /** Forgets `session`, only if it is still the stored one; another tab may have replaced it. */
@@ -18,8 +20,8 @@ export interface SessionStore {
 }
 
 export class SessionStoreConflict extends Error {
-  constructor() {
-    super("another session is already stored here (opened in another tab?); reload the page");
+  constructor(message = "another session is already stored here (opened in another tab?); reload the page") {
+    super(message);
     this.name = "SessionStoreConflict";
   }
 }
@@ -43,13 +45,33 @@ function storedKey(raw: string | undefined): string | undefined {
  * Throws SessionStoreConflict unless `session` may replace the stored value: a
  * different key may hold funds, and a save of the same key without the on-chain
  * binding (a stale tab that never saw the funding) would lose what finds them
- * (review, 28 Oct).
+ * (review, 28 Oct). Nor may another binding replace a stored one: the stored
+ * one is what finds the cells already funded under it (review, 24 Nov).
  */
 function assertReplaceable(raw: string | undefined, session: Session): void {
   const held = storedKey(raw);
   if (held === undefined) return;
   if (held !== session.publicKey) throw new SessionStoreConflict();
-  if (!session.onchain && (JSON.parse(raw!) as StoredSession).onchain) throw new SessionStoreConflict();
+  const stored = (JSON.parse(raw!) as StoredSession).onchain;
+  if (!stored) return;
+  if (!session.onchain) throw new SessionStoreConflict();
+  if (bindingTerms(stored) !== bindingTerms(JSON.parse(serializeSession(session)).onchain)) {
+    throw new SessionStoreConflict(
+      "this session is already stored with another on-chain binding (another wallet or other terms): its " +
+        "funded cells would no longer be found from the store; close it first, or open a new session",
+    );
+  }
+}
+
+/** A stored binding's terms, without `openTx` (which a resent funding changes), in a fixed order. */
+function bindingTerms(b: NonNullable<StoredSession["onchain"]>): string {
+  const s = (x: { codeHash: string; hashType: string; args: string }) => [x.codeHash.toLowerCase(), x.hashType, x.args.toLowerCase()];
+  return JSON.stringify([
+    s(b.ownerLock),
+    b.minInterval,
+    b.recipientLockHash?.toLowerCase() ?? null,
+    b.token ? [s(b.token.type), b.token.maxPerTx] : null,
+  ]);
 }
 
 /** JSON-safe form: bigints as decimal strings, dates as ISO strings. */
