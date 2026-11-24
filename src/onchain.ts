@@ -1070,6 +1070,11 @@ async function spendOnce(
   now: Date,
   avoid: ReadonlySet<string>,
 ): Promise<ccc.Hex> {
+  // The types allow one or the other; plain JS could pass both, and the shannons
+  // would then leave the session for the key cell (review, 24 Nov).
+  if ((request.amount === undefined) === (request.token === undefined)) {
+    throw new ScopeError("a payment has either amount (shannons) or token (units), not both or neither");
+  }
   const tokenType = binding.token && ccc.Script.from(binding.token.type);
   const tokenOut = request.token ?? 0n;
   if (request.token !== undefined) {
@@ -1103,7 +1108,7 @@ async function spendOnce(
     if (!(await isAnyoneCanPay(toLock, client))) throw new ScopeError("top-up needs an anyone-can-pay recipient");
     // Payers at once compete for a cell: a confirmed one no pool transaction spends,
     // at random among the recipient's (pickPayoutCell).
-    ckbOut = request.amount ?? 0n;
+    ckbOut = request.token !== undefined ? 0n : request.amount;
     const paid = request.token !== undefined ? { token: tokenType, units: tokenOut } : { ckb: ckbOut };
     if (!(await addTopUp(tx, client, toLock, paid, avoid))) {
       throw new SessionBalanceError("the recipient has no anyone-can-pay cell to top up", "no-payout-cell");

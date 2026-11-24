@@ -21,6 +21,7 @@ import {
   type OnChainBinding,
 } from "../src/onchain.js";
 import { createSession, SessionPolicyError } from "../src/session.js";
+import { ScopeError } from "../src/transfer.js";
 import { indexedDbStore, memoryStore, SessionStoreConflict } from "../src/store.js";
 
 const CKB = 100_000_000n;
@@ -263,6 +264,23 @@ describe("review 24 Nov, 4: the fee comes only from cells under the key's own lo
     await expect(spendInSession(p.session, p.client, d, p.binding, { to: p.recipient!, amount: 70n * CKB })).resolves.toMatch(/^0x/);
     const locks = await Promise.all(p.sent[0].inputs.map(async (i) => (await p.client.getCell(i.previousOutput))!.cellOutput.lock));
     expect(locks.every((l) => l.eq(p.lock) || l.eq(p.keyLock))).toBe(true);
+  });
+});
+
+describe("review 24 Nov, 5: a payment is amount or token, never both", () => {
+  it("refuses both, and neither, before anything is built (plain JS can pass them)", async () => {
+    const p = await setup({ maxPerTx: 200n * CKB, sessionCells: [500n * CKB] });
+    const to = ccc.Address.fromScript(p.ownerLock, p.client).toString();
+    for (const request of [
+      { to, amount: 50n * CKB, token: 1n, topUp: true },
+      { to, amount: 50n * CKB, token: 1n },
+      { to, topUp: true },
+    ]) {
+      const e = await spendInSession(p.session, p.client, d, p.binding, request as never).catch((x) => x);
+      expect(e).toBeInstanceOf(ScopeError);
+      expect(String(e)).toMatch(/either amount .* or token/);
+    }
+    expect(p.sent).toHaveLength(0);
   });
 });
 

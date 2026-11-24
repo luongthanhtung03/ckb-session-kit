@@ -32,6 +32,10 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
   there); when the key cell could not pay the fee, CCC took such a cell, and in
   a session with a recipient the lock refused the payment (error 17, key-cell
   growth) instead of the kit reporting `SessionBalanceError` `"no-fee-cell"`.
+- `spendInSession` refuses a request with both `amount` and `token`, or with
+  neither (`ScopeError`), before anything is built. The types already prevented
+  it; from plain JavaScript, a token top-up with an `amount` took those
+  shannons from the session into the key cell without the `maxPerTx` check.
 
 ### Changed
 - `openSession` refuses a session that is already open: `session.onchain` is
