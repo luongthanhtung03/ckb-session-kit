@@ -1113,16 +1113,31 @@ async function spendOnce(
     throw new SessionBalanceError(`rate limited: no session cell is ${binding.minInterval} blocks old yet`);
   }
 
-  // Take session cells until they cover both the shannons and the tokens.
+  // Take session cells until they cover both the shannons and the tokens, and the
+  // change is none or a whole cell: one more cell rather than a sliver, as in
+  // fundInSession (the lock allows one change cell from any number of inputs).
+  // Largest first, not in indexer order: anyone can plant a small cell under this
+  // lock, which the indexer would list before the change cell every spend
+  // recreates (review, 24 Nov).
+  const minPlainChange = ccc.CellOutput.from({ lock: state.lock }, "0x").capacity;
+  const minTypedChange = tokenType ? ccc.CellOutput.from({ lock: state.lock, type: tokenType }, tokenData(0n)).capacity : 0n;
   const taken: ccc.Cell[] = [];
   let ckbIn = 0n;
   let tokenIn = 0n;
-  for (const cell of usable) {
-    if (ckbIn >= ckbOut && tokenIn >= tokenOut) break;
-    if (ckbIn >= ckbOut && !cell.cellOutput.type) continue; // only tokens still needed
+  let typedIn = false;
+  const changeFits = () => {
+    const change = ckbIn - ckbOut;
+    return typedIn ? change >= minTypedChange : change === 0n || change >= minPlainChange;
+  };
+  for (const cell of largestFirst(usable)) {
+    if (ckbIn >= ckbOut && tokenIn >= tokenOut && changeFits()) break;
+    if (ckbIn >= ckbOut && tokenIn < tokenOut && !cell.cellOutput.type) continue; // only tokens still needed
     taken.push(cell);
     ckbIn += cell.cellOutput.capacity;
-    if (cell.cellOutput.type) tokenIn += tokenAmount(cell.outputData);
+    if (cell.cellOutput.type) {
+      typedIn = true;
+      tokenIn += tokenAmount(cell.outputData);
+    }
   }
   if (ckbIn < ckbOut) {
     throw new SessionBalanceError(`session balance ${ccc.fixedPointToString(state.balance)} CKB is too low`);
@@ -1442,6 +1457,17 @@ function largestCell(cells: ccc.Cell[]): ccc.Cell {
     const a = c.cellOutput.capacity;
     const b = best.cellOutput.capacity;
     return a > b || (a === b && before(c.outPoint, best.outPoint)) ? c : best;
+  });
+}
+
+/** `cells` by capacity, largest first; on a tie, the lowest out point first (as `largestCell`). */
+function largestFirst(cells: ccc.Cell[]): ccc.Cell[] {
+  const before = (x: ccc.OutPoint, y: ccc.OutPoint) => (x.txHash !== y.txHash ? x.txHash < y.txHash : x.index < y.index);
+  return [...cells].sort((p, q) => {
+    const a = p.cellOutput.capacity;
+    const b = q.cellOutput.capacity;
+    if (a !== b) return a > b ? -1 : 1;
+    return before(p.outPoint, q.outPoint) ? -1 : before(q.outPoint, p.outPoint) ? 1 : 0;
   });
 }
 

@@ -3,6 +3,20 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
+## Unreleased
+
+Library only: the session lock is unchanged (same code hash, no redeployment).
+From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
+
+### Fixed
+- `spendInSession` takes one more session cell rather than leave change below
+  a session cell's size, as `fundInSession` already did: two 200 CKB cells now
+  pay 150 CKB (one 250 CKB change cell) instead of throwing "the session would
+  keep 50 CKB". It takes the largest cells first, not the indexer's order, so a
+  small cell a stranger plants under the session lock (anyone can) no longer
+  blocks payments. It still throws when all usable cells together would leave
+  a sliver.
+
 ## 2.2.0 (2026-11-07)
 
 ### Added
