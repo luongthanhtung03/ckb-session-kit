@@ -8,9 +8,10 @@ import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { indexerFind } from "./fixtures/indexer.js";
 import { codeCellAt, TEST_DEPLOYMENT } from "./fixtures/deployment.js";
-import { TESTNET_DEPLOYMENT as d } from "../src/lock.js";
+import { sessionLockScript, TESTNET_DEPLOYMENT as d, TESTNET_LEGACY_DEPLOYMENTS } from "../src/lock.js";
 import {
   closeSession,
+  findOwnedSessionCells,
   fundInSession,
   keyLockOf,
   openSession,
@@ -281,6 +282,24 @@ describe("review 24 Nov, 5: a payment is amount or token, never both", () => {
       expect(String(e)).toMatch(/either amount .* or token/);
     }
     expect(p.sent).toHaveLength(0);
+  });
+});
+
+describe("review 24 Nov, 6: recovery leaves out token-session args under a legacy deployment", () => {
+  it("a plain 128-byte-args cell planted under each legacy code is not found; the same args under the current code are", async () => {
+    const p = await setup({ maxPerTx: 10n * CKB, sessionCells: [300n * CKB], keyCells: [] });
+    const tokenArgs = { ownerLockHash: p.ownerLock.hash(), sessionLockHash: h("b4"), maxPerTx: 5n * CKB, token: { typeHash: h("c5"), maxPerTx: 3n } };
+    const planted = TESTNET_LEGACY_DEPLOYMENTS.map((legacy, i) =>
+      cellOf(h("f" + (i + 1)), 0, { lock: sessionLockScript(legacy, tokenArgs), capacity: 169n * CKB }),
+    );
+    expect(ccc.bytesFrom(planted[0].cellOutput.lock.args)).toHaveLength(128);
+    const current = cellOf(h("f9"), 0, { lock: sessionLockScript(d, tokenArgs), capacity: 169n * CKB });
+    p.chain.live.push(...planted, current);
+    const found = await findOwnedSessionCells(p.owner, [d, ...TESTNET_LEGACY_DEPLOYMENTS]);
+    const ids = found.map((c) => c.outPoint.txHash);
+    expect(ids).toContain(h("a1")); // the owner's own session
+    expect(ids).toContain(h("f9")); // a token-session cell the current lock can sweep
+    for (const c of planted) expect(ids).not.toContain(c.outPoint.txHash);
   });
 });
 

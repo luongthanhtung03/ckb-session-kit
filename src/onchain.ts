@@ -3,6 +3,7 @@ import {
   relativeBlocksSince,
   sessionLockCellDep,
   sessionLockScript,
+  TESTNET_LEGACY_DEPLOYMENTS,
   type SessionLockDeployment,
   type SessionLockParams,
 } from "./lock.js";
@@ -1645,7 +1646,8 @@ async function closeOnce(
  * on the args finds them all. Only well-formed args (80 or 112 bytes; 128 or 160
  * for a token session) are kept: a cell with malformed args would fail the lock
  * even in owner mode, and anyone can create one with this owner's hash as a prefix
- * to block a sweep. Likewise a typed cell is kept only if it holds the session's
+ * to block a sweep. Under `TESTNET_LEGACY_DEPLOYMENTS`, which predate token
+ * sessions and cannot parse 128- or 160-byte args, only 80 or 112 bytes. Likewise a typed cell is kept only if it holds the session's
  * own token, a plain xUDT, in exactly 16 bytes of data; anything else could make
  * the sweep fail. Cells
  * whose tokens would overflow a u128 together are left out (`withinU128`).
@@ -1661,6 +1663,7 @@ export async function findOwnedSessionCells(
   const cells: ccc.Cell[] = [];
   let xudt: XudtCode | undefined; // looked up once, at the first typed cell
   for (const deployment of [deployments].flat()) {
+    const legacy = TESTNET_LEGACY_DEPLOYMENTS.some((l) => ccc.hexFrom(l.codeHash) === ccc.hexFrom(deployment.codeHash));
     for await (const cell of owner.client.findCells({
       script: { codeHash: deployment.codeHash, hashType: deployment.hashType, args: ownerLock.hash() },
       scriptType: "lock",
@@ -1668,7 +1671,7 @@ export async function findOwnedSessionCells(
       withData: true,
     })) {
       if (cell.cellOutput.type && !xudt) xudt = await owner.client.getKnownScript(ccc.KnownScript.XUdt);
-      if (sweepable(cell, xudt)) cells.push(cell);
+      if (sweepable(cell, xudt, legacy)) cells.push(cell);
     }
   }
   return withinU128(owner.client, cells);
@@ -1732,13 +1735,15 @@ export async function recoverSessions(
  * session's own token, a plain xUDT (`assertPlainXudt`'s rules, against the
  * network's xUDT script `xudt`), in exactly the 16-byte amount a session makes:
  * any other type script can refuse to be consumed, or needs code the sweep does
- * not bring (audit, 30 Oct).
+ * not bring (audit, 30 Oct). Under a `legacy` deployment, token-session args
+ * (128 or 160 bytes) fail to parse even in owner mode, so such a cell (anyone
+ * can plant one) is left out (review, 24 Nov).
  */
-function sweepable(cell: ccc.Cell, xudt?: XudtCode): boolean {
+function sweepable(cell: ccc.Cell, xudt: XudtCode | undefined, legacy: boolean): boolean {
   const args = ccc.bytesFrom(cell.cellOutput.lock.args);
   const type = cell.cellOutput.type;
   if (args.length === 80 || args.length === 112) return !type;
-  if (args.length !== 128 && args.length !== 160) return false;
+  if (legacy || (args.length !== 128 && args.length !== 160)) return false;
   if (!type) return true;
   return (
     !!xudt &&

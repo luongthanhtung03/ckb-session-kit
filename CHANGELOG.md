@@ -36,6 +36,12 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
   neither (`ScopeError`), before anything is built. The types already prevented
   it; from plain JavaScript, a token top-up with an `amount` took those
   shannons from the session into the key cell without the `maxPerTx` check.
+- `findOwnedSessionCells` (and so `recoverSessions`) leaves out cells with
+  token-session args (128 or 160 bytes) under `TESTNET_LEGACY_DEPLOYMENTS`:
+  that code predates token sessions and fails on such args even in owner mode.
+  A stranger could plant one (about 169 CKB, locked for good) to make every
+  recovery that includes the legacy deployments fall back to one signature per
+  session and report `failed >= 1`.
 
 ### Changed
 - `openSession` refuses a session that is already open: `session.onchain` is

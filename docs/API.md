@@ -235,7 +235,9 @@ hash, found without any session key. Typed cells are kept only in token
 sessions, and only when they hold that session's token, a plain xUDT
 (`assertPlainXudt`'s rules), in exactly 16 bytes of data:
 anything else could make the sweep fail; so could cells whose tokens overflow a
-u128 together, which are left out as in `findSessionCells`. Sweeps return tokens to the owner. `deployments` is one
+u128 together, which are left out as in `findSessionCells`. Under a legacy
+deployment (`TESTNET_LEGACY_DEPLOYMENTS`), whose code cannot parse token-session
+args, only 80- or 112-byte args are kept. Sweeps return tokens to the owner. `deployments` is one
 deployment or a list.
 
 ### `assertSigningLock(lock, client, opts?)`
