@@ -1738,8 +1738,18 @@ export async function ownerSweep(
   }
   for (const { type, amount } of tokens.values()) tx.addOutput({ lock: ownerLock, type }, tokenData(amount));
   if (tokens.size) await tx.addCellDepsOfKnownScripts(owner.client, ccc.KnownScript.XUdt);
-  // Owner mode needs an owner-locked input in the transaction.
-  for await (const cell of owner.findCells({ scriptLenRange: [0, 1], outputDataLenRange: [0, 1] }, true)) {
+  // Owner mode needs an input under the owner's lock itself, the one whose hash the
+  // session args hold. Not `owner.findCells`: it searches every address of the
+  // signer (anyone-can-pay ones under the same key, an EVM wallet's older
+  // Omnilock or PW-Lock), and a cell under one of those would leave the lock in
+  // session mode, refusing the sweep (error 11; review, 24 Nov).
+  for await (const cell of owner.client.findCells({
+    script: ownerLock,
+    scriptType: "lock",
+    scriptSearchMode: "exact",
+    filter: { scriptLenRange: [0, 1], outputDataLenRange: [0, 1] },
+    withData: true,
+  })) {
     tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
     if (opts.memo) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: opts.memo });
     await tx.completeFeeBy(owner);

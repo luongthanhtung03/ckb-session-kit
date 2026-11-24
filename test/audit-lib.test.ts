@@ -63,7 +63,9 @@ describe("recoverSessions: a planted foreign-typed cell sharing the victim's ses
     };
     const owner = {
       client: {
-        async *findCells(key: { script: ccc.ScriptLike }) {
+        async *findCells(key: { script: ccc.ScriptLike; scriptSearchMode?: string }) {
+          // The owner sweep's proof input: a plain cell under the owner's lock itself.
+          if (key.scriptSearchMode === "exact") return yield* owner.findCells({}, true);
           const prefix = ccc.Script.from(key.script).args;
           for (const c of cells) if (c.cellOutput.lock.args.startsWith(prefix)) yield c;
         },
@@ -122,7 +124,9 @@ describe("recoverSessions: a planted foreign-typed cell sharing the victim's ses
     };
     const owner = {
       client: {
-        async *findCells(key: { script: ccc.ScriptLike }) {
+        async *findCells(key: { script: ccc.ScriptLike; scriptSearchMode?: string }) {
+          // The owner sweep's proof input: a plain cell under the owner's lock itself.
+          if (key.scriptSearchMode === "exact") return yield* owner.findCells({}, true);
           const prefix = ccc.Script.from(key.script).args;
           for (const c of cells) if (c.cellOutput.lock.args.startsWith(prefix)) yield c;
         },

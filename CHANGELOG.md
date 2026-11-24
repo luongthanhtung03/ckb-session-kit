@@ -16,6 +16,16 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
   small cell a stranger plants under the session lock (anyone can) no longer
   blocks payments. It still throws when all usable cells together would leave
   a sliver.
+- The owner sweep (`closeSession`, `recoverSessions`, `ownerSweep`) takes its
+  proof-of-ownership input only from the owner's lock itself, the one whose
+  hash the session args hold. It used the wallet signer's `findCells`, which
+  searches every address of the signer: with no plain cell at the main address
+  but an anyone-can-pay cell under the same key (which anyone can create), or
+  an EVM wallet's older Omnilock or PW-Lock cell, the sweep went out with that
+  cell, the lock refused it (error 11) and `recoverSessions` reported the
+  session as `failed`. Now that case throws the clear `SessionBalanceError`
+  ("the owner needs one plain cell to prove ownership") before anything is
+  signed.
 
 ## 2.2.0 (2026-11-07)
 

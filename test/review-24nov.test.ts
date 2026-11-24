@@ -9,8 +9,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { indexerFind } from "./fixtures/indexer.js";
 import { TESTNET_DEPLOYMENT as d } from "../src/lock.js";
 import {
+  closeSession,
   fundInSession,
   keyLockOf,
+  recoverSessions,
   SessionBalanceError,
   sessionLockOf,
   spendInSession,
@@ -106,5 +108,60 @@ describe("review 24 Nov, 1: spendInSession takes one more cell rather than leave
     expect(e).toBeInstanceOf(SessionBalanceError);
     expect(String(e)).toMatch(/would keep 50 CKB/);
     expect(p.sent).toHaveLength(0);
+  });
+});
+
+describe("review 24 Nov, 2: the owner sweep proves ownership with a cell under the owner's lock itself", () => {
+  /** An anyone-can-pay cell under the owner's own pubkey hash: CCC's private-key signer lists that address too. */
+  async function withAcpCell(p: Awaited<ReturnType<typeof setup>>, args: ccc.Hex = p.ownerLock.args) {
+    const acp = await p.client.getKnownScript(ccc.KnownScript.AnyoneCanPay);
+    const acpLock = ccc.Script.from({ codeHash: acp.codeHash, hashType: acp.hashType, args });
+    p.chain.live.push(cellOf(h("c1"), 0, { lock: acpLock, capacity: 500n * CKB }));
+    vi.spyOn(ccc.SignerCkbPrivateKey.prototype, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
+    return acpLock;
+  }
+  /** The node: refuses a sweep with no input under the owner's lock (the session lock's error 11). */
+  function modelNode(p: Awaited<ReturnType<typeof setup>>) {
+    const c = p.client as unknown as Record<string, unknown>;
+    c.sendTransactionNoCache = async (tx: ccc.TransactionLike) => {
+      const t = ccc.Transaction.from(tx);
+      const locks = await Promise.all(t.inputs.map(async (i) => (await p.client.getCell(i.previousOutput))!.cellOutput.lock.hash()));
+      if (!locks.includes(p.ownerLock.hash())) {
+        throw new Error("TransactionFailedToVerify: Verification failed Script(TransactionScriptError { source: Inputs[0].Lock, cause: ValidationFailure: see error code 11");
+      }
+      p.sent.push(t);
+      return t.hash();
+    };
+  }
+
+  it("the signer does list the anyone-can-pay address (the premise)", async () => {
+    const p = await setup({ maxPerTx: 10n * CKB, sessionCells: [300n * CKB], keyCells: [] });
+    const acpLock = await withAcpCell(p);
+    const addrs = await p.owner.getAddressObjs();
+    expect(addrs.map((a) => a.script.hash())).toContain(acpLock.hash());
+  });
+
+  it("closeSession with only an anyone-can-pay cell: the clear 'owner needs one plain cell' error, nothing sent", async () => {
+    const p = await setup({ maxPerTx: 10n * CKB, sessionCells: [300n * CKB], keyCells: [] });
+    await withAcpCell(p);
+    await expect(closeSession(p.owner, p.session, d, p.binding)).rejects.toThrow(/owner needs one plain cell/);
+    expect(p.sent).toHaveLength(0);
+  });
+
+  it("recoverSessions with only an anyone-can-pay cell throws the same clear error, not a silent failed count", async () => {
+    const p = await setup({ maxPerTx: 10n * CKB, sessionCells: [300n * CKB], keyCells: [] });
+    await withAcpCell(p, (p.ownerLock.args + "00") as ccc.Hex);
+    modelNode(p);
+    await expect(recoverSessions(p.owner, d)).rejects.toBeInstanceOf(SessionBalanceError);
+  });
+
+  it("with a plain cell under the owner's lock as well, the sweep includes it and recovers the session", async () => {
+    const p = await setup({ maxPerTx: 10n * CKB, sessionCells: [300n * CKB], keyCells: [] });
+    await withAcpCell(p);
+    p.chain.live.push(cellOf(h("d1"), 0, { lock: p.ownerLock, capacity: 200n * CKB }));
+    modelNode(p);
+    await expect(recoverSessions(p.owner, d)).resolves.toMatchObject({ failed: 0, recovered: 300n * CKB });
+    const proof = await p.client.getCell(p.sent[0].inputs[1].previousOutput);
+    expect(proof!.cellOutput.lock.eq(p.ownerLock)).toBe(true);
   });
 });

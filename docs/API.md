@@ -210,7 +210,10 @@ opened and sweeps them, in one transaction if it can, else one per session lock
 victim's session key hash). A sweep the node accepted
 counts as recovered even if its reply times out. Throws `SessionBalanceError`
 when the owner holds no plain cell to prove ownership, rather than reporting
-every session as failed. Key cells cannot be recovered without their key.
+every session as failed. That cell must be under the owner's lock itself (the
+wallet's recommended address, whose hash the session args hold): cells at the
+wallet's other addresses (anyone-can-pay under the same key, an EVM wallet's
+older Omnilock or PW-Lock) do not count, since the lock would not see an owner. Key cells cannot be recovered without their key.
 
 ### `findSessionCells(session, client, deployment, binding) → SessionCells`
 The live session cells and key cells of one session, with their totals
