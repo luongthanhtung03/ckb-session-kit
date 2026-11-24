@@ -328,6 +328,16 @@ describe("review 24 Nov, 7: hardening", () => {
     expect(p.sent[0].outputs.map((o) => o.capacity).slice(0, 2)).toEqual([150n * CKB, 350n * CKB]);
     expect(p.sent[0].outputs).toHaveLength(3);
   });
+
+  it("fundInSession takes a single cell holding exactly the need rather than a greedy pair with change", async () => {
+    const p = await setup({ maxPerTx: 300n * CKB, sessionCells: [130n * CKB, 200n * CKB] });
+    const app = ccc.Transaction.from({ outputs: [{ lock: p.ownerLock, capacity: 200n * CKB }], outputsData: ["0x"] });
+    const { tx, outflow, sessionInputs } = await fundInSession(p.session, p.client, d, p.binding, app);
+    expect(outflow).toBe(200n * CKB);
+    expect(sessionInputs[0].eq(ccc.OutPoint.from({ txHash: h("a1"), index: 1 }))).toBe(true);
+    expect(sessionInputs).toHaveLength(2); // the 200 CKB cell and the key cell
+    expect(tx.outputs.filter((o) => o.lock.eq(p.lock))).toHaveLength(0); // no change cell
+  });
 });
 
 /** Just enough of IndexedDB for the store (as in store.test.ts). */

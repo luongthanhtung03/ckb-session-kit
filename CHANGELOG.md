@@ -58,6 +58,9 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
 - `openSession` refuses an expired session (`SessionPolicyError`) before
   anything is signed. It used to fund it, and then every spend refused it and
   only `closeSession` got the funds back.
+- `fundInSession` takes a single session cell holding exactly what the
+  transaction needs, when there is one, instead of the first cells in indexer
+  order plus a change cell: fewer inputs, no change cell.
 - A session store (`memoryStore`, `indexedDbStore`) refuses to replace a stored
   on-chain binding with a different one (another owner lock, `minInterval`,
   recipient or token), with a `SessionStoreConflict` that says so: the stored

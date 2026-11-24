@@ -1341,10 +1341,12 @@ export async function fundInSession(
     throw new SessionBalanceError(`rate limited: no session cell is ${binding.minInterval} blocks old yet`);
   }
   // Change is none, or a whole session cell: take one more cell rather than leave a sliver.
+  // A single cell holding exactly the need first: no change cell, fewest inputs.
   const minChange = ccc.CellOutput.from({ lock: state.lock }, "0x").capacity;
-  const taken: ccc.Cell[] = [];
-  let ckbIn = 0n;
-  for (const cell of usable) {
+  const exact = need > 0n ? usable.find((c) => c.cellOutput.capacity === need) : undefined;
+  const taken: ccc.Cell[] = exact ? [exact] : [];
+  let ckbIn = exact ? need : 0n;
+  for (const cell of exact ? [] : usable) {
     if (ckbIn >= need && (ckbIn === need || ckbIn - need >= minChange)) break;
     taken.push(cell);
     ckbIn += cell.cellOutput.capacity;
