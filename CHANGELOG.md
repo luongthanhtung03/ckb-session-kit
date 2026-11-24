@@ -55,6 +55,9 @@ From the hardening review of 24 Nov; tests in `test/review-24nov.test.ts`.
   closing either sent both key cells to that one's owner. Call `createSession`
   for each opening, as the demos and examples already do. This costs one more
   indexer query per opening.
+- `openSession` refuses an expired session (`SessionPolicyError`) before
+  anything is signed. It used to fund it, and then every spend refused it and
+  only `closeSession` got the funds back.
 - A session store (`memoryStore`, `indexedDbStore`) refuses to replace a stored
   on-chain binding with a different one (another owner lock, `minInterval`,
   recipient or token), with a `SessionStoreConflict` that says so: the stored

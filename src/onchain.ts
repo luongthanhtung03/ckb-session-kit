@@ -885,6 +885,7 @@ export async function warnOwnerLockBuild(
  * before anything is signed. Opened again with another wallet or other terms, it
  * would get a second session lock, and closing either would send the other's
  * key cell to its owner. Create a new session (`createSession`) for each opening.
+ * An expired session is refused too: no spend would accept it.
  */
 export async function openSession(
   owner: ccc.Signer,
@@ -911,6 +912,8 @@ export async function openSession(
       "session-already-open",
     );
   }
+  // Every spend would refuse it; only closeSession would get the funds back (review, 24 Nov).
+  if (!isActive(session)) throw new SessionPolicyError("this session has expired: create a new one to open");
   const token = opts.token && ccc.Script.from(opts.token.type);
   if (token && opts.token) {
     await assertPlainXudt(token, client);

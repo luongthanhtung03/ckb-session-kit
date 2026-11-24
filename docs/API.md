@@ -85,7 +85,8 @@ under its key) is refused with `SessionPolicyError`, reason
 `"session-already-open"`, before anything is signed: opened again with another
 wallet or other terms, it would get a second session lock, and closing either
 would send both key cells to that one's owner. Call `createSession` for each
-opening.
+opening. An expired session is refused (`SessionPolicyError`) as well: no spend
+would accept it, and only `closeSession` would get the funds back.
 
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
 cell also holds `amount` units of the xUDT `type` (taken from the owner's

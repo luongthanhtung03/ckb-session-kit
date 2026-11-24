@@ -241,6 +241,14 @@ describe("review 24 Nov, 3: a session opens once, and its stored binding is not 
     });
     expect(sent).toHaveLength(0);
   });
+
+  it("openSession refuses an expired session before anything is signed", async () => {
+    const { signer, sent } = await opener();
+    const s = fresh();
+    s.policy.expiresAt = new Date(Date.now() - 1000); // created earlier, expired since
+    await expect(openSession(signer, s, TEST_DEPLOYMENT, { budget: 200n * CKB })).rejects.toThrow(/expired/);
+    expect(sent).toHaveLength(0);
+  });
 });
 
 describe("review 24 Nov, 4: the fee comes only from cells under the key's own lock", () => {
