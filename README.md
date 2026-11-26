@@ -371,10 +371,11 @@ What it takes, and why:
   at 2fd13f6 (514 to 552 CKB in all, returned to the backer later). Compute it
   from the app's own constants; the kit has none. The fee comes from the key
   cell and never counts.
-- **Change is nothing or a whole session cell** (121 CKB): with a balance just
+- **Change is nothing or a whole session cell** (121 CKB for a plain session,
+  169 for a token session): with a balance just
   above what a transaction needs, `fundInSession` throws rather than leave a
   sliver. An app that checks the balance first should accept exactly the need
-  or at least the need plus 121 CKB, and size the budget with one session cell
+  or at least the need plus the session's minimum cell, and size the budget with one session cell
   on top ([integration walkthrough, step 3](docs/integration-walkthrough.md#3-decide-per-pledge-whether-the-session-pays)).
 - **No wallet input.** A cell under the owner's lock would switch the lock to
   owner mode and need the wallet's signature: refused

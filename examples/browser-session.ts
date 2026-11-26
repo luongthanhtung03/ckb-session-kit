@@ -32,8 +32,9 @@ const store = indexedDbStore(indexedDB, "my-app"); // one session per key: one p
 
 /**
  * On page load: the session this browser already holds, expired or not. An
- * expired one can no longer pay (`usable` is false), but it may still hold
- * funds, and only `end` (closeSession) with this key returns its key cell.
+ * expired one is refused by the kit's spend calls (`usable` is false), but the
+ * lock has no expiry: the key still satisfies it, and the session may still
+ * hold funds. Close it (`end`) to return them and its key cell.
  */
 export async function restore(): Promise<{ session: Session; usable: boolean } | undefined> {
   const session = await store.load();
@@ -57,8 +58,9 @@ export async function start(wallet: ccc.Signer, shop: string): Promise<Session> 
     // The funding may still commit: keep the stored key. closeSession reports
     // nothingFound once the node does not know the funding, and then it can go.
     if (e instanceof SendOutcomeUnknownError) throw e;
-    // Refused before the send, or the node did not take it: nothing was funded
-    // (openSession returns normally when the node did take it).
+    // Refused before the send, or the node reports it does not have the funding
+    // (openSession returns normally when it does), so nothing was funded. Even
+    // if it later were, recoverSessions returns the session cells without the key.
     await store.clear(draft);
     throw e;
   }

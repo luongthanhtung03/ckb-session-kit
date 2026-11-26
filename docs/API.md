@@ -93,8 +93,8 @@ under its key) is refused with `SessionPolicyError`, reason
 wallet or other terms, it would get a second session lock, and closing either
 would send both key cells to that one's owner. Call `createSession` for each
 opening. An expired session is refused (`SessionPolicyError`, reason
-`"session-expired"`) as well: no spend would accept it, and only `closeSession`
-would get the funds back.
+`"session-expired"`) as well: the kit's spend calls would refuse it (the lock
+itself has no expiry), and only `closeSession` would get the funds back.
 
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
 cell also holds `amount` units of the xUDT `type` (taken from the owner's
@@ -113,8 +113,9 @@ with both `amount` and `token`, or neither, is a `ScopeError`
 (`"request-shape"`) before anything is built.
 
 Session cells are taken largest first, until they cover the payment and the
-change is none or a whole session cell (121 CKB, 153 with a recipient; in a
-token session, change that keeps tokens needs a token cell's size): one more
+change is none or a whole session cell (121 CKB, 153 with a recipient; 169
+and 201 in a token session, and change that keeps tokens needs a token cell's
+size): one more
 cell rather than a sliver, so two 200 CKB cells pay 150 CKB with one 250 CKB
 change cell. Under a rate limit only mature cells count (`matureCells`).
 Throws `SessionBalanceError` when the balance is too low, when even every
@@ -172,7 +173,8 @@ before anything is signed:
    session the tokens stay put), mature ones under a rate limit, with `since`
    set on them and not on the app's inputs. A single session cell holding
    exactly the need is taken alone, with no change cell. Otherwise change is
-   none or a whole session cell (121 CKB for a session without a recipient):
+   none or a whole session cell (121 CKB for a plain session without a
+   recipient, 169 for a token session):
    it takes one more cell rather than leave less, and throws
    `SessionBalanceError` when it cannot;
 4. the largest key cell pays the fee, so the fee never counts as outflow
@@ -244,7 +246,11 @@ opened and sweeps them, in one transaction if it can, else one per session lock
 victim's session key hash). A sweep the node accepted
 counts as recovered even if its reply times out. Throws `SessionBalanceError`
 with reason `"no-owner-cell"` when the owner holds no plain cell to prove
-ownership, rather than reporting every session as failed. That cell must be under the owner's lock itself (the
+ownership, rather than reporting every session as failed. In the
+one-session-at-a-time fallback this can happen after earlier sweeps were sent
+(each spends the owner's plain cell): the error then carries no record of
+them, so look for the owner's recent transactions, or call `recoverSessions`
+again once a plain cell is back, before treating those sessions as unswept. That cell must be under the owner's lock itself (the
 wallet's recommended address, whose hash the session args hold): cells at the
 wallet's other addresses (anyone-can-pay under the same key, an EVM wallet's
 older Omnilock or PW-Lock) do not count, since the lock would not see an owner. Key cells cannot be recovered without their key.
@@ -421,7 +427,9 @@ token cells can take the payment without passing 2^128 - 1 units) or
 node's pool: nothing was sent; try again after a block) or `"no-owner-cell"` (an
 owner sweep, in `closeSession`, `recoverSessions`, `cancelSubscription` or
 `clearPlantedCells`, needs a plain cell under the owner's lock to prove
-ownership, and there is none; nothing was signed) or
+ownership, and there is none; nothing was signed for that sweep, though in
+`recoverSessions`' one-session-at-a-time fallback earlier sweeps may already
+have been sent) or
 `"not-indexed-yet"` (`closeSession` found no cell under the session or the key
 but cannot yet tell that none is left: the funding transaction is pending or
 proposed, or committed with outputs not indexed yet, or the indexer is behind

@@ -895,7 +895,8 @@ export async function warnOwnerLockBuild(
  * before anything is signed. Opened again with another wallet or other terms, it
  * would get a second session lock, and closing either would send the other's
  * key cell to its owner. Create a new session (`createSession`) for each opening.
- * An expired session is refused too: no spend would accept it.
+ * An expired session is refused too: the kit's spend calls would refuse it (the
+ * lock itself has no expiry), and only `closeSession` would get the funds back.
  */
 export async function openSession(
   owner: ccc.Signer,
