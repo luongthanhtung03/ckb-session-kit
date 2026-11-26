@@ -1,7 +1,7 @@
 /**
  * A paywall with no database: the chain is the record of who paid for what.
  *
- *   CREATOR=ckt1… npx tsx examples/paywall-server.ts
+ *   CREATOR=ckt1… npx tsx --tsconfig examples/tsconfig.json examples/paywall-server.ts
  *   POST http://localhost:8787/article  { "id": "hello", "proof": AccessProof }
  *
  * The reader pays with

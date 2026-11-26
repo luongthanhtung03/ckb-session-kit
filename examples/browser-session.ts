@@ -8,7 +8,9 @@
  *   or a failed save leaves funds under a key that exists nowhere;
  * - one stored session per slot: a second tab gets SessionStoreConflict
  *   instead of overwriting a key that may hold funds;
- * - forget a session only after close has returned its key cell.
+ * - forget a session only after close has returned its key cell;
+ * - a new createSession for each opening: openSession refuses a session that
+ *   was opened before (SessionPolicyError "session-already-open").
  */
 import type { ccc } from "@ckb-ccc/core";
 import {
@@ -18,6 +20,7 @@ import {
   indexedDbStore,
   isActive,
   openSession,
+  SendOutcomeUnknownError,
   SessionStoreConflict,
   spendInSession,
   TESTNET_DEPLOYMENT as deployment,
@@ -27,10 +30,14 @@ import {
 const CKB = 100_000_000n;
 const store = indexedDbStore(indexedDB, "my-app"); // one session per key: one per app page
 
-/** On page load: the session this browser already holds, if it is still usable. */
-export async function restore(): Promise<Session | undefined> {
+/**
+ * On page load: the session this browser already holds, expired or not. An
+ * expired one can no longer pay (`usable` is false), but it may still hold
+ * funds, and only `end` (closeSession) with this key returns its key cell.
+ */
+export async function restore(): Promise<{ session: Session; usable: boolean } | undefined> {
   const session = await store.load();
-  return session?.onchain && isActive(session) ? session : undefined;
+  return session?.onchain ? { session, usable: isActive(session) } : undefined;
 }
 
 /** One wallet popup: the owner funds a session that may only pay `shop`. */
@@ -46,8 +53,13 @@ export async function start(wallet: ccc.Signer, shop: string): Promise<Session> 
     });
     return { ...draft, onchain: binding };
   } catch (e) {
-    if (e instanceof SessionStoreConflict) throw new Error("a session is already open in another tab; reload");
-    await store.clear(draft); // saved but never funded
+    if (e instanceof SessionStoreConflict) throw new Error("a session is already open in this browser (another tab?); reload");
+    // The funding may still commit: keep the stored key. closeSession reports
+    // nothingFound once the node does not know the funding, and then it can go.
+    if (e instanceof SendOutcomeUnknownError) throw e;
+    // Refused before the send, or the node did not take it: nothing was funded
+    // (openSession returns normally when the node did take it).
+    await store.clear(draft);
     throw e;
   }
 }

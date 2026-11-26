@@ -2,7 +2,7 @@
  * The whole session lifecycle in one file: open, pay twice with no wallet,
  * close. A private-key signer stands in for the owner's wallet.
  *
- *   OWNER_KEY=0x… npx tsx examples/node-quickstart.ts
+ *   OWNER_KEY=0x… npx tsx --tsconfig examples/tsconfig.json examples/node-quickstart.ts
  *
  * Locks up about 360 testnet CKB while it runs; all of it comes back except fees.
  * Each payment here creates a cell, so it is at least 61 CKB; for small amounts
