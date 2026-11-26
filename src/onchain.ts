@@ -1710,7 +1710,11 @@ export interface RecoverResult {
   recovered: bigint;
   /** Session cells swept. */
   cells: number;
-  /** Sessions (one session lock each) not recovered, including any in `unknown`. */
+  /**
+   * Sessions (one session lock each) not recovered, including the session of
+   * each one-session sweep in `unknown` (a combined sweep there is not a
+   * session; its sessions are counted by their own sweeps).
+   */
   failed: number;
   /**
    * Set only when a fault no retry can fix (`SessionBalanceError`, e.g. reason
