@@ -46,7 +46,9 @@ npm install ckb-session-kit
 
 [ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v2.3.0, ESM, Node 20 or later
 and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
-[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
+[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md); adding a session to an existing CCC
+dApp, with CrowdCell as the example, in
+[docs/integration-walkthrough.md](docs/integration-walkthrough.md).
 
 New in 2.0.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
 
@@ -153,6 +155,11 @@ swept every session cell back, decoy skipped.
   database, on `node:http`.
 - [`docs/API.md`](docs/API.md): every export, grouped by task. CI typechecks the
   examples and fails if an export is missing from the reference.
+- [`docs/integration-walkthrough.md`](docs/integration-walkthrough.md): how an
+  existing CCC dApp adds an opt-in session, step by step, using CrowdCell's
+  pledge session ([PR #14](https://github.com/alesfer001/CrowdCell/pull/14)):
+  sizing, opening, funding the app's own transaction, falling back to the
+  wallet, reason codes, closing and recovery, and what to tell the user.
 
 ## Example: pay-per-read
 
