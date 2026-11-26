@@ -7,6 +7,12 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
 Library only: the session lock is unchanged (same code hash, no redeployment).
 
+### Upgrading from 2.3.0
+Every 2.3.0 export keeps its signature. `recoverSessions` may now resolve, with
+`error` set, where 2.3.0 threw (a fault on a later session after some sweeps
+were sent, or may have been). Check `failed`, `error` and `unknown`, not just
+whether it threw.
+
 ### Added
 - `RecoverResult`, the type `recoverSessions` returns, with two new optional
   fields, `error` and `unknown`.
@@ -27,7 +33,16 @@ Library only: the session lock is unchanged (same code hash, no redeployment).
   `txHash` to look for), still never retried, and counts as possibly sent: a
   later fault no retry can fix is then returned in `error`, not thrown.
 
+### Tests
+- `test/setup-no-network.ts` (a vitest setup file) fails any unit test that
+  tries to reach a host other than this machine, by `fetch`, `net`/`tls` or a
+  raw TCP connect, even when the code under test swallows the error. The two
+  tests that reached testnet (`test/contention.test.ts`,
+  `test/owner-lock.test.ts`) no longer do.
+
 ### Docs
+- README and walkthrough: the `recoverSessions` snippets read the result
+  (`failed`, `error`, `unknown`).
 - `docs/integration-walkthrough.md`: how an existing CCC dApp adds an opt-in
   session, step by step, with CrowdCell's pledge session (its PR #14) as the
   example.

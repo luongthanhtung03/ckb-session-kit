@@ -137,7 +137,10 @@ The session key lives only in one browser. If that browser is gone, the owner's
 wallet can still recover every session it ever opened:
 
 ```ts
-await recoverSessions(wallet, deployment); // finds them all, usually one signature
+// Finds them all, usually one signature. Check the result: it resolves even when
+// some sessions were not swept (`failed`, `error`) or a sweep's outcome is unknown.
+const { txHashes, failed, error, unknown } = await recoverSessions(wallet, deployment);
+if (failed || unknown) console.warn("swept", txHashes.length, "not yet", failed, error, unknown);
 ```
 
 Session-lock args begin with the owner's lock hash, so an indexer prefix search

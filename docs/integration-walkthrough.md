@@ -474,7 +474,7 @@ lock hash, so the wallet can find and sweep them alone, usually in one
 signature:
 
 ```ts
-import { recoverSessions, TESTNET_LEGACY_DEPLOYMENTS } from "ckb-session-kit";
+import { recoverSessions, TESTNET_DEPLOYMENT, TESTNET_LEGACY_DEPLOYMENTS } from "ckb-session-kit";
 
 export async function sweepLostSessions(signer: ccc.Signer) {
   const { txHashes, recovered, failed, error, unknown } = await recoverSessions(signer, [TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]);
