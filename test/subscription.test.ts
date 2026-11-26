@@ -276,16 +276,6 @@ describe("chargeSubscription", () => {
     expect(sent).toHaveLength(0);
   });
 
-  // Docs pass, 26 Nov: the reason's documentation names cancelSubscription (an owner sweep too).
-  it("cancelSubscription with no plain cell under the subscriber's lock throws reason no-owner-cell", async () => {
-    const r = await roles(fakeClient([]).client);
-    const { client, sent } = fakeClient([cellOf(subscriptionLock(d, r.sub), 500n * CKB)]);
-    const e = await cancelSubscription(new ccc.SignerCkbPrivateKey(client, keys.subscriber), d, r.sub).catch((x) => x);
-    expect(e).toBeInstanceOf(SessionBalanceError);
-    expect(e).toMatchObject({ reason: "no-owner-cell", message: "the owner needs one plain cell to prove ownership" });
-    expect(sent).toHaveLength(0);
-  });
-
   it("takes exactly the price with the period as since, tops up payTo, and the charger pays the fee", async () => {
     vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockImplementation(async function (this: ccc.Transaction) {
       const last = this.outputs[this.outputs.length - 1];
@@ -1413,7 +1403,7 @@ describe("third-party cells over the cap, without cancelling", () => {
   const CHARGE = h("0d");
   const CLEAN = h("ce");
 
-  async function setup(planted: number, opts: { history?: Touched[]; foreign?: number } = {}) {
+  async function setup(planted: number, opts: { history?: Touched[]; foreign?: number; noOwnerCell?: boolean } = {}) {
     const r = await roles(fakeClient([]).client);
     const lock = subscriptionLock(d, r.sub);
     const subscriberLock = (await r.subscriber.getRecommendedAddressObj()).script;
@@ -1443,7 +1433,8 @@ describe("third-party cells over the cap, without cancelling", () => {
       // The subscriber's cleanup: owner mode, the subscriber's plain cell is the proof of ownership.
       [CLEAN]: ccc.Transaction.from({ inputs: [{ previousOutput: stranger.outPoint }, { previousOutput: proof.outPoint }] }),
     };
-    const cells = [opening, ...plantedCells, ...foreign, own, proof, stranger, fee, payIn];
+    // noOwnerCell: no plain cell under the subscriber's lock, so no owner sweep can prove ownership.
+    const cells = [opening, ...plantedCells, ...foreign, ...(opts.noOwnerCell ? [] : [own, proof]), stranger, fee, payIn];
     const { client, sent } = fakeClient(cells, 900n, (hash) => txs[hash] ?? unknownInput, opts.history);
     const subscriber = new ccc.SignerCkbPrivateKey(client, keys.subscriber);
     vi.spyOn(subscriber, "findCells").mockImplementation(async function* () {
@@ -1454,6 +1445,25 @@ describe("third-party cells over the cap, without cancelling", () => {
     const commit = () => cells.splice(1, planted); // the cleanup committed: the planted cells are gone
     return { r, lock, client, sent, subscriber, opening, plantedCells, commit };
   }
+
+  // Docs pass, 26 Nov: SessionBalanceReason names both subscription sweeps as raising no-owner-cell.
+  describe("no plain cell under the subscriber's lock: reason no-owner-cell, nothing sent", () => {
+    it("cancelSubscription", async () => {
+      const { r, client, sent } = await setup(0, { noOwnerCell: true });
+      const e = await cancelSubscription(new ccc.SignerCkbPrivateKey(client, keys.subscriber), d, r.sub).catch((x) => x);
+      expect(e).toBeInstanceOf(SessionBalanceError);
+      expect(e).toMatchObject({ reason: "no-owner-cell", message: "the owner needs one plain cell to prove ownership" });
+      expect(sent).toHaveLength(0);
+    });
+
+    it("clearPlantedCells", async () => {
+      const { r, client, sent } = await setup(3, { noOwnerCell: true });
+      const e = await clearPlantedCells(new ccc.SignerCkbPrivateKey(client, keys.subscriber), d, { ...r.sub, openTx: OPEN }).catch((x) => x);
+      expect(e).toBeInstanceOf(SessionBalanceError);
+      expect(e).toMatchObject({ reason: "no-owner-cell" });
+      expect(sent).toHaveLength(0);
+    });
+  });
 
   it("counts only cells of the subscription's own kind: cells under another type script never block it", async () => {
     const { r, client } = await setup(0, { foreign: 3 * MAX_SUBSCRIPTION_CELLS });
