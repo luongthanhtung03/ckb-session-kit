@@ -222,8 +222,8 @@ is spent (a close whose reply was lost, or a close from another tab), it reports
 `keyTx`. `owner` must be the wallet whose lock is `binding.ownerLock`: any other
 is refused with `SessionPolicyError` before it is asked to sign.
 
-### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
-Device-loss recovery, with the wallet alone: finds every session cell this owner
+### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed, error? }`
+Device-loss recovery, with the wallet alone (returns `RecoverResult`): finds every session cell this owner
 opened and sweeps them, in one transaction if it can, else one per session lock
 (so a planted cell spent ahead of the sweep fails alone, even one carrying the
 victim's session key hash). A sweep the node accepted
@@ -232,7 +232,13 @@ when the owner holds no plain cell to prove ownership, rather than reporting
 every session as failed. That cell must be under the owner's lock itself (the
 wallet's recommended address, whose hash the session args hold): cells at the
 wallet's other addresses (anyone-can-pay under the same key, an EVM wallet's
-older Omnilock or PW-Lock) do not count, since the lock would not see an owner. Key cells cannot be recovered without their key.
+older Omnilock or PW-Lock) do not count, since the lock would not see an owner. If that fault (or another `SessionBalanceError` or
+`SessionPolicyError`) comes only after one or more one-per-session sweeps were
+sent, it is returned instead of thrown, so their hashes are not lost: `error`
+holds it, `txHashes`, `recovered` and `cells` cover the sweeps sent, and the
+session it hit and every session not yet tried count in `failed`. `error` is
+absent otherwise.
+Key cells cannot be recovered without their key.
 
 ### `findSessionCells(session, client, deployment, binding) → SessionCells`
 The live session cells and key cells of one session, with their totals

@@ -1700,6 +1700,25 @@ export async function findOwnedSessionCells(
   return withinU128(owner.client, cells);
 }
 
+/** What `recoverSessions` did. */
+export interface RecoverResult {
+  /** Every sweep sent (or taken by the node with its reply lost). */
+  txHashes: ccc.Hex[];
+  /** Capacity swept back to the owner, in shannons. */
+  recovered: bigint;
+  /** Session cells swept. */
+  cells: number;
+  /** Sessions (one session lock each) not recovered. */
+  failed: number;
+  /**
+   * Set only when a fault no retry can fix (`SessionBalanceError`, e.g. reason
+   * `"no-owner-cell"`, or `SessionPolicyError`) stopped the one-session-at-a-time
+   * sweeps after at least one was sent; `txHashes` holds those. With nothing
+   * sent, the fault is thrown instead.
+   */
+  error?: SessionBalanceError | SessionPolicyError;
+}
+
 /**
  * Device-loss recovery: sweeps every session this owner opened back to the owner,
  * in one transaction and one wallet signature. Needs nothing from the lost device.
@@ -1709,7 +1728,10 @@ export async function findOwnedSessionCells(
  * sweep fail. So if the one transaction is refused, each session (cells under one
  * session lock) is swept on its own, one signature each: a cell someone else can
  * spend fails alone, and `failed` counts the sessions not recovered. A fault no
- * retry can fix (the owner holds no plain cell to prove ownership) is thrown.
+ * retry can fix (the owner holds no plain cell to prove ownership) is thrown
+ * while nothing has been sent. Once a sweep has been sent, it is returned
+ * instead, so its hash is not lost: the loop stops, `error` is that fault, and
+ * the session it hit and every session not yet tried count in `failed`.
  *
  * The key cell (the fee budget) is under the session key's own lock and cannot be
  * recovered without that key; keep it small.
@@ -1717,14 +1739,15 @@ export async function findOwnedSessionCells(
 export async function recoverSessions(
   owner: ccc.Signer,
   deployments: SessionLockDeployment | SessionLockDeployment[],
-): Promise<{ txHashes: ccc.Hex[]; recovered: bigint; cells: number; failed: number }> {
+): Promise<RecoverResult> {
   const deployment = [deployments].flat();
   const cells = await findOwnedSessionCells(owner, deployment);
   const total = (cs: ccc.Cell[]) => cs.reduce((sum, c) => sum + c.cellOutput.capacity, 0n);
   if (!cells.length) return { txHashes: [], recovered: 0n, cells: 0, failed: 0 };
   // A fault no other set of cells can fix (no plain owner cell) is thrown, not
   // retried once per session (review, 28 Oct).
-  const fixed = (e: unknown) => e instanceof SessionBalanceError || e instanceof SessionPolicyError;
+  const fixed = (e: unknown): e is SessionBalanceError | SessionPolicyError =>
+    e instanceof SessionBalanceError || e instanceof SessionPolicyError;
   try {
     return { txHashes: [await ownerSweep(owner, deployment, cells)], recovered: total(cells), cells: cells.length, failed: 0 };
   } catch (e) {
@@ -1739,15 +1762,25 @@ export async function recoverSessions(
     const lockHash = c.cellOutput.lock.hash();
     sessions.set(lockHash, [...(sessions.get(lockHash) ?? []), c]);
   }
-  const result = { txHashes: [] as ccc.Hex[], recovered: 0n, cells: 0, failed: 0 };
-  for (const group of sessions.values()) {
+  const result: RecoverResult = { txHashes: [], recovered: 0n, cells: 0, failed: 0 };
+  const groups = [...sessions.values()];
+  for (const [i, group] of groups.entries()) {
     try {
       result.txHashes.push(await ownerSweep(owner, deployment, group));
       result.recovered += total(group);
       result.cells += group.length;
     } catch (e) {
-      if (fixed(e)) throw e;
-      result.failed++;
+      if (!fixed(e)) {
+        result.failed++;
+        continue;
+      }
+      // Nothing sent yet: thrown, as before. Sweeps already sent: returned with
+      // the fault, or the caller would lose their hashes (review, 26 Nov). The
+      // fault would repeat for every session left, so they are not tried.
+      if (!result.txHashes.length) throw e;
+      result.failed += groups.length - i;
+      result.error = e;
+      break;
     }
   }
   return result;

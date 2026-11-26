@@ -3,6 +3,22 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
+## Unreleased
+
+### Added
+- `RecoverResult`, the type `recoverSessions` returns, with a new optional
+  field `error`.
+
+### Fixed
+- `recoverSessions`: when the combined sweep was refused and the sessions were
+  swept one at a time, a `SessionBalanceError` (such as `"no-owner-cell"`) or
+  `SessionPolicyError` on a later session was thrown after earlier sweeps had
+  been sent, so the caller lost their transaction hashes and believed nothing
+  had happened. Once a sweep has been sent, the fault is now returned in
+  `error`, with the sent sweeps in `txHashes`; the session it hit and the ones
+  not yet tried count in `failed`. With nothing sent, it is still thrown as
+  before. Tests in `test/recover.test.ts`.
+
 ## 2.3.0 (2026-11-24)
 
 Library only: the session lock is unchanged (same code hash, no redeployment).

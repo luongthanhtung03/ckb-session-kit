@@ -49,6 +49,7 @@ export type {
   FundOptions,
   OnChainBinding,
   OwnerLockBuild,
+  RecoverResult,
   RetryOptions,
   SendWithSessionOptions,
   SessionBalanceReason,
