@@ -239,21 +239,30 @@ asked to sign. The sweep needs one plain cell under the owner's lock to prove
 ownership; without one it throws `SessionBalanceError` `"no-owner-cell"` before
 anything is signed.
 
-### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
+### `recoverSessions(owner, deployments) → RecoverResult`
+`RecoverResult` is `{ txHashes, recovered, cells, failed, error? }`.
 Device-loss recovery, with the wallet alone: finds every session cell this owner
 opened and sweeps them, in one transaction if it can, else one per session lock
 (so a planted cell spent ahead of the sweep fails alone, even one carrying the
 victim's session key hash). A sweep the node accepted
 counts as recovered even if its reply times out. Throws `SessionBalanceError`
 with reason `"no-owner-cell"` when the owner holds no plain cell to prove
-ownership, rather than reporting every session as failed. In the
-one-session-at-a-time fallback this can happen after earlier sweeps were sent
-(each spends the owner's plain cell): the error then carries no record of
-them, so look for the owner's recent transactions, or call `recoverSessions`
-again once a plain cell is back, before treating those sessions as unswept. That cell must be under the owner's lock itself (the
-wallet's recommended address, whose hash the session args hold): cells at the
-wallet's other addresses (anyone-can-pay under the same key, an EVM wallet's
-older Omnilock or PW-Lock) do not count, since the lock would not see an owner. Key cells cannot be recovered without their key.
+ownership, rather than reporting every session as failed. That cell must be
+under the owner's lock itself (the wallet's recommended address, whose hash the
+session args hold): cells at the wallet's other addresses (anyone-can-pay under
+the same key, an EVM wallet's older Omnilock or PW-Lock) do not count, since the
+lock would not see an owner.
+
+In the one-session-at-a-time fallback each sweep spends a plain owner cell (its
+change comes back as a new one), so a later sweep can find none, for instance
+while that change is not yet indexed. If that fault (or another
+`SessionBalanceError` or `SessionPolicyError`) comes after one or more sweeps
+were sent, it is returned instead of thrown, so their hashes are not lost:
+`error` holds it, `txHashes`, `recovered` and `cells` cover the sweeps sent, and
+the session it hit and every session not yet tried count in `failed`; call
+`recoverSessions` again later for those. With nothing sent yet it is thrown, as
+above. `error` is absent otherwise.
+Key cells cannot be recovered without their key.
 
 ### `findSessionCells(session, client, deployment, binding) → SessionCells`
 The live session cells and key cells of one session, with their totals

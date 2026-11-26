@@ -118,6 +118,50 @@ describe("recoverSessions", () => {
     await expect(ownerSweep(owner, d, cells)).rejects.toMatchObject({ reason: "no-owner-cell" });
     expect(sent).toHaveLength(0);
   });
+
+  // Review, 26 Nov: a fault thrown by the one-session-at-a-time sweeps after an
+  // earlier sweep was sent lost that sweep's hash; the caller saw nothing happen.
+  it("returns the sweeps already sent when a later session hits no-owner-cell", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const cells = [cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB), cell(3, "b3", 100n * CKB)];
+    // The combined sweep (every session at once) is refused, so each is swept alone.
+    const { owner, sent } = fakeOwner(cells, (tx) => tx.inputs.length < 3);
+    // The owner's plain cell is found for the combined attempt and the first
+    // session's sweep only (spent by it, its change not yet indexed).
+    const plain = owner.findCells.bind(owner);
+    let calls = 0;
+    (owner as { findCells: unknown }).findCells = async function* (...a: Parameters<typeof plain>) {
+      if (++calls <= 2) yield* plain(...a);
+    };
+    const r = await recoverSessions(owner, d);
+    expect(sent).toHaveLength(1);
+    expect(r).toMatchObject({ txHashes: [sent[0].hash()], recovered: 400n * CKB, cells: 1, failed: 2 });
+    expect(r.error).toBeInstanceOf(SessionBalanceError);
+    expect(r.error).toMatchObject({ reason: "no-owner-cell" });
+  });
+
+  it("returns the sweeps already sent when a later session's send is refused", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const b2 = cell(2, "b2", 200n * CKB);
+    const { owner, sent } = fakeOwner([cell(1, "b1", 400n * CKB), b2], (tx) =>
+      tx.inputs.every((i) => !i.previousOutput.eq(b2.outPoint)),
+    );
+    const r = await recoverSessions(owner, d);
+    expect(r).toEqual({ txHashes: [sent[0].hash()], recovered: 400n * CKB, cells: 1, failed: 1 });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("still throws no-owner-cell from the one-at-a-time sweeps when nothing was sent", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const { owner, sent } = fakeOwner([cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)], (tx) => tx.inputs.length < 3);
+    const plain = owner.findCells.bind(owner);
+    let calls = 0;
+    (owner as { findCells: unknown }).findCells = async function* (...a: Parameters<typeof plain>) {
+      if (++calls <= 1) yield* plain(...a);
+    };
+    await expect(recoverSessions(owner, d)).rejects.toMatchObject({ reason: "no-owner-cell" });
+    expect(sent).toHaveLength(0);
+  });
 });
 
 describe("assertSigningLock", () => {

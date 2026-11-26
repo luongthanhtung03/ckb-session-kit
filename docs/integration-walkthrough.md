@@ -477,8 +477,9 @@ signature:
 import { recoverSessions, TESTNET_LEGACY_DEPLOYMENTS } from "ckb-session-kit";
 
 export async function sweepLostSessions(signer: ccc.Signer) {
-  const { txHashes, recovered, failed } = await recoverSessions(signer, [TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]);
-  return { txHashes, recovered, failed };
+  const { txHashes, recovered, failed, error } = await recoverSessions(signer, [TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]);
+  // `error`: a sweep after the first found no plain owner cell, say; show it, offer to retry.
+  return { txHashes, recovered, failed, error };
 }
 ```
 
@@ -486,7 +487,11 @@ This ends **every** session the wallet still has open, in another browser or
 another app too, not just the lost one: say so and ask the user to confirm
 first. It is one signature, or one per session if the combined sweep is
 refused (`failed` counts the sessions not recovered), and like Close it needs
-one plain cell under the wallet's lock (`"no-owner-cell"`).
+one plain cell under the wallet's lock (`"no-owner-cell"`). Each one-per-session
+sweep spends that cell and gets it back as change, so a later one can find none
+yet: once some sessions were swept, that fault is returned in `error` next to
+their `txHashes` rather than thrown, and the rest count in `failed`; run the
+sweep again a little later for them.
 
 The key cell (the fee budget: 62 CKB for a secp256k1 wallet, 64 for JoyID or
 Omnilock, less fees spent) is under the key's own lock and cannot be recovered
