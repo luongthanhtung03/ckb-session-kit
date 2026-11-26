@@ -44,7 +44,7 @@ The problem is not specific to that application.
 npm install ckb-session-kit
 ```
 
-[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v2.3.0, ESM, Node 20 or later
+[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v2.4.0, ESM, Node 20 or later
 and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
 [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md); adding a session to an existing CCC
 dApp, with CrowdCell as the example, in

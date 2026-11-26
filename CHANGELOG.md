@@ -3,7 +3,7 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
-## Unreleased
+## 2.4.0 (2026-11-27)
 
 Library only: the session lock is unchanged (same code hash, no redeployment).
 
