@@ -276,6 +276,16 @@ describe("chargeSubscription", () => {
     expect(sent).toHaveLength(0);
   });
 
+  // Docs pass, 26 Nov: the reason's documentation names cancelSubscription (an owner sweep too).
+  it("cancelSubscription with no plain cell under the subscriber's lock throws reason no-owner-cell", async () => {
+    const r = await roles(fakeClient([]).client);
+    const { client, sent } = fakeClient([cellOf(subscriptionLock(d, r.sub), 500n * CKB)]);
+    const e = await cancelSubscription(new ccc.SignerCkbPrivateKey(client, keys.subscriber), d, r.sub).catch((x) => x);
+    expect(e).toBeInstanceOf(SessionBalanceError);
+    expect(e).toMatchObject({ reason: "no-owner-cell", message: "the owner needs one plain cell to prove ownership" });
+    expect(sent).toHaveLength(0);
+  });
+
   it("takes exactly the price with the period as since, tops up payTo, and the charger pays the fee", async () => {
     vi.spyOn(ccc.Transaction.prototype, "completeFeeChangeToOutput").mockImplementation(async function (this: ccc.Transaction) {
       const last = this.outputs[this.outputs.length - 1];

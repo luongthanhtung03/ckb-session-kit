@@ -24,8 +24,10 @@ export async function sessionAddress(session: Session, client: ccc.Client): Prom
  * Sends `amount` shannons to `to`, signed by the session key with no wallet
  * dialog. The scope is checked before anything is built or signed.
  *
- * Until the session lock lands, the scope is enforced here in the browser only;
- * the on-chain lock will make the same refusal binding.
+ * The v0.1 flow: the funds sit under the key's own plain lock (`sessionAddress`),
+ * not the session lock, so the scope is enforced here in the browser only. For
+ * a scope the network enforces, open the session with `openSession` and pay
+ * with `spendInSession`.
  */
 export async function sendInScope(
   session: Session,

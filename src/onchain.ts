@@ -55,9 +55,10 @@ export interface SessionCells {
  * - `payout-busy`: every payout cell checked is being spent by a transaction in
  *   the node's pool (other payers at the same moment). Nothing was sent; try
  *   again after a block, or give the recipient more cells (`createPayoutCells`).
- * - `no-owner-cell`: an owner sweep (`closeSession`, `recoverSessions`,
- *   `ownerSweep`) needs one plain cell (no type, no data) under the owner's lock
- *   itself to prove ownership, and the owner holds none; send some CKB to it.
+ * - `no-owner-cell`: an owner sweep (`closeSession`, `recoverSessions`, and for
+ *   a subscription `cancelSubscription` and `clearPlantedCells`) needs one plain
+ *   cell (no type, no data) under the owner's lock itself to prove ownership, and
+ *   the owner holds none; send some CKB to it.
  * - `not-indexed-yet`: `closeSession` found no cell under the session or the key,
  *   but cannot yet tell that none is left: the funding transaction is still
  *   pending or proposed, or committed with outputs the indexer has not listed, or

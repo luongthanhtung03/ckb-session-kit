@@ -1,9 +1,11 @@
 import { ccc } from "@ckb-ccc/core";
 
 /**
- * What a session key may do. This is the off-chain mirror of what the session
- * lock script will enforce on-chain (Week 4): the browser refuses out-of-scope
- * requests early, and the chain refuses them regardless.
+ * What a session key may do. The browser checks it before anything is signed
+ * (`checkRequest`); for a session opened with `openSession`, the session lock
+ * enforces `maxPerTx` and a single recipient on-chain as well, so the chain
+ * refuses an out-of-scope spend regardless. More than one recipient cannot be
+ * enforced on-chain (`onchainRecipient` throws).
  */
 export interface SessionScope {
   /** Largest amount one transaction may move, in shannons. */
