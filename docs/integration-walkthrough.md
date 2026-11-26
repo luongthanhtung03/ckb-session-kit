@@ -3,8 +3,11 @@
 This is how an app that already builds its own transactions with CCC adds a
 session as an option, without changing its contracts or its wallet flow. The
 worked example is CrowdCell, a crowdfunding dApp on CKB, and its
-[pull request #14](https://github.com/alesfer001/CrowdCell/pull/14) ("opt-in
-pledge session"): the first integration of this kit by an outside project.
+[pull request #14](https://github.com/alesfer001/CrowdCell/pull/14), "Opt-in
+pledge session: resend a pledge that lost the race without a second wallet
+prompt (testnet)". It is the first integration of this kit into an outside
+project: contributed by the kit's author and approved by CrowdCell's
+maintainer after testing it on testnet with JoyID. It is open, not merged yet.
 
 The problem it solves: every pledge spends the campaign cell, so when two
 pledges land at once the node refuses the second, the page rebuilds it, and the
@@ -65,10 +68,10 @@ export function pledgeSessionBudget(maxPledge: bigint, pledges: number): bigint 
 }
 ```
 
-On testnet CrowdCell's overhead is 552 CKB (252 for the pledge cell, 300 for the
-receipt), so a session for pledges up to 100 CKB has `maxPerTx` 652 CKB. The
-overhead comes back to the backer when the pledge is refunded or released; it
-is the app's number, not the kit's. Change from a pledge is either nothing or a
+CrowdCell's overhead is 552 CKB: 252 for the pledge cell, which returns with
+the pledge on refund or release, and 300 for the receipt, which the backer
+reclaims once the campaign is finalized. So a session for pledges up to 100 CKB
+has `maxPerTx` 652 CKB. The overhead is the app's number, not the kit's. Change from a pledge is either nothing or a
 whole session cell, which is why the budget carries one on top.
 
 PR #14: [lines 36-73 of `pledgeSession.ts`](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7120a7d246d9f05d471d990ba4/off-chain/frontend/src/lib/pledgeSession.ts#L36-L73).
@@ -94,7 +97,8 @@ export async function openPledgeSession(signer: ccc.Signer, maxPledge: bigint, p
   const { binding } = await openSession(signer, session, TESTNET_DEPLOYMENT, {
     budget: pledgeSessionBudget(maxPledge, pledges),
     onWarning: handleOpenWarning,
-    // Saved after signing and before sending: the funds never sit under a key that exists nowhere
+    // Saved after signing and before sending: the funds never sit under a key that exists nowhere.
+    // If the node then refuses the funding, the stored session was never funded (see below).
     beforeSend: (binding) => store().save({ ...session, onchain: binding }),
   });
   return { ...session, onchain: binding };
@@ -103,14 +107,14 @@ export async function openPledgeSession(signer: ccc.Signer, maxPledge: bigint, p
 function handleOpenWarning(warning: SessionWarning) {
   // Expected: pledges must be able to follow each other. The panel tells the backer what it means.
   if (warning.code === "no-rate-limit") return;
-  // The wallet's lock runs a build the kit has not reviewed: stop before anything is signed
-  if (warning.code === "owner-lock-build-unreviewed") {
+  // The wallet's lock runs a build the kit has not reviewed, or one it could not read:
+  // stop before anything is signed
+  if (warning.code === "owner-lock-build-unreviewed" || warning.code === "owner-lock-build-unresolved") {
     throw new Error("Pledge sessions aren't available for this wallet right now. Pledge from your wallet as usual.");
   }
-  console.warn(`ckb-session-kit: ${warning.message}`);
 }
 
-/** The session this browser holds, if any. Only funded sessions are ever saved. */
+/** The session this browser holds, if any: saved before its funding was sent, so it may hold nothing. */
 export async function loadPledgeSession(): Promise<Session | null> {
   const session = await store().load();
   return session?.onchain ? session : null;
@@ -121,10 +125,20 @@ Points that matter:
 
 - **Save in `beforeSend`, not after.** The key is the only way to spend the
   key cell; saving after the send leaves a window where a failed save loses it.
+  The other side of this: if the node refuses the funding transaction, the
+  store keeps a session that was never funded, and `loadPledgeSession` returns
+  it with nothing left. Close clears it: `closeSession` returns
+  `nothingFound` when the node does not know `openTx`, and the key is then
+  forgotten. Alternatively, catch the error from `openSession` and clear the
+  store once `client.getTransaction(binding.openTx)` shows the node does not
+  have it; while the node has it, keep the key, since the funding may still
+  commit.
 - **`onWarning` runs before the wallet prompt.** Throwing from it stops the
   opening with nothing signed. CrowdCell accepts `no-rate-limit` (pledges may
   follow each other in consecutive blocks) and refuses a wallet lock build the
-  kit has not reviewed.
+  kit has not reviewed. PR #14 only logs `owner-lock-build-unresolved` (the
+  lock's code cell could not be read, so its build was not checked); stopping
+  there too, as above, is the safer choice.
 - **A session opens once.** In 2.3.0, calling `openSession` again on a session
   that is already open (its `onchain` is set, or its key holds a cell) throws
   `SessionPolicyError` with reason `"session-already-open"`, and the store
@@ -133,7 +147,8 @@ Points that matter:
   tab should load the stored session rather than open another.
 - **The fee budget.** Besides `budget`, `openSession` puts a key cell aside
   that pays every fee: by default a cell under the owner's lock plus 1 CKB
-  (64 CKB for JoyID or Omnilock). It comes back on close.
+  (64 CKB for JoyID or Omnilock, 62 CKB for a secp256k1 wallet). What fees
+  left of it comes back on close.
 
 PR #14: [`openPledgeSession`, lines 85-101](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7120a7d246d9f05d471d990ba4/off-chain/frontend/src/lib/pledgeSession.ts#L85-L101)
 and [`handleOpenWarning`, lines 113-121](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7120a7d246d9f05d471d990ba4/off-chain/frontend/src/lib/pledgeSession.ts#L113-L121).
@@ -160,17 +175,34 @@ export async function pledgeSessionUnusable(
   if (amount > maxPledgeOf(session)) {
     return `Your pledge session covers pledges up to ${ccc.fixedPointToString(maxPledgeOf(session))} CKB.`;
   }
-  const { balance } = await findSessionCells(session, client, TESTNET_DEPLOYMENT, session.onchain!);
-  if (balance < amount + PLEDGE_SESSION_OVERHEAD) return "Your pledge session doesn't have enough left.";
+  let balance: bigint;
+  try {
+    ({ balance } = await findSessionCells(session, client, TESTNET_DEPLOYMENT, session.onchain!));
+  } catch {
+    return "Your pledge session's balance couldn't be read."; // the wallet pays instead
+  }
+  const need = amount + PLEDGE_SESSION_OVERHEAD;
+  // The session keeps nothing or a whole session cell: fundInSession refuses to leave a sliver
+  if (balance !== need && balance < need + SESSION_CELL_CAPACITY) return "Your pledge session doesn't have enough left.";
   return null;
 }
 ```
+
+Change from a pledge is nothing or at least a session cell (121 CKB), so a
+balance just above the need is refused: with 1,021 CKB left, a pledge that
+needs 952 CKB would leave 69 CKB, and `fundInSession` throws. A failed read
+falls back to the wallet rather than failing the pledge.
+
+PR #14 at `69e2911` does not do this yet: it compares the balance with the need
+only, and does not catch a failed read. CrowdCell's maintainer reported the
+change-rule case in his approving review, and the fix is one of the follow-ups
+to the PR.
 
 The owner check matters after a wallet switch: the backer's lock hash goes into
 the pledge cell, and a session opened by another wallet would pay for a pledge
 in that other wallet's name.
 
-PR #14: [lines 133-149](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7120a7d246d9f05d471d990ba4/off-chain/frontend/src/lib/pledgeSession.ts#L133-L149).
+PR #14, without the two changes above: [lines 133-149](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7120a7d246d9f05d471d990ba4/off-chain/frontend/src/lib/pledgeSession.ts#L133-L149).
 
 ## 4. Fund the pledge from the session
 
@@ -216,11 +248,14 @@ export async function sendPledgeWithSession(
 function assertPledgeShape(funded: ccc.Transaction, built: ccc.Transaction, backerLock: ccc.Script, own: ccc.Script[]) {
   const same = (a: ccc.CellOutput, b: ccc.CellOutput) => ccc.hexFrom(a.toBytes()) === ccc.hexFrom(b.toBytes());
   const [, pledge, receipt] = built.outputs;
+  const backer = backerLock.hash().slice(2);
   if (
     !funded.inputs[0]?.previousOutput.eq(built.inputs[0].previousOutput) ||
     built.outputs.some((o, i) => !funded.outputs[i] || !same(funded.outputs[i], o)) ||
     built.outputsData.some((d, i) => funded.outputsData[i] !== d) ||
     pledge.lock.codeHash !== CONTRACTS.pledgeLock.codeHash ||
+    // Pledge lock args bytes 40..72 are the backer's lock hash: the pledge is in the wallet's name
+    pledge.lock.args.slice(2 + 40 * 2, 2 + 72 * 2) !== backer ||
     !receipt.lock.eq(backerLock) ||
     receipt.type?.codeHash !== CONTRACTS.receipt.codeHash ||
     funded.outputs.slice(built.outputs.length).some((o) => o.type || !own.some((lock) => lock.eq(o.lock)))
@@ -229,9 +264,6 @@ function assertPledgeShape(funded: ccc.Transaction, built: ccc.Transaction, back
   }
 }
 ```
-
-(PR #14's check also compares the backer's lock hash inside the pledge lock's
-args; it is left out here for length.)
 
 An app that wants to show the finished transaction, or send it through its own
 pipeline, can call `fundInSession` directly and sign it later:
@@ -248,7 +280,8 @@ export async function previewPledge(session: Session, client: ccc.Client, tx: cc
 }
 ```
 
-What the kit refuses before anything is signed (the lock would refuse it too):
+What the kit refuses before anything is signed (most of these the lock would
+refuse too; the balance and fee ones are build failures):
 
 - an app input under the **owner's** lock: the lock would switch to owner mode
   and need the wallet's signature (`SessionPolicyError`, `"owner-lock-input"`).
@@ -258,8 +291,14 @@ What the kit refuses before anything is signed (the lock would refuse it too):
 - a session with a recipient (`"session-has-recipient"`);
 - a transaction needing more than `maxPerTx` from the session (`ScopeError`,
   `"over-max-per-tx"`), or a session past `expiresAt` (`"session-expired"`);
-- a key cell that cannot pay the fee (`SessionBalanceError`, `"no-fee-cell"`),
-  or a balance too low (a `SessionBalanceError` with no reason).
+- a key cell that cannot pay the fee (`SessionBalanceError`, `"no-fee-cell"`);
+- a balance too low, change that would be less than a session cell (121 CKB),
+  or, with a rate limit, no session cell old enough yet (each a
+  `SessionBalanceError` with no reason).
+
+`openSession` itself refuses a wallet whose lock cannot own a session
+(`SessionPolicyError`, `"owner-lock-unsafe"`) or has not been reviewed
+(`"owner-lock-unreviewed"`), before the wallet is asked to sign.
 
 The page then picks the path. PR #14,
 [`page.tsx` lines 207-214](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7120a7d246d9f05d471d990ba4/off-chain/frontend/src/app/campaigns/%5Bid%5D/page.tsx#L207-L214)
@@ -267,6 +306,7 @@ and [lines 345-353](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7
 in short:
 
 ```ts
+// pledgeSession: what loadPledgeSession() or openPledgeSession() returned, or null
 export async function pledgeOnce(signer: ccc.Signer, backerLock: ccc.Script, amount: bigint): Promise<ccc.Hex> {
   const client = signer.client;
   let session: Session | null = null;
@@ -276,14 +316,30 @@ export async function pledgeOnce(signer: ccc.Signer, backerLock: ccc.Script, amo
     else session = pledgeSession;
   }
 
-  const tx = await buildPledgeTx(client, backerLock, amount); // the app's own builder, unchanged
-  if (!session) {
-    await tx.completeInputsByCapacity(signer);
-    await tx.completeFeeBy(signer, 2000);
+  for (;;) {
+    const tx = await buildPledgeTx(client, backerLock, amount); // the app's own builder, unchanged
+    if (!session) {
+      await tx.completeInputsByCapacity(signer);
+      await tx.completeFeeBy(signer, 2000);
+    }
+    try {
+      return session ? await sendPledgeWithSession(session, client, tx, backerLock) : await signer.sendTransaction(tx);
+    } catch (err) {
+      // The session refused before anything was sent (step 6): rebuild and pay from the wallet
+      if (session && isSessionRefusal(err)) {
+        session = null;
+        toast("info", "Your pledge session can't pay this pledge. Pledging from your wallet instead.");
+        continue;
+      }
+      throw err; // a lost race goes to the app's retry loop (step 5)
+    }
   }
-  return session ? sendPledgeWithSession(session, client, tx, backerLock) : signer.sendTransaction(tx);
 }
 ```
+
+PR #14 at `69e2911` has the check before the pledge but not the `catch`: a
+session refusal at send time fails the pledge there. Falling back at send time
+is one of the follow-ups.
 
 ## 5. Races: the app's retry loop stays the app's
 
@@ -307,23 +363,28 @@ export function lostRace(err: unknown): { retry: boolean; rivalPending: boolean 
 ```
 
 CrowdCell's page uses its own `isInputAlreadySpentError` for the same test, and
-the "Please approve the updated pledge in your wallet" toast now shows on the
-wallet path only. On testnet a pending rival can take over a minute to commit,
-so a 30 s wait is not always enough: CrowdCell
+in PR #14 the "Please approve the updated pledge in your wallet" toast shows on
+the wallet path only. On testnet a pending rival can take over a minute to
+commit, so a 30 s wait is not always enough: CrowdCell
 [pull request #15](https://github.com/alesfer001/CrowdCell/pull/15)
-([`0a67ff3`](https://github.com/alesfer001/CrowdCell/pull/15/commits/0a67ff3e7f1002a2c9e6b197da7822fa2fddba8e))
-waits up to 90 s after an RBF refusal, on both paths.
+([`0a67ff3`](https://github.com/alesfer001/CrowdCell/pull/15/commits/0a67ff3e7f1002a2c9e6b197da7822fa2fddba8e)),
+separate from #14, makes the page's retry loop wait up to 90 s after an RBF
+refusal. Both PRs are open; once both are merged, the same loop serves the
+wallet path and the session path.
 
 ## 6. Tell refusals apart by reason code
 
-From 2.3.0 every refusal a UI branches on carries a `reason`, so the app never
-has to match the message text (which may change). Two uses in a pledge flow:
+From 2.3.0 the refusals a UI usually branches on carry a `reason`, so the app
+does not have to match the message text (which may change). The rest are
+balance or timing errors with no reason, and `isSessionRefusal` below catches
+them by class. Two uses in a pledge flow:
 
 **Fall back to the wallet when the session refuses at send time.** The check in
 step 3 runs once, before the pledge. If the pledge then waits for the campaign
 cell, the session can expire or run low in the meantime. Each of these errors is
 thrown before anything is signed or sent, so the wallet can pay instead without
-losing an attempt:
+losing an attempt (`pledgeOnce` in step 4 shows where it plugs in; PR #14 at
+`69e2911` fails the pledge here, and falling back is a follow-up):
 
 ```ts
 import { ScopeError, SendOutcomeUnknownError, SessionBalanceError, SessionPolicyError } from "ckb-session-kit";
@@ -358,6 +419,9 @@ export function sessionErrorMessage(err: unknown, fallback: string): string {
     if (err.reason === "session-already-open") return "This pledge session is already open. Reload the page to see it.";
     if (err.reason === "session-expired") return "Your pledge session has expired.";
     if (err.reason === "wrong-signer") return "Connect the wallet that opened this session.";
+    if (err.reason === "owner-lock-unreviewed" || err.reason === "owner-lock-unsafe") {
+      return "Pledge sessions aren't available for this wallet. Pledge from your wallet as usual.";
+    }
   }
   return err instanceof Error ? err.message : fallback;
 }
@@ -387,8 +451,9 @@ export async function closePledgeSession(signer: ccc.Signer, session: Session) {
 
 What can come back:
 
-- `{ sweepTx, keyTx }`: done. The PR's panel then says "What was left is on its
-  way back to your wallet".
+- no `keyError`: done (`sweepTx` and/or `keyTx` set; only `keyTx` if the
+  session cells were already empty). The PR's panel then says "What was left
+  is on its way back to your wallet".
 - `keyError` set: the sweep went out but the key cell did not; the key stays
   stored and Close can run again.
 - `nothingFound: true`: nothing is left under the session or the key (a close
@@ -399,10 +464,14 @@ What can come back:
 - `SessionBalanceError` `"no-owner-cell"`: the owner sweep needs one plain
   cell (no type, no data) under the wallet's main lock to prove ownership, and
   there is none. Nothing was signed; the wallet must receive a little CKB first.
+- a `SessionBalanceError` with no reason, "the funding transaction made no cell
+  under this session": the session was closed against the wrong deployment.
+  Keep the key and check the deployment.
 
 If the key is lost (site data cleared, a private window closed, another
 device), the session cells are not lost: their lock args start with the owner's
-lock hash, so the wallet can find and sweep them alone, in one signature:
+lock hash, so the wallet can find and sweep them alone, usually in one
+signature:
 
 ```ts
 import { recoverSessions, TESTNET_LEGACY_DEPLOYMENTS } from "ckb-session-kit";
@@ -413,8 +482,15 @@ export async function sweepLostSessions(signer: ccc.Signer) {
 }
 ```
 
-The key cell (the fee budget, about 64 CKB) is under the key's own lock and
-cannot be recovered without the key. PR #14 offers Close only; a sweep without
+This ends **every** session the wallet still has open, in another browser or
+another app too, not just the lost one: say so and ask the user to confirm
+first. It is one signature, or one per session if the combined sweep is
+refused (`failed` counts the sessions not recovered), and like Close it needs
+one plain cell under the wallet's lock (`"no-owner-cell"`).
+
+The key cell (the fee budget: 62 CKB for a secp256k1 wallet, 64 for JoyID or
+Omnilock, less fees spent) is under the key's own lock and cannot be recovered
+without the key. PR #14 offers Close only; a sweep without
 the key is what the panel's copy calls "a manual sweep".
 
 PR #14: [`closePledgeSession`, lines 208-212](https://github.com/alesfer001/CrowdCell/blob/69e2911a423b1a7120a7d246d9f05d471d990ba4/off-chain/frontend/src/lib/pledgeSession.ts#L208-L212).
@@ -448,12 +524,30 @@ taken from this browser could spend what is left, up to [maxPerTx] CKB per
 transaction, to anyone. It can't touch your wallet, your pledges or your
 receipts." (the page fills in the session's `maxPerTx`). A Close button is always
 shown while a session is open, on every campaign page, not only the one it was
-opened on.
+opened on. PR #14 shows it to whichever wallet is connected; another wallet's
+Close is refused before signing (`"wrong-signer"`). Better: show the session
+only when its `ownerLock` matches the connected wallet, and otherwise a note to
+switch back.
 
-The "to anyone" is accurate and should stay: a session with no recipient lets
-a leaked key pay any lock, up to `maxPerTx` per transaction. The lock still
-keeps it inside the session's budget, and it can never spend the wallet's own
-cells. Keep the budget small and the expiry short.
+The "to anyone" is accurate: a session with no recipient lets a leaked key pay
+any lock. The panel's per-transaction figure needs context, though, and the
+app's copy should not make it sound like more protection than it is:
+
+- **No rate limit.** The session has `minInterval` 0, so the cap per
+  transaction does not slow a thief: a leaked key can empty the whole budget in
+  a few consecutive transactions.
+- **The key cell too.** The fee budget (62 to 64 CKB) is under the key's own
+  lock, outside `maxPerTx` and the session lock: a leaked key can spend it
+  outright.
+- **The expiry is checked only in the browser.** The lock has no expiry; on
+  chain the key works until Close.
+- **The key is stored unencrypted** in this origin's IndexedDB. Anything that
+  can run script on the dApp's pages can read it: an XSS bug, a compromised
+  dependency, an extension with access to the site. The session's risk is the
+  page's XSS and supply-chain risk.
+
+It can never spend the wallet's own cells, pledges or receipts. Keep the budget
+small, and suggest closing the session when the backer is done.
 
 ## 9. On testnet
 
@@ -462,11 +556,11 @@ The maintainer
 after trying it on testnet in the browser with JoyID. The two changes asked for
 before merge (the site-data warning, an exact version pin) are commit `69e2911`.
 
-PR #14's `pledgeSession.ts`, as it stood on 7 Nov 2026, ran unchanged in a
-script (a secp256k1 key standing in for the wallet), on a test campaign of its
-own. Since then the PR was rebased onto a CrowdCell main with one copy of CCC,
-which removed a type bridge between two copies, and the panel's copy changed;
-the kit calls are the same.
+Before the PR was opened (17 Nov), the draft that became its
+`pledgeSession.ts` ran unchanged in a script on 7 Nov 2026 (a secp256k1 key
+standing in for the wallet), on a test campaign of its own. That draft still
+bridged types between two copies of CCC; the PR was written on a CrowdCell main
+with one copy, so the bridge is gone, and the kit calls are the same.
 
 - [session opened](https://testnet.explorer.nervos.org/transaction/0x07a0a862efcc10d329d87a3b2b5c73ae93fb35eec1e59187d9b68e7fa968a544),
   one wallet signature, budget 1,425 CKB;
@@ -501,10 +595,16 @@ CrowdCell's five scripts and the session lock in the CKB-VM.
 - [ ] The wallet path is unchanged and is the default; the session path skips
       the wallet's `completeInputsByCapacity` / `completeFeeBy`.
 - [ ] Before each send: active, same owner as the connected wallet, within the
-      cap, enough balance. At send time, a kit refusal falls back to the wallet.
+      cap, and a balance that is exactly the need or leaves at least a session
+      cell; a failed read means the wallet pays. At send time, a kit refusal
+      falls back to the wallet.
 - [ ] `check` pins the shape of the funded transaction.
 - [ ] The app's own race loop handles `deadInputs` / `poolConflict`, at a
       fixed fee rate.
 - [ ] Close is always reachable; the key is cleared only without `keyError`.
-- [ ] The user is told: what the key can spend, until when, and that it lives
-      only in this browser's site data.
+- [ ] The user is told: what the key can spend (the whole budget and the fee
+      cell, with no rate limit), that only Close ends it on chain, and that it
+      lives only in this browser's site data, readable by anything running on
+      its origin.
+- [ ] A sweep without the key warns that it ends every open session of that
+      wallet.
