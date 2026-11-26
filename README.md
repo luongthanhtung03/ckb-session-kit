@@ -4,7 +4,7 @@ Browser-held self-custody sessions for CKB applications.
 
 **Live demo:** [ckb-session-kit.vercel.app](https://ckb-session-kit.vercel.app/) — connect a wallet, sign once to open a session, pay with no popups while the network enforces the limits, sign once to close (CKB testnet).
 
-**Status: v1.0, on CKB testnet (not audited, no mainnet deployment).** Built in the open during my CKBuilder programme.
+**Status: v2.3.0 on npm, on CKB testnet (not audited, no mainnet deployment).** Built in the open during my CKBuilder programme.
 
 | When | Milestone |
 |---|---|
@@ -13,7 +13,7 @@ Browser-held self-custody sessions for CKB applications.
 | w/c 19 Oct | ✅ Session lock script (Rust) — outflow limit, recipient, rate limit enforced on-chain; deployed to testnet |
 | w/c 26 Oct | ✅ Delegate, act repeatedly with no wallet dialog, revoke — library + demo (v0.2) |
 | w/c 2 Nov | ✅ Survives reload; ✅ device-loss recovery |
-| w/c 23 Nov | v1.0 on npm |
+| w/c 23 Nov | v2.3.0 on npm (v1.0 was published on 27 Oct) |
 
 ## The problem
 
@@ -50,7 +50,28 @@ and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
 dApp, with CrowdCell as the example, in
 [docs/integration-walkthrough.md](docs/integration-walkthrough.md).
 
-New in 2.0.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
+New in 2.3.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
+
+- **A session opens once.** `openSession` refuses a session that is already
+  open (`session.onchain` set, or a live cell under its key) with
+  `SessionPolicyError` reason `"session-already-open"`, and an expired one with
+  `"session-expired"`, before anything is signed. Call `createSession` for each
+  opening.
+- **Reason codes to branch on**, so a UI need not match messages:
+  `ScopeError.reason` (type `ScopeReason`: `"session-expired"`,
+  `"over-max-per-tx"`, `"recipient-not-in-scope"`, ...; `checkRequest` returns
+  the same value as `code`); `SessionPolicyReason` adds `"wrong-signer"` and
+  `"subscription-already-open"`; `SessionBalanceReason` adds `"no-owner-cell"`
+  and `"not-indexed-yet"` (`closeSession`: close again in a minute).
+- **A session store keeps its binding.** `memoryStore` and `indexedDbStore`
+  refuse to replace a stored on-chain binding with a different one
+  (`SessionStoreConflict`); changing `openTx` alone is allowed.
+- **Change rule.** `spendInSession` takes the largest session cells first and
+  one more cell rather than leave change below a session cell (two 200 CKB
+  cells now pay 150 CKB). `fundInSession` takes a single cell holding exactly
+  the need when there is one.
+
+Added in 2.0.0:
 
 - `openSession(owner, session, deployment, { ..., onWarning })`: called with a
   `SessionWarning` (`"no-rate-limit"`) before anything is signed; throw from it
@@ -84,7 +105,7 @@ npm test                 # unit + CKB-VM tests, no network needed
 npm run demo             # the Next.js web demo at http://localhost:3000
 ```
 
-The demo (v0.2) connects a wallet through CCC (JoyID, MetaMask, OKX, UniSat, …).
+The demo connects a wallet through CCC (JoyID, MetaMask, OKX, UniSat, …).
 The wallet signs **once** to open a session: it funds a session cell under the
 on-chain session lock plus a small key cell that pays the session's fees. Payments
 are then signed by a key held only in the browser, with **no wallet popup**, and the
@@ -318,8 +339,8 @@ released by the demo's server route; at a 3-unit price the same payment is refus
 
 Some apps build their own transaction: a crowdfunding pledge spends the
 campaign cell and creates a typed pledge cell and a receipt. The session can pay
-for it, with no wallet prompt: `fundInSession` adds session cells, one change
-cell and the key cell (which pays the fee) to the app's transaction, and
+for it, with no wallet prompt: `fundInSession` adds session cells, at most one
+change cell and the key cell (which pays the fee) to the app's transaction, and
 `sendWithSession` builds, funds, signs with the session key and sends.
 
 ```ts
@@ -350,6 +371,11 @@ What it takes, and why:
   at 2fd13f6 (514 to 552 CKB in all, returned to the backer later). Compute it
   from the app's own constants; the kit has none. The fee comes from the key
   cell and never counts.
+- **Change is nothing or a whole session cell** (121 CKB): with a balance just
+  above what a transaction needs, `fundInSession` throws rather than leave a
+  sliver. An app that checks the balance first should accept exactly the need
+  or at least the need plus 121 CKB, and size the budget with one session cell
+  on top ([integration walkthrough, step 3](docs/integration-walkthrough.md#3-decide-per-pledge-whether-the-session-pays)).
 - **No wallet input.** A cell under the owner's lock would switch the lock to
   owner mode and need the wallet's signature: refused
   (`reason: "owner-lock-input"`).
