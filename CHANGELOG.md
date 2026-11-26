@@ -3,6 +3,23 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
+## Unreleased
+
+Docs only; the library and the session lock are unchanged.
+
+### Docs
+- `docs/integration-walkthrough.md`: how an existing CCC dApp adds an opt-in
+  session, step by step, with CrowdCell's pledge session (its PR #14) as the
+  example.
+- Accuracy pass against 2.3.0: API.md names the reason codes the 2.3.0 calls
+  throw (`closeSession`, `recoverSessions`, the subscription calls) and the
+  `spendInSession` change rule; README summarises 2.3.0; the browser example
+  keeps a stored key when the funding's outcome is unknown
+  (`SendOutcomeUnknownError`) and returns expired sessions so they can be
+  closed. Under 2.3.0 below, "`ownerSweep`" (not a package export) means the
+  owner sweep inside `closeSession`, `recoverSessions`, `cancelSubscription`
+  and `clearPlantedCells`.
+
 ## 2.3.0 (2026-11-24)
 
 Library only: the session lock is unchanged (same code hash, no redeployment).
