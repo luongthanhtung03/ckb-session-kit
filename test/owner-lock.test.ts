@@ -4,6 +4,7 @@ import { TESTNET_DEPLOYMENT as d } from "../src/lock.js";
 import { assertSigningLock, openSession, SessionBalanceError } from "../src/onchain.js";
 import { createSession, SessionPolicyError } from "../src/session.js";
 import { openSubscription } from "../src/subscription.js";
+import { codeCellAt, TEST_DEPLOYMENT } from "./fixtures/deployment.js";
 
 // Mentor review, 2 Nov (tracker issue #47, review 3): the session lock gives owner
 // mode to any transaction with an input under the owner's lock, so the owner's
@@ -237,8 +238,14 @@ describe("the opt-in through openSession and openSubscription", () => {
       message: expect.stringMatching(/charger/),
     });
     // With the charger's own opt-in, the lock check passes (and warns); what fails next is the funding.
-    const err = await openSubscription(subscriber, d, { ...terms, allowUnreviewedChargerLock: true }).catch((e: unknown) => e);
+    // Past the lock checks come the deployment check and the funding: serve both off the network.
+    vi.spyOn(client, "getCellLive").mockImplementation(async (op) => codeCellAt(op));
+    vi.spyOn(client, "findCellsPaged").mockResolvedValue({ cells: [], lastCursor: "0x" });
+    const err = await openSubscription(subscriber, TEST_DEPLOYMENT, { ...terms, allowUnreviewedChargerLock: true }).catch(
+      (e: unknown) => e,
+    );
     expect(err).not.toMatchObject({ reason: "owner-lock-unreviewed" });
+    expect(err).toBeInstanceOf(SessionBalanceError);
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/charger/));
   });
 });

@@ -415,6 +415,9 @@ describe("createPayoutCells", () => {
     vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
     vi.spyOn(funder, "signTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx));
     const send = vi.spyOn(client, "sendTransaction").mockImplementation(async (tx) => ccc.Transaction.from(tx).hash());
+    // The xUDT cell dep is found by its type script (get_cells); with an empty
+    // indexer it falls back to the configured out point, off the network.
+    (client as unknown as Record<string, unknown>).findCellsPagedNoCache = async () => ({ cells: [], lastCursor: "0x" });
     const payTo = await acpLock(client, byte);
     return { client, funder, send, payTo, address: ccc.Address.fromScript(payTo, client).toString() };
   }

@@ -6,6 +6,7 @@ export default defineConfig({
   resolve: { alias: { "ckb-session-kit": fileURLToPath(new URL("src/index.ts", import.meta.url)) } },
   test: {
     globalSetup: ["test/setup-debugger.ts"],
+    setupFiles: ["test/setup-no-network.ts"],
     include: ["test/**/*.test.ts", "demo/app/**/*.test.ts"],
     testTimeout: 60_000,
   },
