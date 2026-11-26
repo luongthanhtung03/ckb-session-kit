@@ -92,8 +92,9 @@ under its key) is refused with `SessionPolicyError`, reason
 `"session-already-open"`, before anything is signed: opened again with another
 wallet or other terms, it would get a second session lock, and closing either
 would send both key cells to that one's owner. Call `createSession` for each
-opening. An expired session is refused (`SessionPolicyError`) as well: no spend
-would accept it, and only `closeSession` would get the funds back.
+opening. An expired session is refused (`SessionPolicyError`, reason
+`"session-expired"`) as well: no spend would accept it, and only `closeSession`
+would get the funds back.
 
 `opts.token: { type, amount, maxPerTx }` opens a token session: the session
 cell also holds `amount` units of the xUDT `type` (taken from the owner's
@@ -107,12 +108,21 @@ then the network checks it again in the lock. A plain payment creates a cell, so
 it is at least 61 CKB; `topUp: true` pays any amount into an existing
 anyone-can-pay cell of `to`. `memo` goes into the key cell's witness, which the
 key signs: see `verifyAccess`. The fee comes from the largest key cell, so a
-small cell someone sent to the key address does not get in the way. Throws
-`SessionBalanceError` when the balance,
-the change or the key cell would fall below what a cell needs (for the key
-cell: what it needs to go back to the owner). `beforeSend(txHash)` runs with
-the final hash before the payment is sent: record the payment there, so it is
-never sent unrecorded.
+small cell someone sent to the key address does not get in the way. A request
+with both `amount` and `token`, or neither, is a `ScopeError`
+(`"request-shape"`) before anything is built.
+
+Session cells are taken largest first, until they cover the payment and the
+change is none or a whole session cell (121 CKB, 153 with a recipient; in a
+token session, change that keeps tokens needs a token cell's size): one more
+cell rather than a sliver, so two 200 CKB cells pay 150 CKB with one 250 CKB
+change cell. Under a rate limit only mature cells count (`matureCells`).
+Throws `SessionBalanceError` when the balance is too low, when even every
+usable cell together would leave change below a session cell, or when the key
+cell would fall below what it needs to go back to the owner.
+
+`beforeSend(txHash)` runs with the final hash before the payment is sent:
+record the payment there, so it is never sent unrecorded.
 
 Cells that only the CCC client's cache still lists (outputs of this client's
 own earlier sends) are used only while the node still has them: once another
@@ -160,9 +170,11 @@ before anything is signed:
 3. the session must cover the outputs' capacity less the app inputs'; over
    `maxPerTx` it is a `ScopeError`. Plain session cells only (in a token
    session the tokens stay put), mature ones under a rate limit, with `since`
-   set on them and not on the app's inputs. Change is none or a whole session
-   cell (121 CKB for a session without a recipient): it takes one more cell
-   rather than leave less, and throws `SessionBalanceError` when it cannot;
+   set on them and not on the app's inputs. A single session cell holding
+   exactly the need is taken alone, with no change cell. Otherwise change is
+   none or a whole session cell (121 CKB for a session without a recipient):
+   it takes one more cell rather than leave less, and throws
+   `SessionBalanceError` when it cannot;
 4. the largest key cell pays the fee, so the fee never counts as outflow
    (`SessionBalanceError` `"no-fee-cell"` when it cannot);
 5. `outflow` (session inputs less change, what the lock holds to `maxPerTx`) is
@@ -220,7 +232,10 @@ only after `keyTx` or `nothingFound`. Once the funding is committed and every on
 is spent (a close whose reply was lost, or a close from another tab), it reports
 `nothingFound`. A key return the node took but whose reply was lost counts as
 `keyTx`. `owner` must be the wallet whose lock is `binding.ownerLock`: any other
-is refused with `SessionPolicyError` before it is asked to sign.
+is refused with `SessionPolicyError`, reason `"wrong-signer"`, before it is
+asked to sign. The sweep needs one plain cell under the owner's lock to prove
+ownership; without one it throws `SessionBalanceError` `"no-owner-cell"` before
+anything is signed.
 
 ### `recoverSessions(owner, deployments) → { txHashes, recovered, cells, failed }`
 Device-loss recovery, with the wallet alone: finds every session cell this owner
@@ -228,8 +243,8 @@ opened and sweeps them, in one transaction if it can, else one per session lock
 (so a planted cell spent ahead of the sweep fails alone, even one carrying the
 victim's session key hash). A sweep the node accepted
 counts as recovered even if its reply times out. Throws `SessionBalanceError`
-when the owner holds no plain cell to prove ownership, rather than reporting
-every session as failed. That cell must be under the owner's lock itself (the
+with reason `"no-owner-cell"` when the owner holds no plain cell to prove
+ownership, rather than reporting every session as failed. That cell must be under the owner's lock itself (the
 wallet's recommended address, whose hash the session args hold): cells at the
 wallet's other addresses (anyone-can-pay under the same key, an EVM wallet's
 older Omnilock or PW-Lock) do not count, since the lock would not see an owner. Key cells cannot be recovered without their key.
@@ -356,8 +371,9 @@ recipient cannot be enforced on-chain and throws `SessionPolicyError`.
 The lock scripts of the key cell and of the session cells.
 
 ### Types: `OnChainBinding`, `SessionCells`
-`OnChainBinding` is `{ ownerLock, minInterval, recipientLockHash?, token? }`,
-where `token` is `{ type, maxPerTx }`.
+`OnChainBinding` is `{ ownerLock, minInterval, recipientLockHash?, token?, openTx? }`,
+where `token` is `{ type, maxPerTx }` and `openTx` is the funding transaction's
+hash (set by `openSession`; `closeSession` reads it).
 
 ### `pickPayoutCell(client, lock, cells, avoid?) → Cell | undefined`
 How a top-up picks the recipient's anyone-can-pay cell. Confirmed cells (listed
@@ -403,8 +419,9 @@ CCC's "Insufficient CKB" when the cell holds its floor but not the fee) or
 token cells can take the payment without passing 2^128 - 1 units) or
 `"payout-busy"` (every payout cell is being spent by another payment in the
 node's pool: nothing was sent; try again after a block) or `"no-owner-cell"` (an
-owner sweep, in `closeSession`, `recoverSessions` or `ownerSweep`, needs a plain
-cell under the owner's lock to prove ownership, and there is none) or
+owner sweep, in `closeSession`, `recoverSessions`, `cancelSubscription` or
+`clearPlantedCells`, needs a plain cell under the owner's lock to prove
+ownership, and there is none; nothing was signed) or
 `"not-indexed-yet"` (`closeSession` found no cell under the session or the key
 but cannot yet tell that none is left: the funding transaction is pending or
 proposed, or committed with outputs not indexed yet, or the indexer is behind
@@ -555,7 +572,8 @@ input. Refuses terms the lock would not enforce as meant: a price or period of 0
 `payTo` equal to the charger (every charge would fail with error 17), the
 subscriber as charger or payout, a charger lock that needs no signature, an old
 deployment of the lock or one whose code is not on the client's network
-(`assertCurrentDeployment`), a live subscription with exactly the same terms, and a
+(`assertCurrentDeployment`), a live subscription with exactly the same terms
+(reason `"subscription-already-open"`), and a
 price below a new payout cell's size unless `payTo` is anyone-can-pay. A budget
 of 153 CKB plus n prices pays n more periods. Keep a plain cell in the wallet:
 cancelling needs one. `budget` is required without `token`. The subscriber's and
@@ -577,7 +595,9 @@ The memo an opening commits to, binding the subscription to one account at the c
 
 ### `chargeSubscription(charger, deployment, subscription, { payTo, topUp?, beforeSend?, retry? }) → txHash`
 The charger key takes one price, with the period as the inputs' relative `since`,
-and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). The fee
+and pays it to `payTo` (topping up its anyone-can-pay cell with `topUp`). A
+`charger` that is not the subscription's charger is refused with
+`SessionPolicyError` `"wrong-signer"` before anything is signed. The fee
 comes from one of the charger's own plain cells holding at least its floor plus
 0.01 CKB; with none, or when CCC finds the cell short of the fee, it throws
 `SessionBalanceError` with reason `"no-fee-cell"`. Throws `SessionBalanceError`
@@ -598,7 +618,11 @@ Owner-mode sweep of everything left; no creator involved, no wait. Tokens come
 back as one token cell (`refundedTokens`, token subscriptions only). Look-alikes
 of the token planted under the lock (see `clearPlantedCells`) go back too, in
 their own token cells.
-`recoverSessions` also finds and sweeps subscriptions.
+`recoverSessions` also finds and sweeps subscriptions. A signer that is not the
+subscriber is refused (`SessionPolicyError` `"wrong-signer"`), and like every
+owner sweep it needs one plain cell under the subscriber's lock
+(`SessionBalanceError` `"no-owner-cell"`); both are thrown before anything is
+signed. The same holds for `clearPlantedCells`.
 
 ### `clearPlantedCells(subscriber, deployment, subscription) → { txHash?, swept, refunded, refundedTokens?, more, nothingFound? }`
 For cells a third party created under the subscription's lock, past
@@ -622,8 +646,9 @@ cells in one transaction, so with the subscriber's own input it stays within
 cells were left: call again once the sweep commits. When every cell was read
 and none is the subscription's own, it is refused (cancel instead); with cells
 left unread, the planted ones read are swept anyway. The transaction carries
-`CLEAR_PLANTED_MEMO` (exported by `src/subscription.ts`) in the witness of the
-subscriber's own input, so a status does not take it for a cancel.
+`CLEAR_PLANTED_MEMO` (defined in `src/subscription.ts`, not exported from the
+package) in the witness of the subscriber's own input, so a status does not
+take it for a cancel.
 `nothingFound` when nothing is planted. Pass `openTx` when you have it: an
 opening with over 32 inputs cannot be told apart otherwise.
 
