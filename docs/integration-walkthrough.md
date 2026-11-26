@@ -477,9 +477,10 @@ signature:
 import { recoverSessions, TESTNET_LEGACY_DEPLOYMENTS } from "ckb-session-kit";
 
 export async function sweepLostSessions(signer: ccc.Signer) {
-  const { txHashes, recovered, failed, error } = await recoverSessions(signer, [TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]);
+  const { txHashes, recovered, failed, error, unknown } = await recoverSessions(signer, [TESTNET_DEPLOYMENT, ...TESTNET_LEGACY_DEPLOYMENTS]);
   // `error`: a sweep after the first found no plain owner cell, say; show it, offer to retry.
-  return { txHashes, recovered, failed, error };
+  // `unknown`: sweeps that may still commit; look up each `txHash` before sweeping again.
+  return { txHashes, recovered, failed, error, unknown: unknown?.map((e) => e.txHash) ?? [] };
 }
 ```
 
@@ -491,7 +492,8 @@ one plain cell under the wallet's lock (`"no-owner-cell"`). Each one-per-session
 sweep spends that cell and gets it back as change, so a later one can find none
 yet: once some sessions were swept, that fault is returned in `error` next to
 their `txHashes` rather than thrown, and the rest count in `failed`; run the
-sweep again a little later for them.
+sweep again a little later for them. A sweep whose send could not be confirmed
+either way is listed in `unknown`: check those hashes first.
 
 The key cell (the fee budget: 62 CKB for a secp256k1 wallet, 64 for JoyID or
 Omnilock, less fees spent) is under the key's own lock and cannot be recovered

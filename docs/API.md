@@ -240,7 +240,7 @@ ownership; without one it throws `SessionBalanceError` `"no-owner-cell"` before
 anything is signed.
 
 ### `recoverSessions(owner, deployments) → RecoverResult`
-`RecoverResult` is `{ txHashes, recovered, cells, failed, error? }`.
+`RecoverResult` is `{ txHashes, recovered, cells, failed, error?, unknown? }`.
 Device-loss recovery, with the wallet alone: finds every session cell this owner
 opened and sweeps them, in one transaction if it can, else one per session lock
 (so a planted cell spent ahead of the sweep fails alone, even one carrying the
@@ -253,15 +253,25 @@ session args hold): cells at the wallet's other addresses (anyone-can-pay under
 the same key, an EVM wallet's older Omnilock or PW-Lock) do not count, since the
 lock would not see an owner.
 
-In the one-session-at-a-time fallback each sweep spends a plain owner cell (its
-change comes back as a new one), so a later sweep can find none, for instance
-while that change is not yet indexed. If that fault (or another
+The one-session-at-a-time sweeps run in turn, and each spends a plain owner
+cell and makes its change a new one. The next sweep takes the first plain cell
+the client finds: with CCC's client cache, normally the previous sweep's change;
+where the cache does not know it (a send whose reply was lost, a cleared cache, a
+client without one), it can find none (`"no-owner-cell"`) or one already spent
+(that session fails) until the change is indexed. If that fault (or another
 `SessionBalanceError` or `SessionPolicyError`) comes after one or more sweeps
-were sent, it is returned instead of thrown, so their hashes are not lost:
-`error` holds it, `txHashes`, `recovered` and `cells` cover the sweeps sent, and
-the session it hit and every session not yet tried count in `failed`; call
-`recoverSessions` again later for those. With nothing sent yet it is thrown, as
-above. `error` is absent otherwise.
+were sent, or may have been (`unknown`), it is returned instead of thrown, so
+their hashes are not lost: `error` holds it, `txHashes`, `recovered` and `cells`
+cover the sweeps sent, and the session it hit and every session not yet tried
+count in `failed`; call `recoverSessions` again later for those. With nothing
+sent yet it is thrown, as above. `error` is absent otherwise.
+
+A sweep whose outcome is unknown (the send failed and the status lookup failed
+too, the case `SendOutcomeUnknownError` covers elsewhere) is never retried and
+not thrown: its `SendOutcomeUnknownError`, with the `txHash` to look for, is in
+`unknown`. A one-session sweep there counts its session in `failed`; if it was
+the combined sweep, the sessions are still swept one at a time, and each fails
+if the combined sweep did commit. `unknown` is absent when there is none.
 Key cells cannot be recovered without their key.
 
 ### `findSessionCells(session, client, deployment, binding) → SessionCells`

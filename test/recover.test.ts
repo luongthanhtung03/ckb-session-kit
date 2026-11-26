@@ -1,7 +1,14 @@
 import { ccc } from "@ckb-ccc/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sessionLockScript, TESTNET_DEPLOYMENT as d, TESTNET_LEGACY_DEPLOYMENTS } from "../src/lock.js";
-import { assertSigningLock, openSession, ownerSweep, recoverSessions, SessionBalanceError } from "../src/onchain.js";
+import {
+  assertSigningLock,
+  openSession,
+  ownerSweep,
+  recoverSessions,
+  SendOutcomeUnknownError,
+  SessionBalanceError,
+} from "../src/onchain.js";
 import { sessionAddress } from "../src/transfer.js";
 import { createSession } from "../src/session.js";
 
@@ -161,6 +168,57 @@ describe("recoverSessions", () => {
     };
     await expect(recoverSessions(owner, d)).rejects.toMatchObject({ reason: "no-owner-cell" });
     expect(sent).toHaveLength(0);
+  });
+
+  // Review, 26 Nov: a one-session sweep whose outcome was unknown (send failed,
+  // status lookup failed) was only counted in `failed`; its hash, which may still
+  // commit, was lost.
+  it("returns the hash of a one-session sweep whose outcome is unknown", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    const b2 = cell(2, "b2", 200n * CKB);
+    let b2Hash: ccc.Hex | undefined;
+    const { owner, sent } = fakeOwner([cell(1, "b1", 400n * CKB), b2, cell(3, "b3", 300n * CKB)], (tx) => {
+      if (tx.inputs.length > 2) return false; // the combined sweep: refused, known
+      if (!tx.inputs.some((i) => i.previousOutput.eq(b2.outPoint))) return true;
+      b2Hash = tx.hash();
+      return false;
+    });
+    // b2's sweep fails and the node cannot then be asked about it.
+    const known = owner.client.getTransaction.bind(owner.client);
+    (owner.client as { getTransaction: unknown }).getTransaction = async (hash: ccc.HexLike) => {
+      if (ccc.hexFrom(hash) === b2Hash) throw new Error("node unreachable");
+      return known(hash);
+    };
+    const r = await recoverSessions(owner, d);
+    expect(sent).toHaveLength(2);
+    expect(r).toMatchObject({ txHashes: sent.map((t) => t.hash()), recovered: 700n * CKB, cells: 2, failed: 1 });
+    expect(r.error).toBeUndefined();
+    expect(r.unknown).toHaveLength(1);
+    expect(r.unknown?.[0]).toBeInstanceOf(SendOutcomeUnknownError);
+    expect(r.unknown?.[0].txHash).toBe(b2Hash);
+  });
+
+  it("returns, not throws, a later no-owner-cell when the combined sweep's outcome is unknown", async () => {
+    vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockResolvedValue([0, false] as never);
+    let combined: ccc.Hex | undefined;
+    const { owner, sent } = fakeOwner([cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)], (tx) => {
+      combined = tx.hash();
+      return false;
+    });
+    (owner.client as { getTransaction: unknown }).getTransaction = async () => {
+      throw new Error("node unreachable");
+    };
+    // The combined sweep may have spent the owner's plain cell: none is found after it.
+    const plain = owner.findCells.bind(owner);
+    let calls = 0;
+    (owner as { findCells: unknown }).findCells = async function* (...a: Parameters<typeof plain>) {
+      if (++calls <= 1) yield* plain(...a);
+    };
+    const r = await recoverSessions(owner, d);
+    expect(sent).toHaveLength(0);
+    expect(r).toMatchObject({ txHashes: [], recovered: 0n, cells: 0, failed: 2 });
+    expect(r.error).toMatchObject({ reason: "no-owner-cell" });
+    expect(r.unknown?.map((e) => e.txHash)).toEqual([combined]);
   });
 });
 

@@ -8,8 +8,8 @@ deployed on CKB **testnet only**; there is no mainnet deployment yet.
 Library only: the session lock is unchanged (same code hash, no redeployment).
 
 ### Added
-- `RecoverResult`, the type `recoverSessions` returns, with a new optional
-  field `error`.
+- `RecoverResult`, the type `recoverSessions` returns, with two new optional
+  fields, `error` and `unknown`.
 
 ### Fixed
 - `recoverSessions`: when the combined sweep was refused and the sessions were
@@ -20,6 +20,12 @@ Library only: the session lock is unchanged (same code hash, no redeployment).
   `error`, with the sent sweeps in `txHashes`; the session it hit and the ones
   not yet tried count in `failed`. With nothing sent, it is still thrown as
   before. Tests in `test/recover.test.ts`.
+- `recoverSessions`: a sweep whose outcome was unknown (`SendOutcomeUnknownError`:
+  the send failed and its status could not be looked up, so it may still commit)
+  was only counted in `failed`, and its transaction hash was lost; for the
+  combined sweep, not even that. It is now returned in `unknown` (its
+  `txHash` to look for), still never retried, and counts as possibly sent: a
+  later fault no retry can fix is then returned in `error`, not thrown.
 
 ### Docs
 - `docs/integration-walkthrough.md`: how an existing CCC dApp adds an opt-in

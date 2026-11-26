@@ -1710,15 +1710,24 @@ export interface RecoverResult {
   recovered: bigint;
   /** Session cells swept. */
   cells: number;
-  /** Sessions (one session lock each) not recovered. */
+  /** Sessions (one session lock each) not recovered, including any in `unknown`. */
   failed: number;
   /**
    * Set only when a fault no retry can fix (`SessionBalanceError`, e.g. reason
    * `"no-owner-cell"`, or `SessionPolicyError`) stopped the one-session-at-a-time
-   * sweeps after at least one was sent; `txHashes` holds those. With nothing
-   * sent, the fault is thrown instead.
+   * sweeps after at least one was sent or may have been (`txHashes` or
+   * `unknown`). With nothing sent, the fault is thrown instead.
    */
   error?: SessionBalanceError | SessionPolicyError;
+  /**
+   * Sweeps whose send failed and whose status could not then be looked up: each
+   * may still commit, so look for its `txHash` before treating its cells as
+   * unswept. A one-session sweep here counts its session in `failed`, not in
+   * `recovered` or `cells`. The combined sweep here is followed by the
+   * one-session sweeps, which fail if it committed. Set only when there is at
+   * least one; never retried.
+   */
+  unknown?: SendOutcomeUnknownError[];
 }
 
 /**
@@ -1735,6 +1744,19 @@ export interface RecoverResult {
  * instead, so its hash is not lost: the loop stops, `error` is that fault, and
  * the session it hit and every session not yet tried count in `failed`.
  *
+ * A sweep whose outcome is unknown (`SendOutcomeUnknownError`: the send failed
+ * and the node could not be asked about it) may still commit. It is never
+ * retried; it is returned in `unknown`, its session counted in `failed`, and it
+ * counts as possibly sent for the rule above. If it was the combined sweep, the
+ * sessions are still swept one at a time (each fails if it did commit).
+ *
+ * The one-at-a-time sweeps run in turn, and each spends a plain owner cell and
+ * makes its change a new one. The next sweep takes the first plain cell the
+ * client finds: with CCC's client cache, normally the previous sweep's change.
+ * Where the cache does not know it (a send whose reply was lost, a cache that
+ * was cleared or is absent), it can find none (`"no-owner-cell"`) or one already
+ * spent (that session fails) until the change is indexed.
+ *
  * The key cell (the fee budget) is under the session key's own lock and cannot be
  * recovered without that key; keep it small.
  */
@@ -1746,6 +1768,7 @@ export async function recoverSessions(
   const cells = await findOwnedSessionCells(owner, deployment);
   const total = (cs: ccc.Cell[]) => cs.reduce((sum, c) => sum + c.cellOutput.capacity, 0n);
   if (!cells.length) return { txHashes: [], recovered: 0n, cells: 0, failed: 0 };
+  const unknown: SendOutcomeUnknownError[] = [];
   // A fault no other set of cells can fix (no plain owner cell) is thrown, not
   // retried once per session (review, 28 Oct).
   const fixed = (e: unknown): e is SessionBalanceError | SessionPolicyError =>
@@ -1754,6 +1777,9 @@ export async function recoverSessions(
     return { txHashes: [await ownerSweep(owner, deployment, cells)], recovered: total(cells), cells: cells.length, failed: 0 };
   } catch (e) {
     if (fixed(e)) throw e;
+    // It may have committed: keep its hash (review, 26 Nov). Each session's own
+    // sweep below then fails if it did.
+    if (e instanceof SendOutcomeUnknownError) unknown.push(e);
     // Fall through: one session at a time.
   }
   // One group per session lock (its full hash), not per session key: anyone can
@@ -1773,18 +1799,22 @@ export async function recoverSessions(
       result.cells += group.length;
     } catch (e) {
       if (!fixed(e)) {
+        // An unknown outcome may have committed: kept, not just counted (review, 26 Nov).
+        if (e instanceof SendOutcomeUnknownError) unknown.push(e);
         result.failed++;
         continue;
       }
-      // Nothing sent yet: thrown, as before. Sweeps already sent: returned with
-      // the fault, or the caller would lose their hashes (review, 26 Nov). The
-      // fault would repeat for every session left, so they are not tried.
-      if (!result.txHashes.length) throw e;
+      // Nothing sent yet: thrown, as before. Sweeps already sent, or perhaps
+      // sent: returned with the fault, or the caller would lose their hashes
+      // (review, 26 Nov). The fault would repeat for every session left, so they
+      // are not tried.
+      if (!result.txHashes.length && !unknown.length) throw e;
       result.failed += groups.length - i;
       result.error = e;
       break;
     }
   }
+  if (unknown.length) result.unknown = unknown;
   return result;
 }
 
