@@ -4,7 +4,7 @@ Browser-held self-custody sessions for CKB applications.
 
 **Live demo:** [ckb-session-kit.vercel.app](https://ckb-session-kit.vercel.app/) — connect a wallet, sign once to open a session, pay with no popups while the network enforces the limits, sign once to close (CKB testnet).
 
-**Status: v2.4.0 on npm, on CKB testnet (not audited, no mainnet deployment).** Built in the open during my CKBuilder programme.
+**Status: v2.4.1 on npm, on CKB testnet (not audited, no mainnet deployment).** Built in the open during my CKBuilder programme.
 
 | When | Milestone |
 |---|---|
@@ -13,7 +13,7 @@ Browser-held self-custody sessions for CKB applications.
 | w/c 19 Oct | ✅ Session lock script (Rust) — outflow limit, recipient, rate limit enforced on-chain; deployed to testnet |
 | w/c 26 Oct | ✅ Delegate, act repeatedly with no wallet dialog, revoke — library + demo (v0.2) |
 | w/c 2 Nov | ✅ Survives reload; ✅ device-loss recovery |
-| w/c 23 Nov | v2.4.0 on npm (v1.0 was published on 27 Oct) |
+| w/c 23 Nov | v2.4.1 on npm (v1.0 was published on 27 Oct) |
 
 ## The problem
 
@@ -44,11 +44,16 @@ The problem is not specific to that application.
 npm install ckb-session-kit
 ```
 
-[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v2.4.0, ESM, Node 20 or later
+[ckb-session-kit on npm](https://www.npmjs.com/package/ckb-session-kit) (v2.4.1, ESM, Node 20 or later
 and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
 [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md); adding a session to an existing CCC
 dApp, with CrowdCell as the example, in
 [docs/integration-walkthrough.md](docs/integration-walkthrough.md).
+
+New in 2.4.1: when sessions are swept one at a time, `recoverSessions` now
+recovers all of them in one call, even where CCC's cache does not know the
+previous sweep's change (each sweep spends that change while it is pending).
+No API change; the session lock is unchanged.
 
 New in 2.4.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
 

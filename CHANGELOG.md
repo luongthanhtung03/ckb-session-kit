@@ -3,7 +3,7 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
-## Unreleased
+## 2.4.1 (2026-11-28)
 
 Library only: the session lock is unchanged (same code hash, no redeployment).
 No export changes its signature.
@@ -21,8 +21,9 @@ No export changes its signature.
   pool conflict on a node with replace-by-fee on), that session's sweep
   searches once for another plain cell (a second signature if one is found);
   an `Unknown` answer keeps the chain. No search for a plain cell takes an
-  input of a one-session sweep sent, or perhaps sent, earlier in the call. The chained cell goes in with its output and data, so CCC looks
-  nothing up for it. Tests in `test/recover.test.ts`.
+  input of a one-session sweep sent, or perhaps sent, earlier in the call.
+  The chained cell goes in with its output and data, so CCC looks nothing up
+  for it. Tests in `test/recover.test.ts`.
 
 ## 2.4.0 (2026-11-27)
 
