@@ -8,6 +8,7 @@ import {
   recoverSessions,
   SendOutcomeUnknownError,
   SessionBalanceError,
+  tokenData,
 } from "../src/onchain.js";
 import { sessionAddress } from "../src/transfer.js";
 import { createSession } from "../src/session.js";
@@ -269,45 +270,65 @@ describe("recoverSessions", () => {
   });
 });
 
+const XUDT = { codeHash: h("cd"), hashType: "type" as const };
+const XUDT_DEP = { outPoint: { txHash: h("ce"), index: 0 }, depType: "code" as const };
+
 /**
- * A chain that tracks live and spent cells, whose indexer lags: it lists the
- * owner's plain cells in `indexed` and never the outputs of a sweep sent in the
- * call. No client cache. A send spending a spent or unknown cell is refused
- * with the node's `Dead(OutPoint(..))`; `verdict` can refuse a sweep for other
- * reasons, or lose it ("unknown": the send fails and the node cannot be asked).
+ * A node that tracks live and spent cells, with replace-by-fee on, and an
+ * indexer that lags: it lists the owner's plain cells in `indexed` and never
+ * the outputs of a sweep sent in the call. No client cache, and `getCell`
+ * answers for indexed cells only, never for an output still in the pool. A
+ * spend of a cell spent by a committed transaction is refused with `Dead`, one
+ * spent by a transaction in the pool with an RBF refusal (as CKB with RBF on),
+ * one the node does not know with `Unknown`. `verdict` can refuse a sweep for
+ * other reasons ("refuse"), lose it ("unknown": the send fails and the node
+ * cannot be asked), or answer as a fallback node that does not know `cell`.
+ * CCC's own `completeFeeBy` runs against it.
  */
 function chainOwner(
   cells: ccc.Cell[],
   o: {
-    spent?: ccc.OutPoint[];
+    committed?: ccc.OutPoint[];
+    pooled?: ccc.OutPoint[];
     indexed?: ccc.Cell[];
     live?: ccc.Cell[];
     lostReply?: boolean;
-    verdict?: (tx: ccc.Transaction) => "ok" | "refuse" | "unknown";
+    verdict?: (tx: ccc.Transaction) => "ok" | "refuse" | "unknown" | { unknownCell: ccc.OutPoint };
     afterSend?: (tx: ccc.Transaction) => void;
   } = {},
 ) {
   const key = (p: ccc.OutPointLike) => ccc.hexFrom(ccc.OutPoint.from(p).toBytes());
   const plain = ccc.Cell.from({ outPoint: op(9), cellOutput: { lock: ownerLock, capacity: 100n * CKB }, outputData: "0x" });
   const indexed = o.indexed ?? [plain];
-  const live = new Set([...cells, ...indexed, ...(o.live ?? [])].map((c) => key(c.outPoint)));
-  const spent = new Set((o.spent ?? []).map(key));
+  const onChain = new Map([...cells, ...indexed, ...(o.live ?? [])].map((c) => [key(c.outPoint), c]));
+  const live = new Set(onChain.keys());
+  const spent = new Map<string, "pool" | "committed">([
+    ...(o.committed ?? []).map((p) => [key(p), "committed"] as const),
+    ...(o.pooled ?? []).map((p) => [key(p), "pool"] as const),
+  ]);
   const sent: ccc.Transaction[] = [];
+  let signed = 0;
   const pool = new Set<string>();
   const lost = new Set<string>();
   const sendTransaction = async (tx: ccc.Transaction) => {
+    const verdict = o.verdict?.(tx) ?? "ok";
     for (const i of tx.inputs) {
       const k = key(i.previousOutput);
-      if (spent.has(k)) throw new Error(`PoolRejectedTransactionByOutputsValidator: Dead(OutPoint(${k}))`);
-      if (!live.has(k)) throw new Error(`TransactionFailedToResolve: Unknown(OutPoint(${k}))`);
+      const unknownHere = typeof verdict === "object" && i.previousOutput.eq(verdict.unknownCell);
+      if (spent.get(k) === "committed") throw new Error(`PoolRejectedTransactionByOutputsValidator: Resolve(Dead(OutPoint(${k})))`);
+      if (spent.get(k) === "pool") {
+        throw new ccc.ErrorClientRBFRejected({ code: -1111, message: "PoolRejectedRBF", data: "RBFRejected" }, 1000, 2000);
+      }
+      if (!live.has(k) || unknownHere) {
+        throw new ccc.ErrorClientResolveUnknown({ code: -301, message: "TransactionFailedToResolve", data: "" }, i.previousOutput);
+      }
     }
-    const verdict = o.verdict?.(tx) ?? "ok";
     if (verdict === "unknown") {
       lost.add(tx.hash());
       throw new Error("request timed out");
     }
     if (verdict === "refuse") throw new Error("refused");
-    for (const i of tx.inputs) spent.add(key(i.previousOutput));
+    for (const i of tx.inputs) spent.set(key(i.previousOutput), "pool");
     tx.outputs.forEach((_, index) => live.add(key({ txHash: tx.hash(), index })));
     sent.push(tx);
     pool.add(tx.hash());
@@ -330,24 +351,37 @@ function chainOwner(
         if (lost.has(ccc.hexFrom(hash))) throw new Error("node unreachable");
         return pool.has(ccc.hexFrom(hash)) ? { status: "pending" } : undefined;
       },
+      getCell: async (p: ccc.OutPointLike) => onChain.get(key(p)),
+      getFeeRate: async () => 1000n,
+      getKnownScript: async (s: ccc.KnownScript) =>
+        s === ccc.KnownScript.XUdt ? { ...XUDT, cellDeps: [{ cellDep: XUDT_DEP }] } : { codeHash: h("cf"), hashType: "type", cellDeps: [] },
+      getCellDeps: async (...infos: ccc.CellDepInfoLike[][]) => infos.flat().map((i) => ccc.CellDepInfo.from(i).cellDep),
     },
     getRecommendedAddressObj: async () => ({ script: ownerLock }),
-    signTransaction: async (tx: ccc.Transaction) => tx,
+    async *findCells() {}, // the owner's other cells: none (fees come from the sweep)
+    prepareTransaction: async (tx: ccc.Transaction) => tx,
+    signTransaction: async (tx: ccc.Transaction) => {
+      signed++;
+      return tx;
+    },
     sendTransaction,
   } as unknown as ccc.Signer;
-  return { owner, sent, indexed, spent: (p: ccc.OutPointLike) => spent.add(key(p)) };
+  return {
+    owner,
+    sent,
+    indexed,
+    signatures: () => signed,
+    spentElsewhere: (p: ccc.OutPointLike, how: "pool" | "committed") => spent.set(key(p), how),
+  };
 }
 
-/** completeFeeBy as CCC's: a change output under the owner's lock. */
-const feeWithChange = () =>
-  vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockImplementation(async function (this: ccc.Transaction) {
-    this.addOutput({ lock: ownerLock, capacity: 0n }, "0x");
-    return [0, true] as never;
-  });
-
-/** The change of `tx` (its last output), as an out point. */
-const changeOf = (tx: ccc.Transaction) => ccc.OutPoint.from({ txHash: tx.hash(), index: tx.outputs.length - 1 });
+const ownerPlain = (tx: ccc.Transaction) =>
+  tx.outputs.findIndex((o, i) => !o.type && o.lock.eq(ownerLock) && ccc.bytesFrom(tx.outputsData[i]).length === 0);
+/** The change of `tx`: its one plain output under the owner's lock. */
+const changeOf = (tx: ccc.Transaction) => ccc.OutPoint.from({ txHash: tx.hash(), index: ownerPlain(tx) });
 const spends = (tx: ccc.Transaction, p: ccc.OutPoint) => tx.inputs.some((i) => i.previousOutput.eq(p));
+/** The combined sweep: every session at once, refused. */
+const combinedRefused = (n: number) => (tx: ccc.Transaction) => (tx.inputs.length >= n + 1 ? "refuse" : "ok");
 
 // Follow-up to 2.4.0 (28 Nov): each one-session sweep spends the owner's plain
 // cell and makes its change a new one, not indexed yet. Searched for again, the
@@ -357,52 +391,79 @@ describe("recoverSessions, one session at a time, chained", () => {
     ["replies arrive", false],
     ["every reply is lost", true],
   ])("recovers several sessions in one call, each sweep spending the last one's change (%s)", async (_, lostReply) => {
-    feeWithChange();
     const planted = cell(3, "a7", 121n * CKB);
     const cells = [cell(1, "b1", 400n * CKB), planted, cell(2, "b2", 200n * CKB), cell(4, "b4", 300n * CKB)];
-    // Someone spent the planted cell first: the combined sweep is refused, as is its session's own.
-    const { owner, sent } = chainOwner(cells, { spent: [planted.outPoint], lostReply });
+    // Someone's spend of the planted cell committed: the combined sweep is refused, as is its session's own.
+    const { owner, sent, signatures } = chainOwner(cells, { committed: [planted.outPoint], lostReply });
     const r = await recoverSessions(owner, d);
     expect(sent).toHaveLength(3);
     expect(r).toEqual({ txHashes: sent.map((t) => t.hash()), recovered: 900n * CKB, cells: 3, failed: 1 });
     expect(spends(sent[0], op(9))).toBe(true);
     expect(spends(sent[1], changeOf(sent[0]))).toBe(true);
     expect(spends(sent[2], changeOf(sent[1]))).toBe(true);
+    // The real completeFeeBy paid a fee from each sweep and made its change.
+    for (const t of sent) expect(ownerPlain(t)).toBe(t.outputs.length - 1);
+    expect(signatures()).toBe(5); // combined, b1, planted, b2, b4: no search retry
   });
 
-  it("returns the sweeps already sent when the chained change is spent elsewhere and no plain cell is indexed", async () => {
-    feeWithChange();
+  it("a token session's sweep chains too: its change follows the token output", async () => {
+    const type = ccc.Script.from({ ...XUDT, args: h("71") });
+    const token = ccc.Cell.from({
+      outPoint: op(5),
+      cellOutput: {
+        lock: sessionLockScript(d, {
+          ownerLockHash: ownerLock.hash(),
+          sessionLockHash: h("b5"),
+          maxPerTx: 5n * CKB,
+          token: { typeHash: type.hash(), maxPerTx: 10n },
+        }),
+        type,
+        capacity: 300n * CKB,
+      },
+      outputData: tokenData(1000n),
+    });
+    const { owner, sent } = chainOwner([token, cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB)], {
+      verdict: combinedRefused(3),
+    });
+    const r = await recoverSessions(owner, d);
+    expect(r).toEqual({ txHashes: sent.map((t) => t.hash()), recovered: 900n * CKB, cells: 3, failed: 0 });
+    const swept = sent.find((t) => spends(t, token.outPoint))!;
+    expect(swept.outputs[0].type?.eq(type)).toBe(true); // the tokens, back to the owner
+    expect(ownerPlain(swept)).toBe(1); // the change, after them
+    const next = sent[sent.indexOf(swept) + 1];
+    expect(spends(next, changeOf(swept))).toBe(true);
+    expect(spends(next, ccc.OutPoint.from({ txHash: swept.hash(), index: 0 }))).toBe(false);
+  });
+
+  it("returns the sweeps already sent when the chained change's other spend committed and no plain cell is left", async () => {
     const cells = [cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB), cell(4, "b4", 300n * CKB)];
     const chain = chainOwner(cells, {
-      verdict: (tx) => (tx.inputs.length > 2 ? "refuse" : "ok"), // the combined sweep
-      // Another tab spends b1's change at once; the indexer has caught up on op(9) only.
-      afterSend: (tx) => {
-        chain.spent(changeOf(tx));
-        chain.indexed.length = 0;
-      },
+      verdict: combinedRefused(3),
+      // b1's change is spent elsewhere, and this node has committed that spend (`Dead`).
+      afterSend: (tx) => chain.spentElsewhere(changeOf(tx), "committed"),
     });
     const r = await recoverSessions(chain.owner, d);
     expect(chain.sent).toHaveLength(1);
     expect(r).toMatchObject({ txHashes: [chain.sent[0].hash()], recovered: 400n * CKB, cells: 1, failed: 2 });
     expect(r.error).toBeInstanceOf(SessionBalanceError);
-    expect(r.error).toMatchObject({ reason: "no-owner-cell" });
+    expect(r.error).toMatchObject({ reason: "no-owner-cell" }); // op(9) is still listed, but b1's sweep spent it
     expect(r.unknown).toBeUndefined();
   });
 
-  it("searches once when the chained change is spent elsewhere, then chains off the cell it finds", async () => {
-    feeWithChange();
+  // Review M1, 28 Nov: on a node with RBF on, another tab's pending spend of the
+  // change is a pool conflict, not `Dead`.
+  it("searches once on a pool conflict over the chained change, then chains off the cell it finds", async () => {
     const cells = [cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB), cell(4, "b4", 300n * CKB)];
     const other = ccc.Cell.from({ outPoint: op(8), cellOutput: { lock: ownerLock, capacity: 90n * CKB }, outputData: "0x" });
     let first = true;
     const chain = chainOwner(cells, {
       live: [other],
-      verdict: (tx) => (tx.inputs.length > 2 ? "refuse" : "ok"),
-      // Another tab spends b1's change at once; the indexer now lists another plain cell.
+      verdict: combinedRefused(3),
       afterSend: (tx) => {
         if (!first) return;
         first = false;
-        chain.spent(changeOf(tx));
-        chain.indexed.splice(0, chain.indexed.length, other);
+        chain.spentElsewhere(changeOf(tx), "pool"); // another tab, still pending
+        chain.indexed.push(other); // and the indexer now lists another plain cell
       },
     });
     const r = await recoverSessions(chain.owner, d);
@@ -412,13 +473,55 @@ describe("recoverSessions, one session at a time, chained", () => {
     expect(spends(chain.sent[2], changeOf(chain.sent[1]))).toBe(true);
   });
 
+  // Review M3, 28 Nov: the search must not take the cell an earlier sweep spent.
+  it("on a pool conflict with no other plain cell, never re-spends an earlier sweep's input and keeps the chain", async () => {
+    const cells = [cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB), cell(4, "b4", 300n * CKB)];
+    const chain = chainOwner(cells, {
+      verdict: combinedRefused(3),
+      afterSend: (tx) => chain.spentElsewhere(changeOf(tx), "pool"),
+    });
+    const r = await recoverSessions(chain.owner, d);
+    expect(chain.sent).toHaveLength(1);
+    expect(r).toEqual({ txHashes: [chain.sent[0].hash()], recovered: 400n * CKB, cells: 1, failed: 2 });
+    expect(chain.signatures()).toBe(4); // combined, b1, b2, b4: the searches found nothing to sign
+  });
+
+  it("a pool conflict on a planted session cell costs no extra signature without another plain cell", async () => {
+    const planted = cell(3, "a7", 121n * CKB);
+    const cells = [cell(1, "b1", 400n * CKB), planted, cell(2, "b2", 200n * CKB)];
+    // The planter's spend of the planted cell is still pending: an RBF refusal, which names no cell.
+    const { owner, sent, signatures } = chainOwner(cells, { pooled: [planted.outPoint] });
+    const r = await recoverSessions(owner, d);
+    expect(r).toEqual({ txHashes: sent.map((t) => t.hash()), recovered: 600n * CKB, cells: 2, failed: 1 });
+    expect(spends(sent[1], changeOf(sent[0]))).toBe(true); // the chain survived the planted session
+    expect(signatures()).toBe(4); // combined, b1, planted, b2
+  });
+
+  it("keeps the chain when a fallback node does not know the chained change yet (Unknown)", async () => {
+    const b2 = cell(2, "b2", 200n * CKB);
+    let firstChange: ccc.OutPoint | undefined;
+    const chain = chainOwner([cell(1, "b1", 400n * CKB), b2, cell(4, "b4", 300n * CKB)], {
+      verdict: (tx) => {
+        if (tx.inputs.length >= 4) return "refuse";
+        // b2's sweep reaches a node that has not seen b1's sweep.
+        if (spends(tx, b2.outPoint) && firstChange) return { unknownCell: firstChange };
+        return "ok";
+      },
+      afterSend: (tx) => (firstChange ??= changeOf(tx)),
+    });
+    const r = await recoverSessions(chain.owner, d);
+    expect(r).toEqual({ txHashes: chain.sent.map((t) => t.hash()), recovered: 700n * CKB, cells: 2, failed: 1 });
+    expect(chain.sent.filter((t) => spends(t, op(9)))).toHaveLength(1); // no second spend of b1's input
+    expect(spends(chain.sent[1], firstChange!)).toBe(true);
+    expect(chain.signatures()).toBe(4); // combined, b1, b2, b4: no search
+  });
+
   it("chains past a one-session sweep whose outcome is unknown, off the last sweep sent", async () => {
-    feeWithChange();
     const b2 = cell(2, "b2", 200n * CKB);
     let b2Hash: ccc.Hex | undefined;
     const { owner, sent } = chainOwner([cell(1, "b1", 400n * CKB), b2, cell(4, "b4", 300n * CKB)], {
       verdict: (tx) => {
-        if (tx.inputs.length > 2) return "refuse"; // the combined sweep: refused, known
+        if (tx.inputs.length >= 4) return "refuse"; // the combined sweep: refused, known
         if (!spends(tx, b2.outPoint)) return "ok";
         b2Hash = tx.hash();
         return "unknown"; // the node did not take it, and cannot be asked

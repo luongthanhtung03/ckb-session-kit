@@ -163,11 +163,20 @@ export async function signAndSend(
   tx: ccc.Transaction,
   beforeSend?: (txHash: ccc.Hex) => Promise<void>,
 ): Promise<ccc.Hex> {
+  return (await signAndSendSigned(signer, tx, beforeSend)).hash;
+}
+
+/** `signAndSend`, which also returns the transaction as signed and sent. */
+async function signAndSendSigned(
+  signer: ccc.Signer,
+  tx: ccc.Transaction,
+  beforeSend?: (txHash: ccc.Hex) => Promise<void>,
+): Promise<{ hash: ccc.Hex; signed: ccc.Transaction }> {
   const signed = await signer.signTransaction(tx);
   const hash = signed.hash();
   await beforeSend?.(hash);
   try {
-    return await signer.client.sendTransaction(signed);
+    return { hash: await signer.client.sendTransaction(signed), signed };
   } catch (e) {
     let known: Awaited<ReturnType<ccc.Client["getTransaction"]>>;
     try {
@@ -176,7 +185,7 @@ export async function signAndSend(
       // A lost reply, then a fallback node answering Dead because this one committed: not a refusal.
       throw new SendOutcomeUnknownError(hash, e);
     }
-    if (known && ["pending", "proposed", "committed"].includes(known.status)) return hash;
+    if (known && ["pending", "proposed", "committed"].includes(known.status)) return { hash, signed };
     throw e;
   }
 }
@@ -487,6 +496,16 @@ function rejectedOutPoint(e: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The out point a `Dead` rejection names (as `outPointKey`): spent, by a
+ * transaction this node has committed. Not `Unknown`, which a node that has
+ * not yet seen the transaction making the cell answers too (a fallback node).
+ */
+function deadOutPoint(e: unknown): string | undefined {
+  if (e instanceof ccc.ErrorClientResolveUnknown || !/\bDead\(OutPoint\(/.test(errorText(e))) return undefined;
+  return rejectedOutPoint(e);
 }
 
 /** How often, and how patiently, a payment or a charge is built again after a refusal for a spent cell. */
@@ -1760,10 +1779,16 @@ export interface RecoverResult {
  * so one call recovers every session it can without waiting for the indexer,
  * also where the client cache does not know that change (a send whose reply
  * was lost, a cache that was cleared or is absent). A refused or unknown sweep
- * does not move this on: the next sweep tries the same owner cell. If the node
- * calls that change spent or unknown, the sweep searches for a plain cell once
- * instead, which until the change is indexed can find none (`"no-owner-cell"`)
- * or one already spent (that session fails).
+ * does not move this on: the next sweep tries the same owner cell (so if an
+ * unknown sweep did land, the sessions after it fail: run the call again once
+ * it commits). If the node calls that change spent (`Dead`, or a conflict with
+ * a pending spend on a node with replace-by-fee on), the sweep searches once
+ * for another plain cell, never one an earlier sweep in the call spent; that
+ * is a second signature for the session if one is found. After `Dead`, finding
+ * none is `"no-owner-cell"`; after a conflict (which may have been on a session
+ * cell instead), the session fails and the chain is kept. `Unknown` (a fallback
+ * node that has not seen the previous sweep yet) fails the session and keeps
+ * the chain.
  *
  * The key cell (the fee budget) is under the session key's own lock and cannot be
  * recovered without that key; keep it small.
@@ -1805,16 +1830,38 @@ export async function recoverSessions(
   // a sweep sent; a refused or unknown one leaves it, so the next sweep tries
   // the cell this one tried (follow-up to 2.4.0, 28 Nov).
   let proof: ccc.Cell | undefined;
+  // Every input of a sweep sent, or perhaps sent, in this call: the search
+  // below never takes one, so it cannot double-spend an earlier sweep where the
+  // indexer (or a fallback node) still lists that sweep's input (review M3, 28 Nov).
+  const spentHere = new Set<string>();
   const sweep = async (group: ccc.Cell[]) => {
+    const chained = proof;
+    if (!chained) return sweepToOwner(owner, deployment, group, { spent: spentHere });
     try {
-      return await sweepToOwner(owner, deployment, group, { proof });
+      return await sweepToOwner(owner, deployment, group, { proof: chained, spent: spentHere });
     } catch (e) {
-      // The node called the chained cell itself spent or unknown (another tab
-      // spent it, the sweep that made it was dropped): not this session's fault.
-      // Searched for once instead.
-      if (!proof || rejectedOutPoint(e) !== outPointKey(proof.outPoint)) throw e;
-      proof = undefined;
-      return await sweepToOwner(owner, deployment, group, {});
+      // The node says the chained cell is spent: `Dead` (another spend of it
+      // committed) or, on a node with replace-by-fee on, a conflict in its pool
+      // (another tab spent it while pending; the conflict can also be on a
+      // session cell, which the refusal does not say). Not `Unknown`: a fallback
+      // node that has not seen the sweep making it answers that too, and the
+      // chain is kept (review M1, M3). Another plain cell is searched for once,
+      // never the chained one or one an earlier sweep here spent.
+      const dead = deadOutPoint(e) === outPointKey(chained.outPoint);
+      if (!dead && !poolConflict(e)) throw e;
+      const avoid = new Set([...spentHere, outPointKey(chained.outPoint)]);
+      if (dead) {
+        proof = undefined;
+        return await sweepToOwner(owner, deployment, group, { avoid, spent: spentHere });
+      }
+      try {
+        return await sweepToOwner(owner, deployment, group, { avoid, spent: spentHere });
+      } catch (again) {
+        // A conflict, then no other cell or another refusal: the conflict was
+        // perhaps on a session cell. The chain is kept and the first refusal
+        // counts; a retry that may have been sent is kept as unknown.
+        throw again instanceof SendOutcomeUnknownError ? again : e;
+      }
     }
   };
   for (const [i, group] of groups.entries()) {
@@ -1887,13 +1934,15 @@ export async function ownerSweep(
  * `ownerSweep`, which also returns the sweep's change: the plain cell it makes
  * under the owner's lock, which a next sweep can spend as its proof input while
  * the sweep is still pending (`recoverSessions`). With `proof`, that cell is the
- * proof input and no other is searched for.
+ * proof input and no other is searched for. A search skips the cells in
+ * `avoid` (out point keys). The inputs of a sweep sent, or whose outcome is
+ * unknown, are added to `spent`.
  */
 async function sweepToOwner(
   owner: ccc.Signer,
   deployments: SessionLockDeployment | SessionLockDeployment[],
   cells: ccc.Cell[],
-  opts: { memo?: ccc.Hex; proof?: ccc.Cell },
+  opts: { memo?: ccc.Hex; proof?: ccc.Cell; avoid?: ReadonlySet<string>; spent?: Set<string> },
 ): Promise<{ txHash: ccc.Hex; change?: ccc.Cell }> {
   // The code of every lock version these cells are under, and only those.
   const used = [deployments].flat().filter((d) => cells.some((c) => c.cellOutput.lock.codeHash === d.codeHash));
@@ -1928,16 +1977,30 @@ async function sweepToOwner(
         withData: true,
       });
   for await (const cell of plain) {
-    tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
+    if (opts.avoid?.has(outPointKey(cell.outPoint))) continue;
+    // With the cell's output and data, CCC needs no lookup for it: a chained
+    // change is still pending, and a node may not answer for it (review L1).
+    tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint, cellOutput: cell.cellOutput, outputData: cell.outputData }));
     if (opts.memo) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: opts.memo });
     await tx.completeFeeBy(owner);
-    // A sweep the node took but whose reply was lost is still the sweep (review, 28 Oct).
-    const txHash = await signAndSend(owner, tx);
+    const inputs = () => tx.inputs.forEach((i) => opts.spent?.add(outPointKey(i.previousOutput)));
+    let sent: { hash: ccc.Hex; signed: ccc.Transaction };
+    try {
+      // A sweep the node took but whose reply was lost is still the sweep (review, 28 Oct).
+      sent = await signAndSendSigned(owner, tx);
+    } catch (e) {
+      if (e instanceof SendOutcomeUnknownError) inputs();
+      throw e;
+    }
+    inputs();
     // The change: the one output under the owner's lock with no type and no data
-    // (token returns carry a type). Signing adds witnesses only, so its index holds.
-    const index = tx.outputs.findIndex((o, i) => !o.type && o.lock.eq(ownerLock) && ccc.bytesFrom(tx.outputsData[i] ?? "0x").length === 0);
+    // (token returns carry a type), in the transaction as signed and sent.
+    const { hash: txHash, signed } = sent;
+    const index = signed.outputs.findIndex(
+      (o, i) => !o.type && o.lock.eq(ownerLock) && ccc.bytesFrom(signed.outputsData[i] ?? "0x").length === 0,
+    );
     if (index < 0) return { txHash };
-    const change = ccc.Cell.from({ outPoint: { txHash, index }, cellOutput: tx.outputs[index], outputData: "0x" });
+    const change = ccc.Cell.from({ outPoint: { txHash, index }, cellOutput: signed.outputs[index], outputData: "0x" });
     return { txHash, change };
   }
   throw new SessionBalanceError("the owner needs one plain cell to prove ownership", "no-owner-cell");
