@@ -487,11 +487,13 @@ export async function sweepLostSessions(signer: ccc.Signer) {
 This ends **every** session the wallet still has open, in another browser or
 another app too, not just the lost one: say so and ask the user to confirm
 first. It is one signature, or one per session if the combined sweep is
-refused (`failed` counts the sessions not recovered), and like Close it needs
+refused (`failed` counts the sessions not recovered; a session whose sweep
+finds the owner's change already spent may ask for a second one), and like Close it needs
 one plain cell under the wallet's lock (`"no-owner-cell"`). Each one-per-session
 sweep spends that cell and gets it back as change, which the next sweep spends
 at once. Only if something else spends that change first can a later sweep
-find no plain cell yet: once some sessions were swept, that fault is returned
+find no plain cell yet (if that other spend is still pending and no other
+plain cell is found, the later sessions fail one by one instead): once some sessions were swept, that fault is returned
 in `error` next to their `txHashes` rather than thrown, and the rest count in
 `failed`; run the sweep again a little later for them. A sweep whose send could not be confirmed
 either way is listed in `unknown`: check those hashes first.

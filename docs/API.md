@@ -259,10 +259,16 @@ client finds; each next one spends the change of the last sweep sent, while it
 is still pending, so one call recovers every session it can without waiting
 for the indexer, with or without CCC's client cache (a send whose reply was
 lost, a cleared cache, a client without one). A refused or unknown sweep does
-not move this on: the next sweep tries the same owner cell. If the node calls
-that change spent or unknown (another tab spent it), the sweep searches for a
-plain cell once instead, which until the change is indexed can find none
-(`"no-owner-cell"`) or one already spent (that session fails). If that fault (or another
+not move this on: the next sweep tries the same owner cell, so if an unknown
+sweep did land, the sessions after it fail; run the call again once it commits.
+If the node calls that change spent (`Dead`, or, on a node with replace-by-fee
+on, a conflict with a pending spend: another tab spent it), the sweep searches
+once for another plain cell, never one an earlier sweep in the call spent, and
+asks for a second signature if it finds one. After `Dead`, finding none is
+`"no-owner-cell"`; after a conflict, which may have been on one of the session's
+own cells instead, the session fails and the chain is kept. An `Unknown` answer
+(a fallback node that has not seen the previous sweep yet) fails the session
+and keeps the chain. If that fault (or another
 `SessionBalanceError` or `SessionPolicyError`) comes after one or more sweeps
 were sent, or may have been (`unknown`), it is returned instead of thrown, so
 their hashes are not lost: `error` holds it, `txHashes`, `recovered` and `cells`
