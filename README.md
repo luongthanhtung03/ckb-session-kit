@@ -4,7 +4,7 @@ Browser-held self-custody sessions for CKB applications.
 
 **Live demo:** [ckb-session-kit.vercel.app](https://ckb-session-kit.vercel.app/) — connect a wallet, sign once to open a session, pay with no popups while the network enforces the limits, sign once to close (CKB testnet).
 
-**Status: v2.3.0 on npm, on CKB testnet (not audited, no mainnet deployment).** Built in the open during my CKBuilder programme.
+**Status: v2.4.0 on npm, on CKB testnet (not audited, no mainnet deployment).** Built in the open during my CKBuilder programme.
 
 | When | Milestone |
 |---|---|
@@ -13,7 +13,7 @@ Browser-held self-custody sessions for CKB applications.
 | w/c 19 Oct | ✅ Session lock script (Rust) — outflow limit, recipient, rate limit enforced on-chain; deployed to testnet |
 | w/c 26 Oct | ✅ Delegate, act repeatedly with no wallet dialog, revoke — library + demo (v0.2) |
 | w/c 2 Nov | ✅ Survives reload; ✅ device-loss recovery |
-| w/c 23 Nov | v2.3.0 on npm (v1.0 was published on 27 Oct) |
+| w/c 23 Nov | v2.4.0 on npm (v1.0 was published on 27 Oct) |
 
 ## The problem
 
@@ -50,7 +50,22 @@ and browsers). The API is in [docs/API.md](docs/API.md); the walkthrough in
 dApp, with CrowdCell as the example, in
 [docs/integration-walkthrough.md](docs/integration-walkthrough.md).
 
-New in 2.3.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
+New in 2.4.0 (details and upgrade notes in [CHANGELOG.md](CHANGELOG.md)):
+
+- **`recoverSessions` keeps what it sent.** When the combined sweep is refused
+  and the sessions are swept one at a time, a fault on a later session no
+  longer throws away the earlier sweeps: once a sweep has been sent, the fault
+  is returned in `error`, with the sent sweeps in `txHashes` and the sessions
+  not swept counted in `failed`. With nothing sent, it still throws.
+- **Unknown sends are reported.** A sweep whose outcome is unknown
+  (`SendOutcomeUnknownError`: it may still commit) is returned in `unknown`,
+  with its `txHash` to look for, and is never retried.
+- `RecoverResult`, the type `recoverSessions` returns, is exported, with the
+  new optional fields `error` and `unknown`. Every 2.3.0 export keeps its
+  signature; check `failed`, `error` and `unknown`, not just whether the call
+  threw. The session lock is unchanged.
+
+Added in 2.3.0:
 
 - **A session opens once.** `openSession` refuses a session that is already
   open (`session.onchain` set, or a live cell under its key) with
