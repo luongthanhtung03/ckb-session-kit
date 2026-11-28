@@ -500,8 +500,9 @@ function rejectedOutPoint(e: unknown): string | undefined {
 
 /**
  * The out point a `Dead` rejection names (as `outPointKey`): spent, by a
- * transaction this node has committed. Not `Unknown`, which a node that has
- * not yet seen the transaction making the cell answers too (a fallback node).
+ * transaction this node has committed, or by a pending one on a node with
+ * replace-by-fee off. Not `Unknown`, which a node that has not yet seen the
+ * transaction making the cell answers too (a fallback node).
  */
 function deadOutPoint(e: unknown): string | undefined {
   if (e instanceof ccc.ErrorClientResolveUnknown || !/\bDead\(OutPoint\(/.test(errorText(e))) return undefined;
@@ -1780,15 +1781,18 @@ export interface RecoverResult {
  * also where the client cache does not know that change (a send whose reply
  * was lost, a cache that was cleared or is absent). A refused or unknown sweep
  * does not move this on: the next sweep tries the same owner cell (so if an
- * unknown sweep did land, the sessions after it fail: run the call again once
- * it commits). If the node calls that change spent (`Dead`, or a conflict with
- * a pending spend on a node with replace-by-fee on), the sweep searches once
- * for another plain cell, never one an earlier sweep in the call spent; that
- * is a second signature for the session if one is found. After `Dead`, finding
- * none is `"no-owner-cell"`; after a conflict (which may have been on a session
- * cell instead), the session fails and the chain is kept. `Unknown` (a fallback
- * node that has not seen the previous sweep yet) fails the session and keeps
- * the chain.
+ * unknown sweep did land, the sessions after it may fail: run the call again
+ * once it commits). If the node calls that change spent (`Dead`: spent by a
+ * committed transaction, or by a pending one on a node with replace-by-fee off;
+ * or, with replace-by-fee on, a conflict with a pending spend), the sweep
+ * searches once for another plain cell; that is a second signature for the
+ * session if one is found. After `Dead`, finding none is `"no-owner-cell"`.
+ * After a conflict (which may have been on a session cell instead), finding
+ * none, or finding one whose sweep is refused too, fails the session and keeps
+ * the chain; a retry whose outcome is unknown is in `unknown`. `Unknown` (a
+ * fallback node that has not seen the previous sweep yet) fails the session
+ * and keeps the chain. No search for a plain cell ever takes an input of a
+ * one-session sweep sent, or perhaps sent, earlier in the call.
  *
  * The key cell (the fee budget) is under the session key's own lock and cannot be
  * recovered without that key; keep it small.
@@ -1830,18 +1834,23 @@ export async function recoverSessions(
   // a sweep sent; a refused or unknown one leaves it, so the next sweep tries
   // the cell this one tried (follow-up to 2.4.0, 28 Nov).
   let proof: ccc.Cell | undefined;
-  // Every input of a sweep sent, or perhaps sent, in this call: the search
-  // below never takes one, so it cannot double-spend an earlier sweep where the
-  // indexer (or a fallback node) still lists that sweep's input (review M3, 28 Nov).
+  // Every input of a one-session sweep sent, or perhaps sent, in this call: no
+  // search for a plain cell takes one (the first sweep's, with no chain yet or
+  // after the chain was dropped, and the retry below), so none can double-spend
+  // an earlier sweep where the indexer (or a fallback node) still lists that
+  // sweep's input (review M3 and re-review R-M1, 28 Nov). A cell avoided after
+  // an unknown sweep that did not land costs at worst "no-owner-cell", returned
+  // in `error` next to that sweep in `unknown`.
   const spentHere = new Set<string>();
   const sweep = async (group: ccc.Cell[]) => {
     const chained = proof;
-    if (!chained) return sweepToOwner(owner, deployment, group, { spent: spentHere });
+    if (!chained) return sweepToOwner(owner, deployment, group, { avoid: spentHere, spent: spentHere });
     try {
       return await sweepToOwner(owner, deployment, group, { proof: chained, spent: spentHere });
     } catch (e) {
       // The node says the chained cell is spent: `Dead` (another spend of it
-      // committed) or, on a node with replace-by-fee on, a conflict in its pool
+      // committed, or is pending on a node with replace-by-fee off), or, with
+      // replace-by-fee on, a conflict in its pool
       // (another tab spent it while pending; the conflict can also be on a
       // session cell, which the refusal does not say). Not `Unknown`: a fallback
       // node that has not seen the sweep making it answers that too, and the
@@ -1857,8 +1866,8 @@ export async function recoverSessions(
       try {
         return await sweepToOwner(owner, deployment, group, { avoid, spent: spentHere });
       } catch (again) {
-        // A conflict, then no other cell or another refusal: the conflict was
-        // perhaps on a session cell. The chain is kept and the first refusal
+        // A conflict, then no other cell, or one whose sweep is refused too: the
+        // conflict was perhaps on a session cell. The chain is kept and the first refusal
         // counts; a retry that may have been sent is kept as unknown.
         throw again instanceof SendOutcomeUnknownError ? again : e;
       }
