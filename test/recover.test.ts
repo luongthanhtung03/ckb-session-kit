@@ -269,6 +269,170 @@ describe("recoverSessions", () => {
   });
 });
 
+/**
+ * A chain that tracks live and spent cells, whose indexer lags: it lists the
+ * owner's plain cells in `indexed` and never the outputs of a sweep sent in the
+ * call. No client cache. A send spending a spent or unknown cell is refused
+ * with the node's `Dead(OutPoint(..))`; `verdict` can refuse a sweep for other
+ * reasons, or lose it ("unknown": the send fails and the node cannot be asked).
+ */
+function chainOwner(
+  cells: ccc.Cell[],
+  o: {
+    spent?: ccc.OutPoint[];
+    indexed?: ccc.Cell[];
+    live?: ccc.Cell[];
+    lostReply?: boolean;
+    verdict?: (tx: ccc.Transaction) => "ok" | "refuse" | "unknown";
+    afterSend?: (tx: ccc.Transaction) => void;
+  } = {},
+) {
+  const key = (p: ccc.OutPointLike) => ccc.hexFrom(ccc.OutPoint.from(p).toBytes());
+  const plain = ccc.Cell.from({ outPoint: op(9), cellOutput: { lock: ownerLock, capacity: 100n * CKB }, outputData: "0x" });
+  const indexed = o.indexed ?? [plain];
+  const live = new Set([...cells, ...indexed, ...(o.live ?? [])].map((c) => key(c.outPoint)));
+  const spent = new Set((o.spent ?? []).map(key));
+  const sent: ccc.Transaction[] = [];
+  const pool = new Set<string>();
+  const lost = new Set<string>();
+  const sendTransaction = async (tx: ccc.Transaction) => {
+    for (const i of tx.inputs) {
+      const k = key(i.previousOutput);
+      if (spent.has(k)) throw new Error(`PoolRejectedTransactionByOutputsValidator: Dead(OutPoint(${k}))`);
+      if (!live.has(k)) throw new Error(`TransactionFailedToResolve: Unknown(OutPoint(${k}))`);
+    }
+    const verdict = o.verdict?.(tx) ?? "ok";
+    if (verdict === "unknown") {
+      lost.add(tx.hash());
+      throw new Error("request timed out");
+    }
+    if (verdict === "refuse") throw new Error("refused");
+    for (const i of tx.inputs) spent.add(key(i.previousOutput));
+    tx.outputs.forEach((_, index) => live.add(key({ txHash: tx.hash(), index })));
+    sent.push(tx);
+    pool.add(tx.hash());
+    o.afterSend?.(tx);
+    if (o.lostReply) throw new Error("request timed out");
+    return tx.hash();
+  };
+  const owner = {
+    client: {
+      async *findCells(k: { script: ccc.ScriptLike; scriptSearchMode?: string }) {
+        if (k.scriptSearchMode === "exact") {
+          for (const c of indexed) yield c; // stale: spent cells stay listed, new change is not
+          return;
+        }
+        const prefix = ccc.Script.from(k.script).args;
+        for (const c of cells) if (c.cellOutput.lock.args.startsWith(prefix)) yield c;
+      },
+      sendTransaction,
+      getTransaction: async (hash: ccc.HexLike) => {
+        if (lost.has(ccc.hexFrom(hash))) throw new Error("node unreachable");
+        return pool.has(ccc.hexFrom(hash)) ? { status: "pending" } : undefined;
+      },
+    },
+    getRecommendedAddressObj: async () => ({ script: ownerLock }),
+    signTransaction: async (tx: ccc.Transaction) => tx,
+    sendTransaction,
+  } as unknown as ccc.Signer;
+  return { owner, sent, indexed, spent: (p: ccc.OutPointLike) => spent.add(key(p)) };
+}
+
+/** completeFeeBy as CCC's: a change output under the owner's lock. */
+const feeWithChange = () =>
+  vi.spyOn(ccc.Transaction.prototype, "completeFeeBy").mockImplementation(async function (this: ccc.Transaction) {
+    this.addOutput({ lock: ownerLock, capacity: 0n }, "0x");
+    return [0, true] as never;
+  });
+
+/** The change of `tx` (its last output), as an out point. */
+const changeOf = (tx: ccc.Transaction) => ccc.OutPoint.from({ txHash: tx.hash(), index: tx.outputs.length - 1 });
+const spends = (tx: ccc.Transaction, p: ccc.OutPoint) => tx.inputs.some((i) => i.previousOutput.eq(p));
+
+// Follow-up to 2.4.0 (28 Nov): each one-session sweep spends the owner's plain
+// cell and makes its change a new one, not indexed yet. Searched for again, the
+// spent cell came back and every later sweep failed: one session per call.
+describe("recoverSessions, one session at a time, chained", () => {
+  it.each([
+    ["replies arrive", false],
+    ["every reply is lost", true],
+  ])("recovers several sessions in one call, each sweep spending the last one's change (%s)", async (_, lostReply) => {
+    feeWithChange();
+    const planted = cell(3, "a7", 121n * CKB);
+    const cells = [cell(1, "b1", 400n * CKB), planted, cell(2, "b2", 200n * CKB), cell(4, "b4", 300n * CKB)];
+    // Someone spent the planted cell first: the combined sweep is refused, as is its session's own.
+    const { owner, sent } = chainOwner(cells, { spent: [planted.outPoint], lostReply });
+    const r = await recoverSessions(owner, d);
+    expect(sent).toHaveLength(3);
+    expect(r).toEqual({ txHashes: sent.map((t) => t.hash()), recovered: 900n * CKB, cells: 3, failed: 1 });
+    expect(spends(sent[0], op(9))).toBe(true);
+    expect(spends(sent[1], changeOf(sent[0]))).toBe(true);
+    expect(spends(sent[2], changeOf(sent[1]))).toBe(true);
+  });
+
+  it("returns the sweeps already sent when the chained change is spent elsewhere and no plain cell is indexed", async () => {
+    feeWithChange();
+    const cells = [cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB), cell(4, "b4", 300n * CKB)];
+    const chain = chainOwner(cells, {
+      verdict: (tx) => (tx.inputs.length > 2 ? "refuse" : "ok"), // the combined sweep
+      // Another tab spends b1's change at once; the indexer has caught up on op(9) only.
+      afterSend: (tx) => {
+        chain.spent(changeOf(tx));
+        chain.indexed.length = 0;
+      },
+    });
+    const r = await recoverSessions(chain.owner, d);
+    expect(chain.sent).toHaveLength(1);
+    expect(r).toMatchObject({ txHashes: [chain.sent[0].hash()], recovered: 400n * CKB, cells: 1, failed: 2 });
+    expect(r.error).toBeInstanceOf(SessionBalanceError);
+    expect(r.error).toMatchObject({ reason: "no-owner-cell" });
+    expect(r.unknown).toBeUndefined();
+  });
+
+  it("searches once when the chained change is spent elsewhere, then chains off the cell it finds", async () => {
+    feeWithChange();
+    const cells = [cell(1, "b1", 400n * CKB), cell(2, "b2", 200n * CKB), cell(4, "b4", 300n * CKB)];
+    const other = ccc.Cell.from({ outPoint: op(8), cellOutput: { lock: ownerLock, capacity: 90n * CKB }, outputData: "0x" });
+    let first = true;
+    const chain = chainOwner(cells, {
+      live: [other],
+      verdict: (tx) => (tx.inputs.length > 2 ? "refuse" : "ok"),
+      // Another tab spends b1's change at once; the indexer now lists another plain cell.
+      afterSend: (tx) => {
+        if (!first) return;
+        first = false;
+        chain.spent(changeOf(tx));
+        chain.indexed.splice(0, chain.indexed.length, other);
+      },
+    });
+    const r = await recoverSessions(chain.owner, d);
+    expect(chain.sent).toHaveLength(3);
+    expect(r).toEqual({ txHashes: chain.sent.map((t) => t.hash()), recovered: 900n * CKB, cells: 3, failed: 0 });
+    expect(spends(chain.sent[1], other.outPoint)).toBe(true);
+    expect(spends(chain.sent[2], changeOf(chain.sent[1]))).toBe(true);
+  });
+
+  it("chains past a one-session sweep whose outcome is unknown, off the last sweep sent", async () => {
+    feeWithChange();
+    const b2 = cell(2, "b2", 200n * CKB);
+    let b2Hash: ccc.Hex | undefined;
+    const { owner, sent } = chainOwner([cell(1, "b1", 400n * CKB), b2, cell(4, "b4", 300n * CKB)], {
+      verdict: (tx) => {
+        if (tx.inputs.length > 2) return "refuse"; // the combined sweep: refused, known
+        if (!spends(tx, b2.outPoint)) return "ok";
+        b2Hash = tx.hash();
+        return "unknown"; // the node did not take it, and cannot be asked
+      },
+    });
+    const r = await recoverSessions(owner, d);
+    expect(sent).toHaveLength(2);
+    expect(r).toMatchObject({ txHashes: sent.map((t) => t.hash()), recovered: 700n * CKB, cells: 2, failed: 1 });
+    expect(r.error).toBeUndefined();
+    expect(r.unknown?.map((e) => e.txHash)).toEqual([b2Hash]);
+    expect(spends(sent[1], changeOf(sent[0]))).toBe(true);
+  });
+});
+
 describe("assertSigningLock", () => {
   // Found in review: an owner lock that needs no signature hands owner mode to anyone.
   const client = new ccc.ClientPublicTestnet();

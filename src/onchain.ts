@@ -1755,11 +1755,15 @@ export interface RecoverResult {
  * sessions are still swept one at a time (each fails if it did commit).
  *
  * The one-at-a-time sweeps run in turn, and each spends a plain owner cell and
- * makes its change a new one. The next sweep takes the first plain cell the
- * client finds: with CCC's client cache, normally the previous sweep's change.
- * Where the cache does not know it (a send whose reply was lost, a cache that
- * was cleared or is absent), it can find none (`"no-owner-cell"`) or one already
- * spent (that session fails) until the change is indexed.
+ * makes its change a new one. The first takes the first plain cell the client
+ * finds; each next one spends the change of the last sweep sent, still pending,
+ * so one call recovers every session it can without waiting for the indexer,
+ * also where the client cache does not know that change (a send whose reply
+ * was lost, a cache that was cleared or is absent). A refused or unknown sweep
+ * does not move this on: the next sweep tries the same owner cell. If the node
+ * calls that change spent or unknown, the sweep searches for a plain cell once
+ * instead, which until the change is indexed can find none (`"no-owner-cell"`)
+ * or one already spent (that session fails).
  *
  * The key cell (the fee budget) is under the session key's own lock and cannot be
  * recovered without that key; keep it small.
@@ -1796,9 +1800,28 @@ export async function recoverSessions(
   }
   const result: RecoverResult = { txHashes: [], recovered: 0n, cells: 0, failed: 0 };
   const groups = [...sessions.values()];
+  // The proof input of the next sweep: the change of the last sweep sent, spent
+  // while still pending, not indexed. Searched for while unset. Moved on only by
+  // a sweep sent; a refused or unknown one leaves it, so the next sweep tries
+  // the cell this one tried (follow-up to 2.4.0, 28 Nov).
+  let proof: ccc.Cell | undefined;
+  const sweep = async (group: ccc.Cell[]) => {
+    try {
+      return await sweepToOwner(owner, deployment, group, { proof });
+    } catch (e) {
+      // The node called the chained cell itself spent or unknown (another tab
+      // spent it, the sweep that made it was dropped): not this session's fault.
+      // Searched for once instead.
+      if (!proof || rejectedOutPoint(e) !== outPointKey(proof.outPoint)) throw e;
+      proof = undefined;
+      return await sweepToOwner(owner, deployment, group, {});
+    }
+  };
   for (const [i, group] of groups.entries()) {
     try {
-      result.txHashes.push(await ownerSweep(owner, deployment, group));
+      const sent = await sweep(group);
+      proof = sent.change;
+      result.txHashes.push(sent.txHash);
       result.recovered += total(group);
       result.cells += group.length;
     } catch (e) {
@@ -1857,6 +1880,21 @@ export async function ownerSweep(
   cells: ccc.Cell[],
   opts: { memo?: ccc.Hex } = {},
 ): Promise<ccc.Hex> {
+  return (await sweepToOwner(owner, deployments, cells, opts)).txHash;
+}
+
+/**
+ * `ownerSweep`, which also returns the sweep's change: the plain cell it makes
+ * under the owner's lock, which a next sweep can spend as its proof input while
+ * the sweep is still pending (`recoverSessions`). With `proof`, that cell is the
+ * proof input and no other is searched for.
+ */
+async function sweepToOwner(
+  owner: ccc.Signer,
+  deployments: SessionLockDeployment | SessionLockDeployment[],
+  cells: ccc.Cell[],
+  opts: { memo?: ccc.Hex; proof?: ccc.Cell },
+): Promise<{ txHash: ccc.Hex; change?: ccc.Cell }> {
   // The code of every lock version these cells are under, and only those.
   const used = [deployments].flat().filter((d) => cells.some((c) => c.cellOutput.lock.codeHash === d.codeHash));
   const tx = ccc.Transaction.from({
@@ -1880,18 +1918,27 @@ export async function ownerSweep(
   // signer (anyone-can-pay ones under the same key, an EVM wallet's older
   // Omnilock or PW-Lock), and a cell under one of those would leave the lock in
   // session mode, refusing the sweep (error 11; review, 24 Nov).
-  for await (const cell of owner.client.findCells({
-    script: ownerLock,
-    scriptType: "lock",
-    scriptSearchMode: "exact",
-    filter: { scriptLenRange: [0, 1], outputDataLenRange: [0, 1] },
-    withData: true,
-  })) {
+  const plain = opts.proof
+    ? [opts.proof]
+    : owner.client.findCells({
+        script: ownerLock,
+        scriptType: "lock",
+        scriptSearchMode: "exact",
+        filter: { scriptLenRange: [0, 1], outputDataLenRange: [0, 1] },
+        withData: true,
+      });
+  for await (const cell of plain) {
     tx.inputs.push(ccc.CellInput.from({ previousOutput: cell.outPoint }));
     if (opts.memo) tx.setWitnessArgsAt(tx.inputs.length - 1, { inputType: opts.memo });
     await tx.completeFeeBy(owner);
     // A sweep the node took but whose reply was lost is still the sweep (review, 28 Oct).
-    return signAndSend(owner, tx);
+    const txHash = await signAndSend(owner, tx);
+    // The change: the one output under the owner's lock with no type and no data
+    // (token returns carry a type). Signing adds witnesses only, so its index holds.
+    const index = tx.outputs.findIndex((o, i) => !o.type && o.lock.eq(ownerLock) && ccc.bytesFrom(tx.outputsData[i] ?? "0x").length === 0);
+    if (index < 0) return { txHash };
+    const change = ccc.Cell.from({ outPoint: { txHash, index }, cellOutput: tx.outputs[index], outputData: "0x" });
+    return { txHash, change };
   }
   throw new SessionBalanceError("the owner needs one plain cell to prove ownership", "no-owner-cell");
 }
