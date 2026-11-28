@@ -260,15 +260,20 @@ is still pending, so one call recovers every session it can without waiting
 for the indexer, with or without CCC's client cache (a send whose reply was
 lost, a cleared cache, a client without one). A refused or unknown sweep does
 not move this on: the next sweep tries the same owner cell, so if an unknown
-sweep did land, the sessions after it fail; run the call again once it commits.
-If the node calls that change spent (`Dead`, or, on a node with replace-by-fee
-on, a conflict with a pending spend: another tab spent it), the sweep searches
-once for another plain cell, never one an earlier sweep in the call spent, and
-asks for a second signature if it finds one. After `Dead`, finding none is
-`"no-owner-cell"`; after a conflict, which may have been on one of the session's
-own cells instead, the session fails and the chain is kept. An `Unknown` answer
-(a fallback node that has not seen the previous sweep yet) fails the session
-and keeps the chain. If that fault (or another
+sweep did land, the sessions after it may fail; run the call again once it
+commits. If the node calls that change spent (`Dead`: spent by a committed
+transaction, or by a pending one on a node with replace-by-fee off; or, with
+replace-by-fee on, a conflict with a pending spend: another tab spent it), the
+sweep searches once for another plain cell and asks for a second signature if
+it finds one. After `Dead`, finding none is `"no-owner-cell"`. After a
+conflict, which may have been on one of the session's own cells instead,
+finding none, or finding one whose sweep is refused too, fails the session and
+keeps the chain; a retry whose outcome is unknown is listed in `unknown`. An
+`Unknown` answer (a fallback node that has not seen the previous sweep yet)
+fails the session and keeps the chain. No search for a plain cell takes an
+input of a one-session sweep sent, or perhaps sent, earlier in the call, so
+none double-spends an earlier sweep; after an unknown sweep that did not land,
+that can mean `"no-owner-cell"` for the rest. If that fault (or another
 `SessionBalanceError` or `SessionPolicyError`) comes after one or more sweeps
 were sent, or may have been (`unknown`), it is returned instead of thrown, so
 their hashes are not lost: `error` holds it, `txHashes`, `recovered` and `cells`

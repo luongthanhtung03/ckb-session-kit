@@ -19,9 +19,9 @@ No export changes its signature.
   call recovers every session it can. A refused or unknown sweep leaves the
   chain where it was. If the node calls the chained change spent (`Dead`, or a
   pool conflict on a node with replace-by-fee on), that session's sweep
-  searches once for another plain cell, never one an earlier sweep in the call
-  spent (a second signature if one is found); an `Unknown` answer keeps the
-  chain. The chained cell goes in with its output and data, so CCC looks
+  searches once for another plain cell (a second signature if one is found);
+  an `Unknown` answer keeps the chain. No search for a plain cell takes an
+  input of a one-session sweep sent, or perhaps sent, earlier in the call. The chained cell goes in with its output and data, so CCC looks
   nothing up for it. Tests in `test/recover.test.ts`.
 
 ## 2.4.0 (2026-11-27)
