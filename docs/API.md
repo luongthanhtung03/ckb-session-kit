@@ -254,11 +254,15 @@ the same key, an EVM wallet's older Omnilock or PW-Lock) do not count, since the
 lock would not see an owner.
 
 The one-session-at-a-time sweeps run in turn, and each spends a plain owner
-cell and makes its change a new one. The next sweep takes the first plain cell
-the client finds: with CCC's client cache, normally the previous sweep's change;
-where the cache does not know it (a send whose reply was lost, a cleared cache, a
-client without one), it can find none (`"no-owner-cell"`) or one already spent
-(that session fails) until the change is indexed. If that fault (or another
+cell and makes its change a new one. The first takes the first plain cell the
+client finds; each next one spends the change of the last sweep sent, while it
+is still pending, so one call recovers every session it can without waiting
+for the indexer, with or without CCC's client cache (a send whose reply was
+lost, a cleared cache, a client without one). A refused or unknown sweep does
+not move this on: the next sweep tries the same owner cell. If the node calls
+that change spent or unknown (another tab spent it), the sweep searches for a
+plain cell once instead, which until the change is indexed can find none
+(`"no-owner-cell"`) or one already spent (that session fails). If that fault (or another
 `SessionBalanceError` or `SessionPolicyError`) comes after one or more sweeps
 were sent, or may have been (`unknown`), it is returned instead of thrown, so
 their hashes are not lost: `error` holds it, `txHashes`, `recovered` and `cells`

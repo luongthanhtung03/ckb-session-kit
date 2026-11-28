@@ -489,10 +489,11 @@ another app too, not just the lost one: say so and ask the user to confirm
 first. It is one signature, or one per session if the combined sweep is
 refused (`failed` counts the sessions not recovered), and like Close it needs
 one plain cell under the wallet's lock (`"no-owner-cell"`). Each one-per-session
-sweep spends that cell and gets it back as change, so a later one can find none
-yet: once some sessions were swept, that fault is returned in `error` next to
-their `txHashes` rather than thrown, and the rest count in `failed`; run the
-sweep again a little later for them. A sweep whose send could not be confirmed
+sweep spends that cell and gets it back as change, which the next sweep spends
+at once. Only if something else spends that change first can a later sweep
+find no plain cell yet: once some sessions were swept, that fault is returned
+in `error` next to their `txHashes` rather than thrown, and the rest count in
+`failed`; run the sweep again a little later for them. A sweep whose send could not be confirmed
 either way is listed in `unknown`: check those hashes first.
 
 The key cell (the fee budget: 62 CKB for a secp256k1 wallet, 64 for JoyID or

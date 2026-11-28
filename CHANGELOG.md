@@ -3,6 +3,24 @@
 This project follows [semantic versioning](https://semver.org/). The session lock is
 deployed on CKB **testnet only**; there is no mainnet deployment yet.
 
+## Unreleased
+
+Library only: the session lock is unchanged (same code hash, no redeployment).
+No export changes its signature.
+
+### Fixed
+- `recoverSessions`: when the combined sweep was refused and the sessions were
+  swept one at a time, each sweep searched for the owner's plain cell again.
+  The previous sweep's change is not indexed until it commits, so where CCC's
+  client cache did not know it (a sweep whose reply was lost, a cleared cache,
+  a client without one) the search returned the cell that sweep had just
+  spent, and every later session failed: about one session per call. Each
+  sweep now spends the change of the last sweep sent, still pending, so one
+  call recovers every session it can. A refused or unknown sweep leaves the
+  chain where it was; if the node calls the chained change spent or unknown,
+  that session's sweep searches for a plain cell once instead. Tests in
+  `test/recover.test.ts`.
+
 ## 2.4.0 (2026-11-27)
 
 Library only: the session lock is unchanged (same code hash, no redeployment).
